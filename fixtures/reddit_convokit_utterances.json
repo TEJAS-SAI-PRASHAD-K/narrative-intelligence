@@ -1,0 +1,113 @@
+[
+  {
+    "_comment": "Root submission. In ConvoKit the title lives on the conversation, not the utterance, and link posts have an empty selftext.",
+    "id": "t3_9x1abc",
+    "speaker_id": "concerned_citizen",
+    "speaker_meta": {"num_posts": 412, "num_comments": 8901},
+    "conversation_id": "t3_9x1abc",
+    "reply_to": null,
+    "timestamp": 1714564800,
+    "text": "Every outlet is running the same wording within an hour of each other. Source: https://www.example-news.com/story?utm_source=reddit",
+    "meta": {
+      "score": 1284,
+      "subreddit": "conspiracy",
+      "permalink": "/r/conspiracy/comments/9x1abc/coordinated_wording/",
+      "gilded": 1,
+      "stickied": false,
+      "top_level_comment": null
+    },
+    "conversation_meta": {
+      "title": "Identical wording across six outlets in under an hour",
+      "num_comments": 342,
+      "subreddit": "conspiracy",
+      "domain": "self.conspiracy"
+    },
+    "corpus": "reddit-corpus-small"
+  },
+  {
+    "_comment": "Ordinary reply. reply_to is a comment id, so this threads under another comment rather than the root.",
+    "id": "t1_e5f6g7h",
+    "speaker_id": "skeptic_42",
+    "speaker_meta": {"num_posts": 3, "num_comments": 77},
+    "conversation_id": "t3_9x1abc",
+    "reply_to": "t1_d4e5f6g",
+    "timestamp": 1714568400,
+    "text": "Wire copy. AP publishes it, everyone republishes it. #notcoordinated",
+    "meta": {
+      "score": -12,
+      "subreddit": "conspiracy",
+      "permalink": "/r/conspiracy/comments/9x1abc/coordinated_wording/e5f6g7h/",
+      "gilded": 0,
+      "stickied": false,
+      "top_level_comment": "t1_d4e5f6g"
+    },
+    "conversation_meta": {
+      "title": "Identical wording across six outlets in under an hour",
+      "num_comments": 342,
+      "subreddit": "conspiracy"
+    },
+    "corpus": "reddit-corpus-small"
+  },
+  {
+    "_comment": "Body removed by a moderator. No information left; must be dropped with a reason code.",
+    "id": "t1_removed01",
+    "speaker_id": "someone",
+    "speaker_meta": {},
+    "conversation_id": "t3_9x1abc",
+    "reply_to": "t3_9x1abc",
+    "timestamp": 1714572000,
+    "text": "[removed]",
+    "meta": {"score": 1, "subreddit": "conspiracy"},
+    "conversation_meta": {"title": "Identical wording across six outlets in under an hour"},
+    "corpus": "reddit-corpus-small"
+  },
+  {
+    "_comment": "Author deleted their account but the comment survives. Keep the text, flag the author as unusable for coordination work.",
+    "id": "t1_authordel",
+    "speaker_id": "[deleted]",
+    "speaker_meta": {},
+    "conversation_id": "t3_9x1abc",
+    "reply_to": "t3_9x1abc",
+    "timestamp": 1714575600,
+    "text": "I saved screenshots of all six before they were edited.",
+    "meta": {"score": 45, "subreddit": "conspiracy"},
+    "conversation_meta": {"title": "Identical wording across six outlets in under an hour"},
+    "corpus": "reddit-corpus-small"
+  },
+  {
+    "_comment": "Link post: empty selftext, the claim is entirely in the conversation title.",
+    "id": "t3_linkpost",
+    "speaker_id": "linkdropper",
+    "speaker_meta": {"num_posts": 9001, "num_comments": 12},
+    "conversation_id": "t3_linkpost",
+    "reply_to": null,
+    "timestamp": 1714579200,
+    "text": "",
+    "meta": {
+      "score": 22,
+      "subreddit": "news",
+      "permalink": "/r/news/comments/linkpost/",
+      "url": "https://trib.al/xY9zQw2"
+    },
+    "conversation_meta": {
+      "title": "Health agency retracts guidance after review",
+      "num_comments": 5,
+      "subreddit": "news",
+      "domain": "example-health.org"
+    },
+    "corpus": "reddit-corpus-small"
+  },
+  {
+    "_comment": "Corrupt row: no usable timestamp. Dropped rather than stamped with now().",
+    "id": "t1_notimestamp",
+    "speaker_id": "ghost",
+    "speaker_meta": {},
+    "conversation_id": "t3_9x1abc",
+    "reply_to": "t3_9x1abc",
+    "timestamp": null,
+    "text": "This comment has no timestamp at all.",
+    "meta": {"score": 0, "subreddit": "conspiracy"},
+    "conversation_meta": {},
+    "corpus": "reddit-corpus-small"
+  }
+]

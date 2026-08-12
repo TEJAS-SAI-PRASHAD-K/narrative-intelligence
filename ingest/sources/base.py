@@ -37,6 +37,8 @@ class RunResult:
     written: int = 0
     duplicates: int = 0
     dropped: Counter = field(default_factory=Counter)
+    #: counted-but-kept conditions (e.g. author deleted, full text unavailable)
+    flags: Counter = field(default_factory=Counter)
     authors: int = 0
     skipped_reason: str | None = None
     error: str | None = None
@@ -92,6 +94,7 @@ class BaseSource(ABC):
         self.checkpoint = Checkpoint(self.name, self.settings.checkpoint_dir)
         self.log = logging.getLogger(f"ingest.{self.name}")
         self.dropped: Counter = Counter()
+        self.flags: Counter = Counter()
         self._authors: dict[str, Author] = {}
 
     # --- to implement ----------------------------------------------------
@@ -138,6 +141,17 @@ class BaseSource(ABC):
             self.log.info("dropped (%s): %s", code, detail or "-")
         elif self.dropped[code] % 5000 == 0:
             self.log.info("dropped (%s): %d so far", code, self.dropped[code])
+
+    def note(self, code: str, detail: str = "") -> None:
+        """Count a condition that degrades a record without dropping it.
+
+        A Reddit comment whose author is ``[deleted]`` is still evidence, but it
+        is unusable for coordination work. Counting it separately from drops
+        keeps the EDA honest about *which* kind of loss happened.
+        """
+        self.flags[code] += 1
+        if self.flags[code] <= 3:
+            self.log.debug("flag (%s): %s", code, detail or "-")
 
     def note_author(self, author: Author | None) -> None:
         """Merge an author roll-up into this run's accumulator."""
@@ -222,14 +236,16 @@ class BaseSource(ABC):
             result.authors = self.store.write_authors(self._authors.values(), self.source)
 
         result.dropped = self.dropped.copy()
+        result.flags = self.flags.copy()
         self.log.info(
-            "%s: fetched=%d written=%d duplicates=%d dropped=%d %s",
+            "%s: fetched=%d written=%d duplicates=%d dropped=%d %s %s",
             self.name,
             result.fetched,
             result.written,
             result.duplicates,
             result.total_dropped,
             dict(result.dropped) or "",
+            f"flags={dict(result.flags)}" if result.flags else "",
         )
         return result
 

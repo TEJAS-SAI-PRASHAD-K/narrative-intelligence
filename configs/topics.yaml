@@ -1,0 +1,71 @@
+# The case under study: seed keywords and boolean queries.
+#
+# Everything topic-specific lives here, not in code. Swapping the case (to a
+# different election, outbreak, or conflict) must require editing this file and
+# re-running `make data`, and nothing else. Phase 2 reads the same file so that
+# narrative clusters can be traced back to the query that surfaced them.
+
+# Human-readable description of what this corpus is *about*. Quoted verbatim in
+# the EDA notebook's coverage statement, so keep it honest and specific.
+case: >
+  Cross-platform health and election misinformation narratives, 2024-2025.
+  Chosen because both domains have well-documented coordinated campaigns, are
+  covered by open corpora, and are not restricted content on any source used.
+
+topics:
+  - id: health_vaccine
+    label: Vaccine and public health claims
+    keywords:
+      - vaccine
+      - vaccination
+      - mRNA
+      - immunity
+      - CDC
+      - WHO
+      - outbreak
+      - measles
+      - "public health"
+    # GDELT DOC 2.0 accepts quoted phrases and OR/AND; keep queries short --
+    # long boolean strings silently return nothing rather than erroring.
+    gdelt_query: '("vaccine" OR "vaccination" OR "mRNA vaccine") (misinformation OR claim OR debunked)'
+    hashtags: [vaccine, vaccines, publichealth, mrna, cdc]
+    youtube_queries:
+      - vaccine misinformation debunked
+      - mRNA vaccine claims
+
+  - id: election_integrity
+    label: Election integrity and voting-process claims
+    keywords:
+      - election
+      - ballot
+      - voter fraud
+      - mail-in
+      - recount
+      - "voting machine"
+    gdelt_query: '("election fraud" OR "voter fraud" OR "ballot" ) (claim OR debunked OR misinformation)'
+    hashtags: [election, voterfraud, ballots, electionintegrity]
+    youtube_queries:
+      - election fraud claims fact check
+      - voting machine claims
+
+  - id: climate
+    label: Climate science claims
+    keywords:
+      - climate change
+      - global warming
+      - IPCC
+      - "net zero"
+      - emissions
+    gdelt_query: '("climate change" OR "global warming") (hoax OR misinformation OR debunked)'
+    hashtags: [climate, climatechange, globalwarming]
+    youtube_queries:
+      - climate change claims fact check
+
+# Languages to keep at the query level where a source supports filtering.
+# Records in other languages are still ingested when they arrive; this only
+# scopes what we go looking for. Bias implications are documented in the EDA.
+languages:
+  - english
+
+# Rolling window for time-scoped sources (GDELT, NewsAPI). Days.
+lookback_days: 7

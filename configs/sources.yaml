@@ -1,0 +1,126 @@
+# Which corpora, instances, feeds and queries to pull.
+#
+# Adding a subreddit corpus, an RSS feed, or a Kaggle dataset must never require
+# a code change. If you find yourself editing an adapter to add a source, the
+# config is wrong.
+
+reddit_convokit:
+  # ConvoKit corpus names, downloaded to ~/.convokit/downloads and symlinked
+  # into data/raw/reddit_convokit/. No API key, no PRAW, no Pushshift.
+  # `convokit.download` accepts these names directly.
+  corpora:
+    # Start here: ~10k conversations, sampled across subreddits. Small enough to
+    # validate the pipeline end to end in a couple of minutes.
+    - reddit-corpus-small
+    # Topic-relevant subreddit corpora. Each is `subreddit-<name>`. These are
+    # large (hundreds of MB to GB); uncomment deliberately, not by default.
+    # - subreddit-conspiracy
+    # - subreddit-politics
+    # - subreddit-news
+    # - subreddit-worldnews
+    # - subreddit-changemyview
+  # Per-corpus cap. None = no cap. Keeps a first run bounded.
+  max_utterances_per_corpus: 50000
+  # Combine the submission title with its selftext for root posts. The title
+  # carries most of the claim on link posts, where selftext is empty.
+  include_title_in_post_text: true
+
+reddit_kaggle:
+  # Static dumps. Threading is usually absent -- see README: Kaggle-sourced
+  # Reddit data is NOT usable for coordination-graph work.
+  # Each entry needs an explicit column map; one heuristic parser across
+  # datasets half-works on all of them, which is worse than not working.
+  datasets: []
+  # Example of the required shape (uncomment and adjust to a real slug):
+  # datasets:
+  #   - slug: unanimad/dataisbeautiful
+  #     files: ["*.csv"]
+  #     content_type: post
+  #     source_detail_field: subreddit
+  #     column_map:
+  #       native_id: id
+  #       text: title
+  #       body: selftext
+  #       author: author
+  #       timestamp: created_utc
+  #       score: score
+  #       num_comments: num_comments
+  #       url: url
+  #     timestamp_format: epoch   # epoch | iso | "%Y-%m-%d %H:%M:%S"
+  max_rows_per_dataset: 100000
+
+mastodon:
+  # Instance to authenticate against; overridden by MASTODON_API_BASE_URL.
+  instance: https://mastodon.social
+  backfill:
+    # Public federated timeline, paginated backwards via max_id.
+    public_timeline_pages: 10
+    page_size: 40
+    # Hashtag timelines are driven by configs/topics.yaml hashtags.
+    hashtag_pages: 5
+  stream:
+    # Bounded by --minutes on the CLI so a grading run cannot hang.
+    default_minutes: 2
+
+gdelt:
+  doc_api:
+    # gdeltdoc package; keyword/domain/language-filtered article search.
+    max_records_per_query: 250
+    # DOC 2.0 caps a single query window; we chunk by day inside the adapter.
+    languages: [English]
+  raw_files:
+    # The 15-minute CSV drops. gkg carries themes/tone/entities; mentions
+    # carries propagation velocity (same event, re-covered over time).
+    enabled: true
+    # How many of the most recent 15-minute updates to pull per run.
+    updates: 1
+    # Which of the three files to parse. export is event rows, not text.
+    files: [gkg]
+    max_rows_per_file: 5000
+
+news_rss:
+  # RSS/Atom is the reliable path and needs no credentials.
+  feeds:
+    - https://feeds.bbci.co.uk/news/world/rss.xml
+    - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+    - https://www.theguardian.com/world/rss
+    - https://feeds.npr.org/1004/rss.xml
+    - https://apnews.com/index.rss
+    - https://www.aljazeera.com/xml/rss/all.xml
+    - https://feeds.reuters.com/reuters/topNews
+    - https://www.factcheck.org/feed/
+    - https://www.snopes.com/feed/
+    - https://fullfact.org/feed/all/
+  # Full-text extraction with trafilatura, for feeds that publish full content
+  # publicly. Concurrency capped, robots.txt honoured, descriptive UA sent.
+  fulltext:
+    enabled: true
+    max_articles: 60
+    max_concurrency: 2
+    request_delay_seconds: 1.0
+  newsapi:
+    # Optional. ~100 req/day, ~24h delayed, dev/non-commercial licence.
+    # Absent NEWSAPI_KEY => RSS only, with a warning. Never a hard failure.
+    enabled: true
+    page_size: 100
+    max_pages: 1
+
+youtube:
+  # Quota is the binding constraint: 10,000 units/UTC day.
+  #   search.list        = 100 units  (discovery; budgeted hard)
+  #   videos.list        =   1 unit   (hydration; cheap)
+  #   commentThreads.list=   1 unit   (comments; cheap)
+  discovery:
+    # Queries come from configs/topics.yaml youtube_queries.
+    max_searches_per_run: 4
+    results_per_search: 25
+    order: relevance
+    published_within_days: 30
+  hydration:
+    videos_per_batch: 50        # videos.list accepts 50 ids per unit
+  comments:
+    enabled: true
+    max_videos: 50
+    max_comment_pages_per_video: 2
+    page_size: 100
+    order: relevance
