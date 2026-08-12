@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# NO RAW DATA IN GIT. EVER.
+# Reproducibility comes from configs/ + `make data`, not from committed bytes.
+# data/manifest.json is intentionally ignored too: it is a build product that
+# changes on every run, and a tracked copy would make `git status` dirty after
+# every fetch. See README "Known limitations".
+# ---------------------------------------------------------------------------
+data/
+
+# Secrets
+.env
+.env.local
+*.pem
+kaggle.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local agent settings
+.claude/settings.local.json
