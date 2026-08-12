@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -112,7 +112,8 @@ class Settings(BaseSettings):
         """Whether a source can run at all. Drives graceful degradation."""
         return {
             "reddit_convokit": True,  # no credentials needed
-            "reddit_kaggle": bool(self.kaggle_key) or Path.home().joinpath(".kaggle/kaggle.json").exists(),
+            "reddit_kaggle": bool(self.kaggle_key)
+            or Path.home().joinpath(".kaggle/kaggle.json").exists(),
             "mastodon": bool(self.mastodon_access_token),
             "gdelt": True,  # open data
             "news_rss": True,  # RSS needs nothing; NewsAPI is an optional bonus

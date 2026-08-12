@@ -57,7 +57,10 @@ class TestIdNamespacing:
     def test_cross_source_ids_cannot_collide(self):
         a = minimal(native_id="1")
         b = minimal(
-            native_id="1", source="mastodon", author_id=make_id("mastodon", "u1"), content_type="post"
+            native_id="1",
+            source="mastodon",
+            author_id=make_id("mastodon", "u1"),
+            content_type="post",
         )
         assert a.id != b.id
 
@@ -116,7 +119,8 @@ class TestFieldHygiene:
             minimal(subreddit="r/news")
 
     @pytest.mark.parametrize(
-        "value,expected", [("EN", "en"), ("zh-cn", "zh"), ("pt_BR", "pt"), ("und", None), (None, None)]
+        "value,expected",
+        [("EN", "en"), ("zh-cn", "zh"), ("pt_BR", "pt"), ("und", None), (None, None)],
     )
     def test_lang_normalization(self, value, expected):
         assert minimal(lang=value).lang == expected
