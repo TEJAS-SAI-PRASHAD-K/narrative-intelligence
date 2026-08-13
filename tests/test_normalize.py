@@ -169,6 +169,19 @@ class TestEntities:
             "local",
         ]
 
+    def test_bare_mention_collapses_into_its_qualified_form(self):
+        # Mastodon shows "@colleague" but the entity carries the full handle;
+        # counting both would split one account into two graph nodes.
+        assert extract_mentions("hi @colleague", [{"acct": "colleague@instance.tld"}]) == [
+            "colleague@instance.tld"
+        ]
+
+    def test_distinct_local_mentions_are_not_collapsed(self):
+        assert extract_mentions("@someone_else", [{"acct": "colleague@instance.tld"}]) == [
+            "colleague@instance.tld",
+            "someone_else",
+        ]
+
     def test_structured_mentions_use_acct(self):
         assert extract_mentions("", [{"acct": "someone@instance.tld"}]) == ["someone@instance.tld"]
 

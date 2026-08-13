@@ -1,0 +1,68 @@
+[
+  {
+    "_comment": "A feedparser entry, flattened. published_parsed is a struct_time as a list; summary is escaped HTML.",
+    "_kind": "rss",
+    "_feed": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "_feed_title": "BBC News - World",
+    "id": "https://www.example-news.com/2024/05/01/ballot-claim-review",
+    "link": "https://www.example-news.com/2024/05/01/ballot-claim-review?utm_medium=rss",
+    "title": "Officials review claim that ballots were counted twice",
+    "summary": "<p>Election officials said the review found no evidence of double counting, contradicting a claim shared widely online. &amp;quot;The process is audited,&amp;quot; a spokesperson said.</p>",
+    "published": "Wed, 01 May 2024 12:00:00 GMT",
+    "published_parsed": [2024, 5, 1, 12, 0, 0, 2, 122, 0],
+    "author": "Staff Reporter",
+    "tags": [{"term": "Elections", "scheme": null, "label": null}],
+    "media_content": [{"url": "https://www.example-news.com/img/ballots.jpg", "type": "image/jpeg"}],
+    "links": [{"href": "https://www.example-news.com/2024/05/01/ballot-claim-review", "rel": "alternate", "type": "text/html"}]
+  },
+  {
+    "_comment": "Syndicated wire copy: the same story republished by another outlet with near-identical text. Kept, not deduplicated - republication breadth is itself a spread signal, and simhash is what lets Phase 2 collapse it later.",
+    "_kind": "rss",
+    "_feed": "https://www.theguardian.com/world/rss",
+    "_feed_title": "The Guardian - World",
+    "id": "https://other-outlet.example.org/world/ballot-claim-review",
+    "link": "https://other-outlet.example.org/world/ballot-claim-review",
+    "title": "Officials review claim that ballots were counted twice",
+    "summary": "<p>Election officials said the review found no evidence of double counting, contradicting a claim shared widely online.</p>",
+    "published_parsed": [2024, 5, 1, 12, 40, 0, 2, 122, 0],
+    "tags": [],
+    "links": []
+  },
+  {
+    "_comment": "Atom-style entry using updated_parsed and a content list rather than summary.",
+    "_kind": "rss",
+    "_feed": "https://www.factcheck.org/feed/",
+    "_feed_title": "FactCheck.org",
+    "id": "tag:factcheck.org,2024:/posts/12345",
+    "link": "https://www.factcheck.org/2024/05/vaccine-claim-resurfaces/",
+    "title": "Old vaccine claim resurfaces with new framing",
+    "content": [{"type": "text/html", "value": "<p>A claim about vaccine ingredients that circulated in 2021 is spreading again, this time attributed to a different agency.</p>"}],
+    "updated_parsed": [2024, 5, 1, 15, 30, 0, 2, 122, 0],
+    "tags": [{"term": "health"}],
+    "links": []
+  },
+  {
+    "_comment": "Entry with no usable date at all. Dropped rather than stamped with ingestion time, which would corrupt every velocity chart.",
+    "_kind": "rss",
+    "_feed": "https://example.org/broken/rss",
+    "_feed_title": "Broken Feed",
+    "link": "https://example.org/story-without-a-date",
+    "title": "A story with no publication date",
+    "summary": "No date anywhere in this entry.",
+    "tags": [],
+    "links": []
+  },
+  {
+    "_comment": "A NewsAPI article. `content` is truncated at ~200 chars on the free tier, so description is kept alongside it rather than pretending the truncation is the article.",
+    "_kind": "newsapi",
+    "_topic": "health_vaccine",
+    "source": {"id": null, "name": "Example Health"},
+    "author": "A Reporter",
+    "title": "Agency retracts vaccine guidance after review",
+    "description": "The agency said the earlier guidance overstated the certainty of the finding.",
+    "url": "https://example-health.org/news/agency-retracts-vaccine-guidance",
+    "urlToImage": "https://example-health.org/img/lab.jpg",
+    "publishedAt": "2024-05-01T16:00:00Z",
+    "content": "The agency said the earlier guidance overstated the certainty of the finding, and that a revised version will be published next month. Officials declined to say whether… [+1423 chars]"
+  }
+]

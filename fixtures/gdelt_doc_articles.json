@@ -1,0 +1,37 @@
+[
+  {
+    "_comment": "A DOC 2.0 article row as gdeltdoc returns it (DataFrame -> dict). GDELT gives metadata, never full text.",
+    "_kind": "doc",
+    "_topic": "election_integrity",
+    "url": "https://www.example-news.com/2024/05/01/ballot-claim-review.html",
+    "url_mobile": "",
+    "title": "Officials review claim that ballots were counted twice",
+    "seendate": "20240501T120000Z",
+    "socialimage": "https://www.example-news.com/img/ballots.jpg",
+    "domain": "example-news.com",
+    "language": "English",
+    "sourcecountry": "United States"
+  },
+  {
+    "_comment": "Non-English row: GDELT reports a language name, not an ISO code, and the instance label beats detection on a short title.",
+    "_kind": "doc",
+    "_topic": "health_vaccine",
+    "url": "https://noticias.example.mx/salud/vacunas-revision",
+    "title": "Autoridades revisan afirmaciones sobre vacunas",
+    "seendate": "20240501T134500Z",
+    "socialimage": "",
+    "domain": "noticias.example.mx",
+    "language": "Spanish",
+    "sourcecountry": "Mexico"
+  },
+  {
+    "_comment": "Row with no title. Nothing to analyse, so it is dropped with a reason code rather than kept as an empty record.",
+    "_kind": "doc",
+    "_topic": "health_vaccine",
+    "url": "https://example-health.org/notice",
+    "title": "",
+    "seendate": "20240501T140000Z",
+    "domain": "example-health.org",
+    "language": "English"
+  }
+]

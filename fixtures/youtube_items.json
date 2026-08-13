@@ -1,0 +1,93 @@
+[
+  {
+    "_comment": "videos.list item (1 quota unit per call, 50 ids per call). The only source in this project that reports view counts.",
+    "_kind": "video",
+    "kind": "youtube#video",
+    "id": "dQw4w9WgXcQ",
+    "snippet": {
+      "publishedAt": "2024-05-01T09:00:00Z",
+      "channelId": "UCabc123def456ghi789jkl",
+      "title": "Fact check: the ballot double-counting claim",
+      "description": "We walk through the audit records. Sources: https://www.example-news.com/2024/05/01/ballot-claim-review\n\n#election #factcheck",
+      "thumbnails": {"default": {"url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg"}},
+      "channelTitle": "Verify Desk",
+      "tags": ["election", "fact check", "ballots"],
+      "categoryId": "25",
+      "defaultAudioLanguage": "en-US"
+    },
+    "contentDetails": {"duration": "PT8M14S"},
+    "statistics": {
+      "viewCount": "184203",
+      "likeCount": "9421",
+      "favoriteCount": "0",
+      "commentCount": "1203"
+    }
+  },
+  {
+    "_comment": "A video whose statistics are hidden by the uploader. Hidden is not zero, so those metrics must be null.",
+    "_kind": "video",
+    "kind": "youtube#video",
+    "id": "hiddenStats1",
+    "snippet": {
+      "publishedAt": "2024-05-01T10:30:00Z",
+      "channelId": "UCzzz999yyy888xxx777www",
+      "title": "What they are not telling you about the recount",
+      "description": "",
+      "channelTitle": "Open Questions",
+      "defaultLanguage": "en"
+    },
+    "statistics": {"viewCount": "5120"}
+  },
+  {
+    "_comment": "Top-level comment thread item, unwrapped from snippet.topLevelComment. textOriginal is plain text because we request textFormat=plainText.",
+    "_kind": "video_comment",
+    "_video_id": "dQw4w9WgXcQ",
+    "kind": "youtube#comment",
+    "id": "UgxKREWxIgDrw71rN4B4AaABAg",
+    "snippet": {
+      "channelId": "UCabc123def456ghi789jkl",
+      "videoId": "dQw4w9WgXcQ",
+      "textDisplay": "The audit records are public, people just do not read them.",
+      "textOriginal": "The audit records are public, people just do not read them.",
+      "authorDisplayName": "@careful_reader",
+      "authorProfileImageUrl": "https://yt3.ggpht.com/abc",
+      "authorChannelId": {"value": "UCcommenter00000000001"},
+      "likeCount": 214,
+      "publishedAt": "2024-05-01T11:15:00Z",
+      "updatedAt": "2024-05-01T11:15:00Z"
+    }
+  },
+  {
+    "_comment": "A reply to the comment above. parentId is what makes the comment tree reconstructable.",
+    "_kind": "video_comment",
+    "_video_id": "dQw4w9WgXcQ",
+    "kind": "youtube#comment",
+    "id": "UgxKREWxIgDrw71rN4B4AaABAg.9k2mReplY",
+    "snippet": {
+      "channelId": "UCabc123def456ghi789jkl",
+      "videoId": "dQw4w9WgXcQ",
+      "parentId": "UgxKREWxIgDrw71rN4B4AaABAg",
+      "textDisplay": "Link to the records? Every &quot;source&quot; I find is a screenshot.",
+      "textOriginal": "Link to the records? Every \"source\" I find is a screenshot.",
+      "authorDisplayName": "@asking_questions",
+      "authorChannelId": {"value": "UCcommenter00000000002"},
+      "likeCount": 0,
+      "publishedAt": "2024-05-01T11:42:00Z"
+    }
+  },
+  {
+    "_comment": "Comment whose body is empty after normalization. Dropped with a reason code.",
+    "_kind": "video_comment",
+    "_video_id": "dQw4w9WgXcQ",
+    "kind": "youtube#comment",
+    "id": "UgxEmptyBody0000000000",
+    "snippet": {
+      "videoId": "dQw4w9WgXcQ",
+      "textOriginal": "   ",
+      "authorDisplayName": "@blank",
+      "authorChannelId": {"value": "UCcommenter00000000003"},
+      "likeCount": 0,
+      "publishedAt": "2024-05-01T11:50:00Z"
+    }
+  }
+]

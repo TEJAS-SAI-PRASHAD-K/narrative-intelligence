@@ -329,7 +329,19 @@ def extract_mentions(text: str | None, raw: Any = None) -> list[str]:
             elif isinstance(item, str):
                 mentions.append(item.lstrip("@"))
     mentions.extend(_MENTION_RE.findall(text or ""))
-    return _dedupe_lower(mentions)
+    return _prefer_qualified(_dedupe_lower(mentions))
+
+
+def _prefer_qualified(mentions: list[str]) -> list[str]:
+    """Collapse ``colleague`` into ``colleague@instance.tld`` when both appear.
+
+    Mastodon renders a remote mention as a bare ``@colleague`` in the visible
+    text while the structured entity carries the full ``colleague@instance.tld``.
+    Keeping both counts one account twice and splits it into two nodes in Phase
+    2's coordination graph.
+    """
+    qualified_locals = {m.split("@", 1)[0] for m in mentions if "@" in m}
+    return [m for m in mentions if "@" in m or m not in qualified_locals]
 
 
 def _dedupe_lower(values: Iterable[str]) -> list[str]:
