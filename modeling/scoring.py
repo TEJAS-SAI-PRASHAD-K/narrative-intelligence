@@ -51,6 +51,10 @@ class StageContext:
     dry_run: bool
     known_record_ids: set[str] = field(default_factory=set)
     known_author_ids: set[str] = field(default_factory=set)
+    #: Set by the coordination stage and consumed by the accounts stage, which
+    #: needs community_id and coordination_score. The dependency is why
+    #: configs/scoring.yaml orders coordination before accounts.
+    coordination: Any = None
 
     def note(self, message: str) -> str:
         return f"[demo] {message}" if self.demo else message
@@ -235,6 +239,495 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
         },
     )
     return out
+
+
+@stage("misinfo")
+def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """Calibrated misinformation probability -> record_scores.misinfo_prob."""
+    from modeling.config import module_config
+    from modeling.registry import resolve
+    from modeling.text.misinfo_clf import MisinfoClassifier
+
+    version = str(module_config("misinfo").get("version"))
+    checkpoint = resolve("misinfo", version, required=False)
+    if checkpoint is None:
+        return [
+            {
+                "stage": "misinfo",
+                "table": "record_scores",
+                "note": ctx.note(
+                    "no trained checkpoint; misinfo_prob stays null. Train with "
+                    "`modeling train misinfo` once a benchmark is on disk."
+                ),
+            }
+        ]
+
+    classifier = MisinfoClassifier(ctx.settings)
+    if not classifier.load(checkpoint.path):
+        return [
+            {
+                "stage": "misinfo",
+                "table": "record_scores",
+                "note": ctx.note("checkpoint failed to load (see log); misinfo_prob stays null"),
+            }
+        ]
+
+    versions = {"misinfo": version}
+    done = {key[0] for key in ctx.store.already_scored("record_scores", versions)}
+    eligible = ctx.records.loc[
+        ctx.records["lang"].map(ctx.settings.language_allowed)
+        & ctx.records["text"].fillna("").astype(str).str.len().ge(20)
+        & ~ctx.records["id"].astype(str).isin(done)
+    ]
+    if not len(eligible):
+        return [
+            {
+                "stage": "misinfo",
+                "table": "record_scores",
+                "unchanged": len(ctx.records),
+                "note": ctx.note("resumed: nothing to do"),
+            }
+        ]
+
+    scores = classifier.predict(eligible["text"].astype(str).tolist())
+    frame = pd.DataFrame(
+        {
+            "record_id": eligible["id"].astype(str).to_numpy(),
+            "source": eligible["source"].astype(str).to_numpy(),
+            "misinfo_prob": scores,
+            "model_versions": [versions] * len(eligible),
+            "scored_at": utcnow_local(),
+        }
+    )
+    if ctx.dry_run:
+        return [
+            {"stage": "misinfo", "table": "record_scores",
+             "note": ctx.note(f"dry-run; would score {len(frame)} rows")}
+        ]
+
+    result = _merge_record_scores(ctx, frame)
+    return [
+        {
+            "stage": "misinfo",
+            "table": "record_scores",
+            **result,
+            "note": ctx.note(f"scored {len(frame)}/{len(ctx.records)} records"),
+        }
+    ]
+
+
+@stage("stance")
+def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """Stance toward a narrative's representative claim.
+
+    Deliberately a null path until a checkpoint exists. An untrained model
+    producing confident stance labels would be worse than an empty column, and
+    the contract explicitly allows null.
+    """
+    from modeling.config import module_config
+    from modeling.registry import resolve
+
+    version = str(module_config("stance").get("version"))
+    checkpoint = resolve("stance", version, required=False)
+    if checkpoint is None:
+        return [
+            {
+                "stage": "stance",
+                "table": "record_scores",
+                "note": ctx.note(
+                    "not trained; stance and stance_conf are written as null, as the "
+                    "contract permits. See artifacts/model_cards/stance.md."
+                ),
+            }
+        ]
+    return [
+        {
+            "stage": "stance",
+            "table": "record_scores",
+            "note": ctx.note(
+                "checkpoint present but the scoring path is not wired; see model card"
+            ),
+        }
+    ]
+
+
+@stage("summarize")
+def _summarize_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """LLM narrative labels and summaries, with the centroid fallback."""
+    from modeling.config import module_config
+    from modeling.text.summarize import NarrativeSummarizer
+
+    narratives = ctx.store.read("narratives")
+    if not len(narratives):
+        return [{"stage": "summarize", "note": ctx.note("no narratives; run the cluster stage")}]
+
+    membership = ctx.store.read("narrative_membership")
+    representatives = (
+        membership.loc[membership["is_representative"].fillna(False)]
+        .groupby("narrative_id")["record_id"]
+        .apply(list)
+        .to_dict()
+        if len(membership)
+        else {}
+    )
+    texts = (
+        ctx.records.set_index("id")["text"].astype(str).to_dict()
+        if "id" in ctx.records
+        else {}
+    )
+
+    payload = [
+        {
+            "narrative_id": row["narrative_id"],
+            "centroid": row.get("centroid"),
+            "representative_ids": representatives.get(row["narrative_id"], []),
+        }
+        for row in narratives.to_dict("records")
+    ]
+    summarizer = NarrativeSummarizer(ctx.settings)
+    run = summarizer.summarize(payload, texts)
+
+    updated = narratives.copy()
+    updated["label"] = updated["narrative_id"].map(
+        lambda n: run.results[n].label if n in run.results else None
+    )
+    updated["label_source"] = updated["narrative_id"].map(
+        lambda n: run.results[n].label_source if n in run.results else None
+    )
+    updated["summary"] = updated["narrative_id"].map(
+        lambda n: run.results[n].summary if n in run.results else None
+    )
+    versions = {
+        "summarize": str(module_config("summarize").get("version")),
+        "llm_model": str(module_config("summarize").get("llm_model")),
+    }
+    updated["model_versions"] = [versions] * len(updated)
+
+    note = run.cost_note(summarizer.client.model)
+    if not summarizer.client.available:
+        note = "no API key; centroid labels only. " + note
+    if ctx.dry_run:
+        return [{"stage": "summarize", "table": "narratives", "note": ctx.note("dry-run; " + note)}]
+
+    result = ctx.store.write("narratives", updated, merge=False)
+    return [{"stage": "summarize", "table": "narratives", **result, "note": ctx.note(note)}]
+
+
+@stage("coordination")
+def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """Co-behaviour graph, communities and the null-model comparison."""
+    from modeling.accounts.coordination import CoordinationDetector
+
+    detector = CoordinationDetector(ctx.settings)
+    result = detector.detect(ctx.records)
+    if not result.edges:
+        return [
+            {
+                "stage": "coordination",
+                "table": "coordination_edges",
+                "note": ctx.note(
+                    f"no edges above the weight floor over {result.n_records} eligible records"
+                ),
+            }
+        ]
+
+    now = utcnow_local()
+    edges = pd.DataFrame([{**edge, "generated_at": now} for edge in result.edges])
+    note = (
+        f"{len(edges)} edges, {len(result.community_sizes)} communities, "
+        f"modularity {result.modularity:.3f} vs null "
+        f"{result.null_modularity:.3f}±{result.null_std:.3f} "
+        f"({'exceeds' if result.exceeds_null else 'DOES NOT EXCEED'} the null)"
+    )
+    if ctx.dry_run:
+        return [
+            {"stage": "coordination", "table": "coordination_edges",
+             "note": ctx.note("dry-run; " + note)}
+        ]
+
+    written = ctx.store.write("coordination_edges", edges, merge=False)
+    ctx.store.update_manifest(
+        table="coordination_edges",
+        rows=len(edges),
+        model_versions={"coordination": detector.version},
+        extra={"is_demo": ctx.demo, **result.summary()},
+    )
+    # Stash for the accounts stage, which folds community_id and
+    # coordination_score into author_scores.
+    ctx.coordination = result
+    return [
+        {"stage": "coordination", "table": "coordination_edges", **written, "note": ctx.note(note)}
+    ]
+
+
+@stage("accounts")
+def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """Assemble author_scores from every per-author signal available."""
+    from modeling.accounts.bot_clf import BotModel, shap_contributions
+    from modeling.accounts.features import available_tiers, build_features
+    from modeling.config import module_config
+    from modeling.registry import resolve
+
+    if not len(ctx.authors):
+        return [{"stage": "accounts", "note": ctx.note("no author roll-ups in the corpus")}]
+
+    tiers = available_tiers(ctx.records, ctx.authors)
+    features = build_features(ctx.records, ctx.authors, tiers=tiers)
+    versions: dict[str, str] = {}
+    reasons: dict[str, list[str]] = {a: [] for a in features.account_ids}
+
+    # --- bot probability ---------------------------------------------------
+    bot_probs: dict[str, float] = {}
+    top_features: dict[str, list[dict[str, Any]]] = {}
+    bot_version = str(module_config("bot").get("version"))
+    checkpoint = resolve("bot", bot_version, required=False)
+    model = BotModel.load(checkpoint.path) if checkpoint else None
+    if model is None:
+        for account in features.account_ids:
+            reasons[account].append("bot:model_unavailable")
+    else:
+        missing = [name for name in model.feature_names if name not in features.names]
+        if missing:
+            # The corpus cannot supply what the model was trained on. Scoring
+            # anyway would apply the model to a distribution it never saw.
+            log.warning(
+                "bot model needs feature(s) %s that this corpus cannot compute; bot_prob "
+                "stays null. This is the feature-intersection discipline doing its job.",
+                missing,
+            )
+            for account in features.account_ids:
+                reasons[account].append("bot:feature_intersection_empty")
+        else:
+            matrix = features.subset(model.feature_names).matrix
+            probabilities = model.predict_proba(matrix)
+            contributions = shap_contributions(
+                model.estimator, matrix, model.feature_names,
+                int(module_config("bot").get("shap_top_k", 5)),
+            )
+            for account, probability, contribution in zip(
+                features.account_ids, probabilities, contributions, strict=True
+            ):
+                bot_probs[account] = float(probability)
+                top_features[account] = contribution
+            versions["bot"] = bot_version
+
+    # --- coordination ------------------------------------------------------
+    coordination = getattr(ctx, "coordination", None)
+    if coordination is None:
+        for account in features.account_ids:
+            reasons[account].append("coordination:not_run")
+
+    # --- aggregates from record_scores ------------------------------------
+    scores = ctx.store.read("record_scores")
+    aggregates = _author_aggregates(ctx.records, scores)
+    membership = ctx.store.read("narrative_membership")
+    narratives_touched = _narratives_touched(ctx.records, membership)
+
+    now = utcnow_local()
+    source_of = ctx.authors.set_index("author_id")["source"].astype(str).to_dict()
+    rows = []
+    for account in features.account_ids:
+        aggregate = aggregates.get(account, {})
+        rows.append(
+            {
+                "author_id": account,
+                "source": source_of.get(account, account.split(":", 1)[0]),
+                "bot_prob": bot_probs.get(account),
+                "bot_top_features": top_features.get(account),
+                "coordination_score": (
+                    coordination.scores.get(account) if coordination else None
+                ),
+                "community_id": (
+                    coordination.communities.get(account) if coordination else None
+                ),
+                "community_size": (
+                    coordination.community_sizes.get(coordination.communities.get(account))
+                    if coordination and account in coordination.communities
+                    else None
+                ),
+                "anomalous": aggregate.get("anomaly_mean"),
+                "toxicity_mean": aggregate.get("toxicity_mean"),
+                "dominant_sentiment": aggregate.get("dominant_sentiment"),
+                "dominant_emotion": aggregate.get("dominant_emotion"),
+                "narratives_touched": narratives_touched.get(account, []),
+                "skip_reasons": reasons[account],
+                "model_versions": versions,
+                "scored_at": now,
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    note = f"{len(frame)} authors, tiers={','.join(tiers)}"
+    if not bot_probs:
+        note += "; bot_prob null (see skip_reasons)"
+    if ctx.dry_run:
+        return [
+            {"stage": "accounts", "table": "author_scores",
+             "note": ctx.note("dry-run; " + note)}
+        ]
+
+    written = ctx.store.write(
+        "author_scores", frame, known_keys=ctx.known_author_ids or None, merge=False
+    )
+    ctx.store.update_manifest(
+        table="author_scores", rows=len(frame), model_versions=versions,
+        extra={"is_demo": ctx.demo, "tiers": tiers},
+    )
+    return [{"stage": "accounts", "table": "author_scores", **written, "note": ctx.note(note)}]
+
+
+@stage("media")
+def _media_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """Deepfake scoring over records carrying media."""
+    from modeling.config import module_config
+    from modeling.media.deepfake_clf import DeepfakeScorer
+    from modeling.registry import resolve
+
+    if "media_urls" not in ctx.records.columns:
+        return [{"stage": "media", "note": ctx.note("corpus carries no media_urls column")}]
+    from modeling.io import as_list
+
+    with_media = ctx.records.loc[ctx.records["media_urls"].map(lambda v: bool(as_list(v)))]
+    if not len(with_media):
+        return [{"stage": "media", "note": ctx.note("no records carry media")}]
+
+    version = str(module_config("deepfake").get("version"))
+    checkpoint = resolve("deepfake", version, required=False)
+    scorer = DeepfakeScorer(ctx.settings)
+    rows = scorer.score_records(with_media, checkpoint.path if checkpoint else None)
+    if not rows:
+        return [
+            {
+                "stage": "media",
+                "table": "media_scores",
+                "note": ctx.note(
+                    f"{len(with_media)} record(s) carry media but none could be scored "
+                    "(no checkpoint, or remote fetching disabled in configs/scoring.yaml)"
+                ),
+            }
+        ]
+
+    frame = pd.DataFrame(rows)
+    if ctx.dry_run:
+        return [{"stage": "media", "table": "media_scores",
+                 "note": ctx.note(f"dry-run; would write {len(frame)} rows")}]
+    written = ctx.store.write(
+        "media_scores", frame, known_keys=ctx.known_record_ids or None, merge=False
+    )
+    return [{"stage": "media", "table": "media_scores", **written, "note": ctx.note("")}]
+
+
+# ---------------------------------------------------------------------------
+# helpers shared by the stages
+# ---------------------------------------------------------------------------
+def _merge_record_scores(ctx: StageContext, frame: pd.DataFrame) -> dict[str, int]:
+    """Fold new columns into existing record_scores rows.
+
+    Column-wise merge, not row replacement: the aux stage already wrote
+    toxicity and sentiment for these records, and a naive write would blank
+    them. Existing values win only where the incoming frame has nothing to say.
+    """
+    existing = ctx.store.read("record_scores")
+    if not len(existing):
+        return ctx.store.write("record_scores", frame, known_keys=ctx.known_record_ids or None)
+
+    # Merged as dicts rather than by pandas assignment. A column that is null
+    # for every row reads back from Parquet with a dtype that cannot hold the
+    # incoming floats, and `.loc[...] = ...` raises rather than widening -- which
+    # is exactly the case here, because misinfo_prob is null until this stage
+    # first runs. Dicts sidestep dtype negotiation entirely.
+    incoming = {str(row["record_id"]): row for row in frame.to_dict(orient="records")}
+    now = utcnow_local()
+    rows: list[dict[str, Any]] = []
+
+    for row in existing.to_dict(orient="records"):
+        record_id = str(row["record_id"])
+        update = incoming.pop(record_id, None)
+        if update is None:
+            rows.append(row)
+            continue
+        merged = dict(row)
+        for column, value in update.items():
+            if column in {"record_id", "source", "scored_at"}:
+                continue
+            if column == "model_versions":
+                merged["model_versions"] = {
+                    **_as_dict(row.get("model_versions")),
+                    **_as_dict(value),
+                }
+                continue
+            merged[column] = value
+        merged["scored_at"] = now
+        rows.append(merged)
+
+    # Records scored by this stage that the aux pass never wrote a row for.
+    rows.extend(incoming.values())
+    return ctx.store.write(
+        "record_scores", pd.DataFrame(rows), known_keys=ctx.known_record_ids or None, merge=False
+    )
+
+
+def _as_dict(value: Any) -> dict[str, str]:
+    from modeling.io import _as_version_dict
+
+    return _as_version_dict(value)
+
+
+def _author_aggregates(records: pd.DataFrame, scores: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    """Per-author means and modes over record_scores.
+
+    Means are computed over the subset where the metric exists, never over an
+    imputed zero -- the same rule Phase 1 applies to engagement.
+    """
+    if not len(scores) or "id" not in records.columns:
+        return {}
+    joined = records[["id", "author_id"]].merge(
+        scores, left_on="id", right_on="record_id", how="inner"
+    )
+    if not len(joined):
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for author_id, group in joined.groupby("author_id"):
+        entry: dict[str, Any] = {}
+        for column, name in (("toxicity", "toxicity_mean"), ("anomaly_score", "anomaly_mean")):
+            if column in group.columns:
+                values = pd.to_numeric(group[column], errors="coerce").dropna()
+                entry[name] = float(values.mean()) if len(values) else None
+        if "sentiment" in group.columns:
+            modes = group["sentiment"].dropna()
+            entry["dominant_sentiment"] = str(modes.mode().iloc[0]) if len(modes) else None
+        if "emotion" in group.columns:
+            entry["dominant_emotion"] = _dominant_emotion(group["emotion"])
+        out[str(author_id)] = entry
+    return out
+
+
+def _dominant_emotion(column: pd.Series) -> str | None:
+    totals: dict[str, float] = {}
+    for value in column.dropna():
+        if not isinstance(value, dict):
+            continue
+        for name, score in value.items():
+            totals[name] = totals.get(name, 0.0) + float(score or 0.0)
+    if not totals:
+        return None
+    return max(totals, key=totals.__getitem__)
+
+
+def _narratives_touched(records: pd.DataFrame, membership: pd.DataFrame) -> dict[str, list[str]]:
+    if not len(membership) or "id" not in records.columns:
+        return {}
+    joined = records[["id", "author_id"]].merge(
+        membership, left_on="id", right_on="record_id", how="inner"
+    )
+    if not len(joined):
+        return {}
+    return (
+        joined.groupby("author_id")["narrative_id"]
+        .apply(lambda s: sorted(set(s.astype(str))))
+        .to_dict()
+    )
 
 
 def _apply_length_floor(records: pd.DataFrame, policy: dict[str, Any]) -> pd.DataFrame:

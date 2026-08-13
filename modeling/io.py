@@ -726,6 +726,26 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+def as_list(value) -> list:
+    """Coerce a Parquet list cell to a plain Python list.
+
+    Arrow list columns arrive as numpy arrays, and `value or []` on a numpy
+    array raises "truth value of an array ... is ambiguous" -- or worse, on a
+    one-element array, silently succeeds with the wrong semantics. Every read of
+    a list-typed column goes through here.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if hasattr(value, "tolist"):
+        return list(value.tolist())
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
 def empty_emotion() -> dict[str, float]:
     """All-zero emotion vector. Only for rows where the model *ran* and found
     nothing; a row the model skipped gets ``None`` for the whole struct."""

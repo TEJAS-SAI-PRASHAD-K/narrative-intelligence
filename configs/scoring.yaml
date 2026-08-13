@@ -16,16 +16,21 @@ batching:
   author_batch_size: 512
 
 # Which scored tables `score --all` produces, in dependency order.
-# narratives must precede author_scores (author_scores carries narratives_touched);
-# coordination must precede author_scores (it supplies community_id).
+#
+# The order is load-bearing, not cosmetic:
+#   cluster       before summarize    -- there is nothing to label until clusters exist
+#   cluster       before accounts     -- author_scores.narratives_touched reads membership
+#   coordination  before accounts     -- author_scores.community_id and
+#                                        .coordination_score come from the graph
+#   aux + misinfo before cluster      -- narrative severity aggregates member misinfo_prob
 stages:
   - aux                     # toxicity, sentiment, emotion, anomaly -> record_scores
   - misinfo                 # -> record_scores.misinfo_prob
   - stance                  # -> record_scores.stance (null until trained)
   - cluster                 # -> narratives, narrative_membership
   - summarize               # -> narratives.label / .summary
-  - accounts                # -> author_scores.bot_prob
-  - coordination            # -> coordination_edges, author_scores.community_id
+  - coordination            # -> coordination_edges
+  - accounts                # -> author_scores (needs cluster + coordination)
   - media                   # -> media_scores
 
 # Per-source notes that change what may legitimately be computed. These are not
