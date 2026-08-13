@@ -237,7 +237,8 @@ authoritative drop tallies per run (`deleted_text`, `empty_text`,
 fig, ax = plt.subplots(figsize=(10, 4))
 for source, group in df.groupby("source"):
     lengths = group["text_len"].clip(upper=group["text_len"].quantile(0.99))
-    ax.hist(lengths, bins=50, alpha=0.5, label=f"{source} (median {int(group['text_len'].median())})")
+    median = int(group["text_len"].median())
+    ax.hist(lengths, bins=50, alpha=0.5, label=f"{source} (median {median})")
 ax.set_xlabel("characters (clipped at the 99th percentile)")
 ax.set_ylabel("records")
 ax.set_title("Text length distribution by source")
@@ -325,7 +326,9 @@ sample = df[df["simhash"].notna() & (df["simhash"] != 0)]
 if len(sample) > SAMPLE:
     sample = sample.sample(SAMPLE, random_state=0)
 
-hashes = list(zip(sample["id"], sample["simhash"].astype("uint64"), sample["source"]))
+hashes = list(
+    zip(sample["id"], sample["simhash"].astype("uint64"), sample["source"], strict=True)
+)
 near_dupes = [
     (a_id, b_id, a_src, b_src)
     for (a_id, a_hash, a_src), (b_id, b_hash, b_src) in combinations(hashes, 2)
