@@ -1,0 +1,65 @@
+# Batch scoring configuration: what gets scored, in what size chunks.
+#
+# `python -m modeling.cli score --all` reads this. Scoring is resumable and
+# idempotent, so narrowing a date range here and rerunning is safe -- rows
+# already carrying the current model versions are skipped, not recomputed.
+
+corpus:
+  sources: [reddit, mastodon, news, gdelt, youtube]
+  start_date: null          # YYYY-MM-DD, null = no lower bound
+  end_date: null
+  limit: null               # cap rows for a smoke run; null = whole corpus
+
+batching:
+  record_batch_size: 256
+  embed_batch_size: 64
+  author_batch_size: 512
+
+# Which scored tables `score --all` produces, in dependency order.
+# narratives must precede author_scores (author_scores carries narratives_touched);
+# coordination must precede author_scores (it supplies community_id).
+stages:
+  - aux                     # toxicity, sentiment, emotion, anomaly -> record_scores
+  - misinfo                 # -> record_scores.misinfo_prob
+  - stance                  # -> record_scores.stance (null until trained)
+  - cluster                 # -> narratives, narrative_membership
+  - summarize               # -> narratives.label / .summary
+  - accounts                # -> author_scores.bot_prob
+  - coordination            # -> coordination_edges, author_scores.community_id
+  - media                   # -> media_scores
+
+# Per-source notes that change what may legitimately be computed. These are not
+# preferences; they are properties of Phase 1's data.
+source_policy:
+  gdelt:
+    # GDELT carries article metadata, not full body text: median ~83 chars.
+    # Short text degrades embeddings, so these records are embedded but flagged,
+    # and excluded from clustering below the length floor.
+    short_text: true
+    min_chars_for_clustering: 40
+  reddit:
+    # ConvoKit Reddit is threaded (parent_id present ~96% of rows) and usable
+    # for coordination. Kaggle-sourced Reddit rows carry parent_id=None
+    # honestly and are filtered out of the coordination graph at runtime by
+    # threading availability, not by source name.
+    threading: mixed
+  news:
+    # RSS/article records have one "author" per outlet domain, not per person.
+    # Author-level bot scoring is meaningless here and is skipped with a reason
+    # code rather than producing a number.
+    author_is_outlet: true
+  gdelt_authors: {}
+
+media:
+  # Deepfake scoring runs on records carrying media_urls. Remote fetching is
+  # off by default: batch scoring must not depend on third-party availability.
+  fetch_remote: false
+  max_videos: 100
+
+quality_gates:
+  # Refuse to write a scored table if more than this fraction of rows are null
+  # for a scorer that was supposed to run. A silent all-null column is the
+  # failure mode that surfaces three weeks later as an unexplainable metric.
+  max_null_fraction: 0.98
+  # Assert every scored row joins back to Phase 1.
+  assert_joinable: true

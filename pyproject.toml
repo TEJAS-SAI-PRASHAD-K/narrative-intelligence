@@ -31,6 +31,31 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Phase 2 modeling. Split out so `pytest` and the ingestion layer still run on a
+# light install: the split/IO/feature tests import none of these.
+modeling = [
+    "scikit-learn>=1.4",
+    "xgboost>=2.0",
+    "shap>=0.45",
+    "sentence-transformers>=3.0",
+    "transformers>=4.40",
+    "torch>=2.2",
+    "networkx>=3.3",
+    "matplotlib>=3.8",
+]
+# Deepfake module. Heaviest tree in the project and needed by exactly one
+# module, so it is opt-in; modeling/media/* imports it lazily and degrades with
+# a clear message.
+media = [
+    "timm>=1.0",
+    "opencv-python>=4.9",
+    "pillow>=10.0",
+]
+# Narrative summarization. The pipeline completes without it (and without an
+# API key) by falling back to centroid labels.
+llm = [
+    "anthropic>=0.34",
+]
 # Source adapters with heavy / fussy transitive dependency trees. Every adapter
 # imports these lazily and degrades with a clear message when they are missing,
 # so a partial install still runs the rest of the pipeline.
@@ -56,9 +81,10 @@ notebook = [
 
 [project.scripts]
 ingest = "ingest.cli:app"
+modeling = "modeling.cli:app"
 
 [tool.setuptools.packages.find]
-include = ["ingest*"]
+include = ["ingest*", "modeling*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

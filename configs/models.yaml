@@ -1,0 +1,191 @@
+# Per-module model choices, versions and thresholds.
+#
+# The `version` field of each module is what lands in every scored row's
+# `model_versions` map. Bump it whenever the checkpoint, the label mapping or a
+# decision threshold changes -- that is how Phase 4 detects a stale score.
+#
+# Nothing here is a hyperparameter sweep. One sensible config per model, tuned
+# on the validation split, is the stated policy: evaluation rigour buys more
+# than the third decimal place of F1.
+
+defaults:
+  batch_size: 32
+  max_length: 256
+  seed_offset: 0
+
+# --- Module A: text / narrative --------------------------------------------
+embed:
+  version: v0.1.0
+  # CPU-viable default. bge-base is better and needs a GPU for bulk embedding;
+  # the dimension is read from the loaded model, never hardcoded, because
+  # Phase 4's pgvector column width depends on it.
+  model_name: sentence-transformers/all-MiniLM-L6-v2
+  alternatives:
+    - BAAI/bge-base-en-v1.5
+  batch_size: 64
+  max_seq_length: 256      # tokens; long articles are title + head, see embed.py
+  normalize: true          # L2 -- cosine assumptions downstream depend on it
+
+cluster:
+  version: v0.1.0
+  min_cluster_size: 15
+  min_samples: 5
+  cluster_selection_epsilon: 0.0
+  cluster_selection_method: eom
+  # Near-duplicate collapse before clustering, so one repost swarm cannot
+  # become its own narrative and dominate every metric.
+  simhash_hamming: 3
+  # Cross-run identity: match new centroids to old above this cosine and carry
+  # the narrative_id forward. Below it, mint a new id.
+  stability_threshold: 0.85
+  representatives_per_cluster: 5
+  # severity = engagement-weighted high percentile of member misinfo_prob.
+  # Documented and justified in modeling/text/cluster.py.
+  severity_percentile: 75
+  severity_engagement_weighted: true
+
+misinfo:
+  version: v0.1.0
+  base_model: roberta-base
+  fallback_model: distilbert-base-uncased
+  num_labels: 2
+  max_length: 256
+  batch_size: 16
+  learning_rate: 2.0e-5
+  epochs: 3
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  # LIAR's 6-way label collapsed to binary. half-true is DROPPED, not assigned:
+  # forcing it to one side manufactures label noise the metrics cannot see.
+  liar_label_map:
+    pants-fire: false
+    false: false
+    barely-true: false
+    "half-true": drop
+    "mostly-true": true
+    "true": true
+  calibration: isotonic
+  decision_threshold: 0.5
+
+stance:
+  version: v0.0.0-untrained
+  base_model: roberta-base
+  labels: [support, deny, discuss, unrelated]
+  max_length: 256
+  batch_size: 16
+  learning_rate: 2.0e-5
+  epochs: 3
+  # Lower priority than misinfo. Until a checkpoint exists, the contract's
+  # `stance` and `stance_conf` columns are written as null, deliberately.
+
+summarize:
+  version: v0.1.0
+  # Pinned, and recorded in model_versions. temperature 0 for reproducibility.
+  llm_model: claude-haiku-4-5-20251001
+  temperature: 0.0
+  max_tokens: 512
+  max_retries: 2
+  representatives: 5
+
+# --- Module B: account / coordination --------------------------------------
+bot:
+  version: v0.1.0
+  primary: xgboost
+  comparison: random_forest
+  xgboost:
+    n_estimators: 400
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+  random_forest:
+    n_estimators: 500
+    max_depth: 12
+    min_samples_leaf: 2
+  n_folds: 5
+  calibration: isotonic
+  # A false "bot" accusation is costlier than a miss in this product, so the
+  # operating point is chosen from the PR curve at a precision target, never 0.5.
+  precision_target: 0.85
+  shap_top_k: 5
+
+coordination:
+  version: v0.1.0
+  window_minutes: 60
+  simhash_hamming: 3
+  embedding_cosine: 0.95
+  min_shared_urls: 1
+  min_hashtag_sequence: 2
+  # LSH bucketing: pairwise comparison is O(n^2) and the corpus will grow.
+  lsh_bands: 8
+  min_edge_weight: 0.15
+  # Sources whose records carry real threading and stable author identity.
+  # Kaggle-flat Reddit has parent_id=None honestly and is excluded.
+  eligible_sources: [reddit, mastodon, youtube]
+  evidence_weights:
+    near_dup: 1.0
+    cotweet: 0.8
+    hashtag_seq: 0.5
+    temporal: 0.3
+  null_model_shuffles: 5
+
+# --- Module C: media --------------------------------------------------------
+deepfake:
+  version: v0.0.0-untrained
+  backbone: xception41
+  pretrained: true
+  unfreeze_last_blocks: 1
+  image_size: 299
+  frames_per_video: 16
+  # mean of the top-k frame scores: more robust than a plain mean, because a
+  # manipulation that only affects part of a clip is averaged away otherwise.
+  aggregate_top_k: 5
+  face_min_size: 64
+  batch_size: 16
+  learning_rate: 1.0e-4
+  epochs: 5
+  methods: [Deepfakes, Face2Face, FaceSwap, NeuralTextures]
+  compression: c23
+
+# --- Module D: auxiliary passes --------------------------------------------
+# Pretrained and off-the-shelf on purpose. Fine-tuning these is not justified
+# by any measured problem, and each fine-tune is a metric we would have to
+# defend.
+toxicity:
+  version: v0.1.0
+  model_name: unitary/toxic-bert
+  batch_size: 32
+  max_length: 256
+
+sentiment:
+  version: v0.1.0
+  # Social-media domain, unlike the generic SST-trained models.
+  model_name: cardiffnlp/twitter-roberta-base-sentiment-latest
+  batch_size: 32
+  max_length: 256
+
+emotion:
+  version: v0.1.0
+  model_name: j-hartmann/emotion-english-distilroberta-base
+  batch_size: 32
+  max_length: 256
+  # The model emits 7 labels; the product wants 7 buckets. "disgust" is present
+  # in this model, so no bucket is synthesized. Any unmapped bucket is emitted
+  # as 0.0 and the gap is documented rather than papered over.
+  label_map:
+    fear: fear
+    anger: anger
+    disgust: disgust
+    joy: joy
+    surprise: surprise
+    sadness: sadness
+    neutral: neutral
+
+anomaly:
+  version: v0.1.0
+  method: isolation_forest
+  n_estimators: 200
+  contamination: 0.05
+  # Unsupervised. Reported as a score distribution plus a hand-audit of the top
+  # 20, never as an F1 against labels that do not exist.

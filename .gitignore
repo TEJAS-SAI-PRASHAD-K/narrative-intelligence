@@ -7,6 +7,11 @@
 # ---------------------------------------------------------------------------
 data/
 
+# Model weights. Checkpoints live on the HF Hub or Drive and are resolved by
+# name+version through modeling/registry.py. The repo commits the pointer,
+# never the blob.
+models/
+
 # Secrets
 .env
 .env.local
