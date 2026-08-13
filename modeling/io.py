@@ -314,11 +314,32 @@ class CorpusReader:
         if not frames:
             return pd.DataFrame(columns=columns or [])
         out = pd.concat(frames, ignore_index=True)
-        if limit:
-            out = out.head(limit)
         # Deterministic order: two runs must produce byte-identical scored rows.
         if "id" in out.columns:
             out = out.sort_values("id", kind="stable").reset_index(drop=True)
+            # Defensive dedupe on id.
+            #
+            # Phase 1 dedupes within a source=/date= partition, which is what
+            # keeps resume cheap. An article whose timestamp shifts between two
+            # fetches lands in two partitions and survives as a genuine
+            # duplicate id -- 2 of 4190 in the current news corpus. Phase 2
+            # cannot fix that (ingest/ is read-only here), but it must not
+            # propagate it: `record_scores` is keyed on record_id, so a
+            # duplicate silently collapses at write time and the row counts stop
+            # reconciling. Collapsing here, loudly, keeps the arithmetic honest.
+            duplicated = out["id"].duplicated()
+            if duplicated.any():
+                examples = out.loc[duplicated, "id"].head(3).tolist()
+                log.warning(
+                    "%d duplicate record id(s) in the Phase 1 corpus; keeping the first of "
+                    "each (e.g. %s). These are ids that appear under more than one date= "
+                    "partition, which Phase 1's per-partition dedupe cannot see.",
+                    int(duplicated.sum()),
+                    examples,
+                )
+                out = out.loc[~duplicated].reset_index(drop=True)
+        if limit:
+            out = out.head(limit)
         return out
 
     def authors(self, sources: Iterable[str] | None = None) -> pd.DataFrame:
@@ -450,8 +471,30 @@ def _coerce_to_schema(frame: pd.DataFrame, schema: pa.Schema) -> pa.Table:
     rows = frame.to_dict(orient="records")
     filled: list[dict[str, Any]] = []
     for row in rows:
-        filled.append({name: row.get(name, None) for name in known})
+        filled.append({name: _null_if_na(row.get(name, None)) for name in known})
     return pa.Table.from_pylist(filled, schema=schema)
+
+
+def _null_if_na(value: Any) -> Any:
+    """Turn pandas' NA sentinels back into ``None`` before Arrow sees them.
+
+    A column that is null for every row becomes float64 NaN in pandas, and
+    Arrow then rejects it against a string field with "Expected bytes, got a
+    'float' object". The scorers are *meant* to produce all-null columns when a
+    model did not run, so this is the normal case, not an edge case.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and value != value:  # NaN
+        return None
+    if value is pd.NaT:
+        return None
+    try:
+        if value is pd.NA:
+            return None
+    except (TypeError, ValueError):  # pragma: no cover
+        pass
+    return value
 
 
 class ScoredStore:

@@ -39,9 +39,11 @@ cluster:
   # the narrative_id forward. Below it, mint a new id.
   stability_threshold: 0.85
   representatives_per_cluster: 5
-  # severity = engagement-weighted high percentile of member misinfo_prob.
-  # Documented and justified in modeling/text/cluster.py.
-  severity_percentile: 75
+  # severity = engagement-weighted mean of the member misinfo_prob scores in
+  # the top quartile (an expected-shortfall statistic), NOT a mean and NOT a
+  # percentile. Both of those fail on real narrative shape; the reasoning is
+  # written out in NarrativeClusterer._severity.
+  severity_percentile: 75          # the tail cut-off, not the reported value
   severity_engagement_weighted: true
 
 misinfo:

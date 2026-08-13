@@ -274,7 +274,205 @@ def write_dfdc() -> None:
     (out / "metadata.json").write_text(json.dumps(metadata, indent=1, sort_keys=True) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# demo corpus (Phase-1-shaped, for `modeling ... --demo`)
+# ---------------------------------------------------------------------------
+#: Three narratives with distinct vocabulary, one coordinated cluster of
+#: accounts posting near-identical text inside a tight window, and one ordinary
+#: threaded conversation. Enough planted structure that a stage which silently
+#: produces nothing shows up as a failure rather than as an empty result.
+NARRATIVE_TEMPLATES = {
+    "waterworks": [
+        "the new reservoir filtration contract was awarded without any public tender",
+        "nobody voted on the reservoir filtration contract and the paperwork is sealed",
+        "reservoir filtration deal signed behind closed doors, records unavailable",
+        "why was the reservoir filtration contract kept off the council agenda",
+    ],
+    "transit": [
+        "the tram extension budget doubled and the timeline slipped two more years",
+        "tram extension costs have doubled again with no revised completion date",
+        "another year added to the tram extension and another overspend announced",
+        "tram extension overspend confirmed, opening pushed back once more",
+    ],
+    "clinic": [
+        "the walk-in clinic closure was decided before the consultation ended",
+        "walk-in clinic shut despite the consultation still being open",
+        "consultation on the walk-in clinic was a formality, closure already agreed",
+        "clinic closure went ahead while residents were still being surveyed",
+    ],
+}
+
+COORDINATED_TEXT = (
+    "share this everywhere: the reservoir filtration contract was awarded "
+    "without any public tender and the records are sealed"
+)
+
+
+def _fixture_simhash(text: str) -> int:
+    """Not Phase 1's real simhash.
+
+    The fixture only needs near-identical text to collide and unrelated text
+    not to. A digest over the word 3-gram set gives exactly that,
+    deterministically, without importing the ingestion internals that Phase 2
+    is supposed to treat as read-only.
+    """
+    import hashlib
+
+    words = text.lower().split()
+    grams = {" ".join(words[i:i + 3]) for i in range(max(1, len(words) - 2))}
+    acc = 0
+    for gram in sorted(grams):
+        acc ^= int(hashlib.sha1(gram.encode()).hexdigest()[:12], 16)
+    return (acc << 16) & ((1 << 64) - 1)
+
+
+def write_corpus() -> None:
+    """A tiny Phase-1-shaped Parquet corpus for the ``--demo`` path.
+
+    Deliberately not a copy of the real corpus: synthetic, small enough to score
+    on a laptop in seconds, and shaped so every stage has something to find.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from ingest.store import ARROW_SCHEMA, AUTHOR_SCHEMA
+
+    out = ROOT.parent / "corpus"
+    base = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
+    rng = np.random.default_rng(SEED)
+
+    records: list[dict] = []
+    authors: dict[str, dict] = {}
+
+    def add(source, native_id, author, text, when, *, parent=None, conversation=None,
+            detail="fixture", content_type="post", likes=None, replies=None,
+            urls=(), hashtags=(), lang="en"):
+        author_id = f"{source}:{author}"
+        records.append({
+            "id": f"{source}:{native_id}",
+            "native_id": str(native_id),
+            "source": source,
+            "source_detail": detail,
+            "content_type": content_type,
+            "text": text,
+            "lang": lang,
+            "author_id": author_id,
+            "author_handle": author,
+            "timestamp": when,
+            "parent_id": f"{source}:{parent}" if parent else None,
+            "conversation_id": f"{source}:{conversation}" if conversation else None,
+            # Phase 1's rule holds in the fixture too: None means "not
+            # measurable on this platform", 0 means "measured zero".
+            "engagement": {"likes": likes, "shares": None, "replies": replies, "views": None},
+            "urls": list(urls),
+            "domains": sorted({u.split("/")[2] for u in urls}) if urls else [],
+            "media_urls": [],
+            "hashtags": list(hashtags),
+            "mentions": [],
+            "simhash": _fixture_simhash(text),
+            "ingested_at": base,
+            "raw": "{}",
+        })
+        entry = authors.setdefault(author_id, {
+            "author_id": author_id, "source": source, "handle": author,
+            "created_at": base - timedelta(days=400), "followers": None, "following": None,
+            "post_count": 0, "first_seen": when, "last_seen": when, "raw": "{}",
+        })
+        entry["post_count"] += 1
+        entry["first_seen"] = min(entry["first_seen"], when)
+        entry["last_seen"] = max(entry["last_seen"], when)
+
+    counter = 0
+
+    # Three narratives spreading organically.
+    for n_i, (topic, templates) in enumerate(NARRATIVE_TEMPLATES.items()):
+        for i in range(18):
+            counter += 1
+            text = templates[i % len(templates)]
+            if i % 3:
+                text += f" ({['reported', 'confirmed', 'again'][i % 3]})"
+            handle = f"resident_{n_i}_{i % 6}"
+            when = base + timedelta(days=n_i, hours=int(rng.integers(0, 20)), minutes=i * 7)
+            add("mastodon", f"m{counter}", handle, text, when, detail="mastodon.social",
+                likes=int(rng.integers(0, 40)), hashtags=[topic])
+            authors[f"mastodon:{handle}"]["followers"] = 120 + i * 13
+            authors[f"mastodon:{handle}"]["following"] = 90 + i * 5
+
+    # One coordinated burst: five young, follower-poor accounts posting
+    # near-identical text inside twenty minutes.
+    burst_start = base + timedelta(days=1, hours=14)
+    for i in range(5):
+        counter += 1
+        handle = f"amplifier_{i}"
+        add("mastodon", f"m{counter}", handle,
+            COORDINATED_TEXT + ("" if i % 2 else " now"),
+            burst_start + timedelta(minutes=i * 4), detail="mastodon.social", likes=0,
+            urls=["https://example.invalid/reservoir-contract"], hashtags=["waterworks"])
+        authors[f"mastodon:{handle}"]["followers"] = 4 + i
+        authors[f"mastodon:{handle}"]["following"] = 1800 + i * 40
+        authors[f"mastodon:{handle}"]["created_at"] = base - timedelta(days=9)
+
+    # A threaded Reddit conversation: the coordination graph needs real parents.
+    root_id = None
+    for i in range(20):
+        counter += 1
+        native = f"r{counter}"
+        text = ("has anyone actually read the filtration contract" if i == 0
+                else f"reply {i}: the appendix is missing from the published version")
+        add("reddit", native, f"redditor_{i % 7}", text,
+            base + timedelta(days=2, minutes=i * 11), detail="localpolitics",
+            content_type="comment" if i else "post", parent=root_id,
+            conversation=root_id or native, likes=int(rng.integers(-3, 25)))
+        if i == 0:
+            root_id = native
+
+    # GDELT-style article metadata: short text, the degradation case.
+    for i in range(6):
+        counter += 1
+        add("gdelt", f"g{counter}", f"outlet{i}.example",
+            f"Council reviews filtration contract {i}",
+            base + timedelta(days=3, hours=i), detail=f"outlet{i}.example",
+            content_type="article", urls=[f"https://outlet{i}.example/story/{i}"])
+
+    # One non-English record, so the language gate has something to skip.
+    counter += 1
+    add("mastodon", f"m{counter}", "resident_0_0",
+        "der vertrag wurde ohne ausschreibung vergeben und die unterlagen sind versiegelt",
+        base + timedelta(days=4), detail="mastodon.social", lang="de", likes=2)
+
+    partitions: dict[tuple[str, str], list[dict]] = {}
+    for row in sorted(records, key=lambda r: r["id"]):
+        key = (row["source"], row["timestamp"].strftime("%Y-%m-%d"))
+        partitions.setdefault(key, []).append(row)
+    for (source, date), rows in sorted(partitions.items()):
+        target = out / "normalized" / f"source={source}" / f"date={date}"
+        target.mkdir(parents=True, exist_ok=True)
+        pq.write_table(
+            pa.Table.from_pylist(rows, schema=ARROW_SCHEMA),
+            target / "part-000.parquet",
+            compression="zstd",
+        )
+
+    for source in sorted({a["source"] for a in authors.values()}):
+        rows = sorted(
+            (a for a in authors.values() if a["source"] == source),
+            key=lambda a: a["author_id"],
+        )
+        target = out / "authors" / f"source={source}"
+        target.mkdir(parents=True, exist_ok=True)
+        pq.write_table(
+            pa.Table.from_pylist(rows, schema=AUTHOR_SCHEMA),
+            target / "authors.parquet",
+            compression="zstd",
+        )
+    print(f"  corpus: {len(records)} records, {len(authors)} authors")
+
+
 BUILDERS = {
+    "corpus": write_corpus,
     "liar": write_liar,
     "fakenewsnet": write_fakenewsnet,
     "coaid": write_coaid,

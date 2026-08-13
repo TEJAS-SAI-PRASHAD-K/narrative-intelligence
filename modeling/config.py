@@ -187,10 +187,15 @@ class ModelingSettings(BaseSettings):
         return "cpu"
 
     def language_allowed(self, lang: str | None) -> bool:
-        """The one place the English-only policy is decided."""
-        if lang is None:
+        """The one place the English-only policy is decided.
+
+        Accepts pandas' null sentinels as well as ``None``. Phase 1 legitimately
+        leaves ``lang`` unset for short text rather than guessing, and a null
+        string column read back from Parquet arrives as ``NaN``, not ``None``.
+        """
+        if lang is None or lang != lang:  # None or NaN
             return self.score_unknown_language
-        return lang.lower() in self.languages
+        return str(lang).lower() in self.languages
 
 
 @lru_cache(maxsize=1)
