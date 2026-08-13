@@ -1,0 +1,81 @@
+ID	Target	Tweet	Stance
+0	Climate Change is a Real Concern	Fixture tweet 0 expressing a position with #hashtag	FAVOR
+1	Legalization of Abortion	Fixture tweet 1 expressing a position with #hashtag	AGAINST
+2	Atheism	Fixture tweet 2 expressing a position with #hashtag	NONE
+3	Feminist Movement	Fixture tweet 3 expressing a position with #hashtag	FAVOR
+4	Climate Change is a Real Concern	Fixture tweet 4 expressing a position with #hashtag	AGAINST
+5	Legalization of Abortion	Fixture tweet 5 expressing a position with #hashtag	NONE
+6	Atheism	Fixture tweet 6 expressing a position with #hashtag	FAVOR
+7	Feminist Movement	Fixture tweet 7 expressing a position with #hashtag	AGAINST
+8	Climate Change is a Real Concern	Fixture tweet 8 expressing a position with #hashtag	NONE
+9	Legalization of Abortion	Fixture tweet 9 expressing a position with #hashtag	FAVOR
+10	Atheism	Fixture tweet 10 expressing a position with #hashtag	AGAINST
+11	Feminist Movement	Fixture tweet 11 expressing a position with #hashtag	NONE
+12	Climate Change is a Real Concern	Fixture tweet 12 expressing a position with #hashtag	FAVOR
+13	Legalization of Abortion	Fixture tweet 13 expressing a position with #hashtag	AGAINST
+14	Atheism	Fixture tweet 14 expressing a position with #hashtag	NONE
+15	Feminist Movement	Fixture tweet 15 expressing a position with #hashtag	FAVOR
+16	Climate Change is a Real Concern	Fixture tweet 16 expressing a position with #hashtag	AGAINST
+17	Legalization of Abortion	Fixture tweet 17 expressing a position with #hashtag	NONE
+18	Atheism	Fixture tweet 18 expressing a position with #hashtag	FAVOR
+19	Feminist Movement	Fixture tweet 19 expressing a position with #hashtag	AGAINST
+20	Climate Change is a Real Concern	Fixture tweet 20 expressing a position with #hashtag	NONE
+21	Legalization of Abortion	Fixture tweet 21 expressing a position with #hashtag	FAVOR
+22	Atheism	Fixture tweet 22 expressing a position with #hashtag	AGAINST
+23	Feminist Movement	Fixture tweet 23 expressing a position with #hashtag	NONE
+24	Climate Change is a Real Concern	Fixture tweet 24 expressing a position with #hashtag	FAVOR
+25	Legalization of Abortion	Fixture tweet 25 expressing a position with #hashtag	AGAINST
+26	Atheism	Fixture tweet 26 expressing a position with #hashtag	NONE
+27	Feminist Movement	Fixture tweet 27 expressing a position with #hashtag	FAVOR
+28	Climate Change is a Real Concern	Fixture tweet 28 expressing a position with #hashtag	AGAINST
+29	Legalization of Abortion	Fixture tweet 29 expressing a position with #hashtag	NONE
+30	Atheism	Fixture tweet 30 expressing a position with #hashtag	FAVOR
+31	Feminist Movement	Fixture tweet 31 expressing a position with #hashtag	AGAINST
+32	Climate Change is a Real Concern	Fixture tweet 32 expressing a position with #hashtag	NONE
+33	Legalization of Abortion	Fixture tweet 33 expressing a position with #hashtag	FAVOR
+34	Atheism	Fixture tweet 34 expressing a position with #hashtag	AGAINST
+35	Feminist Movement	Fixture tweet 35 expressing a position with #hashtag	NONE
+36	Climate Change is a Real Concern	Fixture tweet 36 expressing a position with #hashtag	FAVOR
+37	Legalization of Abortion	Fixture tweet 37 expressing a position with #hashtag	AGAINST
+38	Atheism	Fixture tweet 38 expressing a position with #hashtag	NONE
+39	Feminist Movement	Fixture tweet 39 expressing a position with #hashtag	FAVOR
+40	Climate Change is a Real Concern	Fixture tweet 40 expressing a position with #hashtag	AGAINST
+41	Legalization of Abortion	Fixture tweet 41 expressing a position with #hashtag	NONE
+42	Atheism	Fixture tweet 42 expressing a position with #hashtag	FAVOR
+43	Feminist Movement	Fixture tweet 43 expressing a position with #hashtag	AGAINST
+44	Climate Change is a Real Concern	Fixture tweet 44 expressing a position with #hashtag	NONE
+45	Legalization of Abortion	Fixture tweet 45 expressing a position with #hashtag	FAVOR
+46	Atheism	Fixture tweet 46 expressing a position with #hashtag	AGAINST
+47	Feminist Movement	Fixture tweet 47 expressing a position with #hashtag	NONE
+48	Climate Change is a Real Concern	Fixture tweet 48 expressing a position with #hashtag	FAVOR
+49	Legalization of Abortion	Fixture tweet 49 expressing a position with #hashtag	AGAINST
+50	Atheism	Fixture tweet 50 expressing a position with #hashtag	NONE
+51	Feminist Movement	Fixture tweet 51 expressing a position with #hashtag	FAVOR
+52	Climate Change is a Real Concern	Fixture tweet 52 expressing a position with #hashtag	AGAINST
+53	Legalization of Abortion	Fixture tweet 53 expressing a position with #hashtag	NONE
+54	Atheism	Fixture tweet 54 expressing a position with #hashtag	FAVOR
+55	Feminist Movement	Fixture tweet 55 expressing a position with #hashtag	AGAINST
+56	Climate Change is a Real Concern	Fixture tweet 56 expressing a position with #hashtag	NONE
+57	Legalization of Abortion	Fixture tweet 57 expressing a position with #hashtag	FAVOR
+58	Atheism	Fixture tweet 58 expressing a position with #hashtag	AGAINST
+59	Feminist Movement	Fixture tweet 59 expressing a position with #hashtag	NONE
+60	Climate Change is a Real Concern	Fixture tweet 60 expressing a position with #hashtag	FAVOR
+61	Legalization of Abortion	Fixture tweet 61 expressing a position with #hashtag	AGAINST
+62	Atheism	Fixture tweet 62 expressing a position with #hashtag	NONE
+63	Feminist Movement	Fixture tweet 63 expressing a position with #hashtag	FAVOR
+64	Climate Change is a Real Concern	Fixture tweet 64 expressing a position with #hashtag	AGAINST
+65	Legalization of Abortion	Fixture tweet 65 expressing a position with #hashtag	NONE
+66	Atheism	Fixture tweet 66 expressing a position with #hashtag	FAVOR
+67	Feminist Movement	Fixture tweet 67 expressing a position with #hashtag	AGAINST
+68	Climate Change is a Real Concern	Fixture tweet 68 expressing a position with #hashtag	NONE
+69	Legalization of Abortion	Fixture tweet 69 expressing a position with #hashtag	FAVOR
+70	Atheism	Fixture tweet 70 expressing a position with #hashtag	AGAINST
+71	Feminist Movement	Fixture tweet 71 expressing a position with #hashtag	NONE
+72	Climate Change is a Real Concern	Fixture tweet 72 expressing a position with #hashtag	FAVOR
+73	Legalization of Abortion	Fixture tweet 73 expressing a position with #hashtag	AGAINST
+74	Atheism	Fixture tweet 74 expressing a position with #hashtag	NONE
+75	Feminist Movement	Fixture tweet 75 expressing a position with #hashtag	FAVOR
+76	Climate Change is a Real Concern	Fixture tweet 76 expressing a position with #hashtag	AGAINST
+77	Legalization of Abortion	Fixture tweet 77 expressing a position with #hashtag	NONE
+78	Atheism	Fixture tweet 78 expressing a position with #hashtag	FAVOR
+79	Feminist Movement	Fixture tweet 79 expressing a position with #hashtag	AGAINST

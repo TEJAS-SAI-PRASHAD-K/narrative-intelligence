@@ -1,0 +1,962 @@
+[
+ {
+  "id": "u1000",
+  "username": "fixture_user_0",
+  "created_at": "2015-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 900,
+   "tweet_count": 9000,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1001",
+  "username": "fixture_user_1",
+  "created_at": "2016-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 207,
+   "following_count": 183,
+   "tweet_count": 409,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1002",
+  "username": "fixture_user_2",
+  "created_at": "2017-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 214,
+   "following_count": 186,
+   "tweet_count": 418,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1003",
+  "username": "fixture_user_3",
+  "created_at": "2018-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 915,
+   "tweet_count": 9120,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1004",
+  "username": "fixture_user_4",
+  "created_at": "2019-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 228,
+   "following_count": 192,
+   "tweet_count": 436,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1005",
+  "username": "fixture_user_5",
+  "created_at": "2020-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 235,
+   "following_count": 195,
+   "tweet_count": 445,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1006",
+  "username": "fixture_user_6",
+  "created_at": "2021-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 930,
+   "tweet_count": 9240,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1007",
+  "username": "fixture_user_7",
+  "created_at": "2022-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 249,
+   "following_count": 201,
+   "tweet_count": 463,
+   "listed_count": 7
+  }
+ },
+ {
+  "id": "u1008",
+  "username": "fixture_user_8",
+  "created_at": "2015-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 256,
+   "following_count": 204,
+   "tweet_count": 472,
+   "listed_count": 8
+  }
+ },
+ {
+  "id": "u1009",
+  "username": "fixture_user_9",
+  "created_at": "2016-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 945,
+   "tweet_count": 9360,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1010",
+  "username": "fixture_user_10",
+  "created_at": "2017-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 270,
+   "following_count": 210,
+   "tweet_count": 490,
+   "listed_count": 10
+  }
+ },
+ {
+  "id": "u1011",
+  "username": "fixture_user_11",
+  "created_at": "2018-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 277,
+   "following_count": 213,
+   "tweet_count": 499,
+   "listed_count": 11
+  }
+ },
+ {
+  "id": "u1012",
+  "username": "fixture_user_12",
+  "created_at": "2019-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 960,
+   "tweet_count": 9480,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1013",
+  "username": "fixture_user_13",
+  "created_at": "2020-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 291,
+   "following_count": 219,
+   "tweet_count": 517,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1014",
+  "username": "fixture_user_14",
+  "created_at": "2021-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 298,
+   "following_count": 222,
+   "tweet_count": 526,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1015",
+  "username": "fixture_user_15",
+  "created_at": "2022-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 975,
+   "tweet_count": 9600,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1016",
+  "username": "fixture_user_16",
+  "created_at": "2015-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 312,
+   "following_count": 228,
+   "tweet_count": 544,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1017",
+  "username": "fixture_user_17",
+  "created_at": "2016-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 319,
+   "following_count": 231,
+   "tweet_count": 553,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1018",
+  "username": "fixture_user_18",
+  "created_at": "2017-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 990,
+   "tweet_count": 9720,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1019",
+  "username": "fixture_user_19",
+  "created_at": "2018-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 333,
+   "following_count": 237,
+   "tweet_count": 571,
+   "listed_count": 7
+  }
+ },
+ {
+  "id": "u1020",
+  "username": "fixture_user_20",
+  "created_at": "2019-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 340,
+   "following_count": 240,
+   "tweet_count": 580,
+   "listed_count": 8
+  }
+ },
+ {
+  "id": "u1021",
+  "username": "fixture_user_21",
+  "created_at": "2020-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1005,
+   "tweet_count": 9840,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1022",
+  "username": "fixture_user_22",
+  "created_at": "2021-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 354,
+   "following_count": 246,
+   "tweet_count": 598,
+   "listed_count": 10
+  }
+ },
+ {
+  "id": "u1023",
+  "username": "fixture_user_23",
+  "created_at": "2022-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 361,
+   "following_count": 249,
+   "tweet_count": 607,
+   "listed_count": 11
+  }
+ },
+ {
+  "id": "u1024",
+  "username": "fixture_user_24",
+  "created_at": "2015-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1020,
+   "tweet_count": 9960,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1025",
+  "username": "fixture_user_25",
+  "created_at": "2016-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 375,
+   "following_count": 255,
+   "tweet_count": 625,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1026",
+  "username": "fixture_user_26",
+  "created_at": "2017-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 382,
+   "following_count": 258,
+   "tweet_count": 634,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1027",
+  "username": "fixture_user_27",
+  "created_at": "2018-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1035,
+   "tweet_count": 10080,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1028",
+  "username": "fixture_user_28",
+  "created_at": "2019-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 396,
+   "following_count": 264,
+   "tweet_count": 652,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1029",
+  "username": "fixture_user_29",
+  "created_at": "2020-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 403,
+   "following_count": 267,
+   "tweet_count": 661,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1030",
+  "username": "fixture_user_30",
+  "created_at": "2021-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1050,
+   "tweet_count": 10200,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1031",
+  "username": "fixture_user_31",
+  "created_at": "2022-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 417,
+   "following_count": 273,
+   "tweet_count": 679,
+   "listed_count": 7
+  }
+ },
+ {
+  "id": "u1032",
+  "username": "fixture_user_32",
+  "created_at": "2015-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 424,
+   "following_count": 276,
+   "tweet_count": 688,
+   "listed_count": 8
+  }
+ },
+ {
+  "id": "u1033",
+  "username": "fixture_user_33",
+  "created_at": "2016-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1065,
+   "tweet_count": 10320,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1034",
+  "username": "fixture_user_34",
+  "created_at": "2017-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 438,
+   "following_count": 282,
+   "tweet_count": 706,
+   "listed_count": 10
+  }
+ },
+ {
+  "id": "u1035",
+  "username": "fixture_user_35",
+  "created_at": "2018-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 445,
+   "following_count": 285,
+   "tweet_count": 715,
+   "listed_count": 11
+  }
+ },
+ {
+  "id": "u1036",
+  "username": "fixture_user_36",
+  "created_at": "2019-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1080,
+   "tweet_count": 10440,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1037",
+  "username": "fixture_user_37",
+  "created_at": "2020-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 459,
+   "following_count": 291,
+   "tweet_count": 733,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1038",
+  "username": "fixture_user_38",
+  "created_at": "2021-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 466,
+   "following_count": 294,
+   "tweet_count": 742,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1039",
+  "username": "fixture_user_39",
+  "created_at": "2022-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1095,
+   "tweet_count": 10560,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1040",
+  "username": "fixture_user_40",
+  "created_at": "2015-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 480,
+   "following_count": 300,
+   "tweet_count": 760,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1041",
+  "username": "fixture_user_41",
+  "created_at": "2016-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 487,
+   "following_count": 303,
+   "tweet_count": 769,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1042",
+  "username": "fixture_user_42",
+  "created_at": "2017-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1110,
+   "tweet_count": 10680,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1043",
+  "username": "fixture_user_43",
+  "created_at": "2018-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 501,
+   "following_count": 309,
+   "tweet_count": 787,
+   "listed_count": 7
+  }
+ },
+ {
+  "id": "u1044",
+  "username": "fixture_user_44",
+  "created_at": "2019-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 508,
+   "following_count": 312,
+   "tweet_count": 796,
+   "listed_count": 8
+  }
+ },
+ {
+  "id": "u1045",
+  "username": "fixture_user_45",
+  "created_at": "2020-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1125,
+   "tweet_count": 10800,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1046",
+  "username": "fixture_user_46",
+  "created_at": "2021-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 522,
+   "following_count": 318,
+   "tweet_count": 814,
+   "listed_count": 10
+  }
+ },
+ {
+  "id": "u1047",
+  "username": "fixture_user_47",
+  "created_at": "2022-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 529,
+   "following_count": 321,
+   "tweet_count": 823,
+   "listed_count": 11
+  }
+ },
+ {
+  "id": "u1048",
+  "username": "fixture_user_48",
+  "created_at": "2015-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1140,
+   "tweet_count": 10920,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1049",
+  "username": "fixture_user_49",
+  "created_at": "2016-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 543,
+   "following_count": 327,
+   "tweet_count": 841,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1050",
+  "username": "fixture_user_50",
+  "created_at": "2017-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 550,
+   "following_count": 330,
+   "tweet_count": 850,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1051",
+  "username": "fixture_user_51",
+  "created_at": "2018-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1155,
+   "tweet_count": 11040,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1052",
+  "username": "fixture_user_52",
+  "created_at": "2019-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 564,
+   "following_count": 336,
+   "tweet_count": 868,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1053",
+  "username": "fixture_user_53",
+  "created_at": "2020-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 571,
+   "following_count": 339,
+   "tweet_count": 877,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1054",
+  "username": "fixture_user_54",
+  "created_at": "2021-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1170,
+   "tweet_count": 11160,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1055",
+  "username": "fixture_user_55",
+  "created_at": "2022-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 585,
+   "following_count": 345,
+   "tweet_count": 895,
+   "listed_count": 7
+  }
+ },
+ {
+  "id": "u1056",
+  "username": "fixture_user_56",
+  "created_at": "2015-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 592,
+   "following_count": 348,
+   "tweet_count": 904,
+   "listed_count": 8
+  }
+ },
+ {
+  "id": "u1057",
+  "username": "fixture_user_57",
+  "created_at": "2016-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1185,
+   "tweet_count": 11280,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1058",
+  "username": "fixture_user_58",
+  "created_at": "2017-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 606,
+   "following_count": 354,
+   "tweet_count": 922,
+   "listed_count": 10
+  }
+ },
+ {
+  "id": "u1059",
+  "username": "fixture_user_59",
+  "created_at": "2018-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 613,
+   "following_count": 357,
+   "tweet_count": 931,
+   "listed_count": 11
+  }
+ },
+ {
+  "id": "u1060",
+  "username": "fixture_user_60",
+  "created_at": "2019-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1200,
+   "tweet_count": 11400,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1061",
+  "username": "fixture_user_61",
+  "created_at": "2020-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 627,
+   "following_count": 363,
+   "tweet_count": 949,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1062",
+  "username": "fixture_user_62",
+  "created_at": "2021-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 634,
+   "following_count": 366,
+   "tweet_count": 958,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1063",
+  "username": "fixture_user_63",
+  "created_at": "2022-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1215,
+   "tweet_count": 11520,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1064",
+  "username": "fixture_user_64",
+  "created_at": "2015-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 648,
+   "following_count": 372,
+   "tweet_count": 976,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1065",
+  "username": "fixture_user_65",
+  "created_at": "2016-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 655,
+   "following_count": 375,
+   "tweet_count": 985,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1066",
+  "username": "fixture_user_66",
+  "created_at": "2017-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1230,
+   "tweet_count": 11640,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1067",
+  "username": "fixture_user_67",
+  "created_at": "2018-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 669,
+   "following_count": 381,
+   "tweet_count": 1003,
+   "listed_count": 7
+  }
+ },
+ {
+  "id": "u1068",
+  "username": "fixture_user_68",
+  "created_at": "2019-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 676,
+   "following_count": 384,
+   "tweet_count": 1012,
+   "listed_count": 8
+  }
+ },
+ {
+  "id": "u1069",
+  "username": "fixture_user_69",
+  "created_at": "2020-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1245,
+   "tweet_count": 11760,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1070",
+  "username": "fixture_user_70",
+  "created_at": "2021-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 690,
+   "following_count": 390,
+   "tweet_count": 1030,
+   "listed_count": 10
+  }
+ },
+ {
+  "id": "u1071",
+  "username": "fixture_user_71",
+  "created_at": "2022-09-18T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 697,
+   "following_count": 393,
+   "tweet_count": 1039,
+   "listed_count": 11
+  }
+ },
+ {
+  "id": "u1072",
+  "username": "fixture_user_72",
+  "created_at": "2015-01-10T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1260,
+   "tweet_count": 11880,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1073",
+  "username": "fixture_user_73",
+  "created_at": "2016-02-11T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 711,
+   "following_count": 399,
+   "tweet_count": 1057,
+   "listed_count": 1
+  }
+ },
+ {
+  "id": "u1074",
+  "username": "fixture_user_74",
+  "created_at": "2017-03-12T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 718,
+   "following_count": 402,
+   "tweet_count": 1066,
+   "listed_count": 2
+  }
+ },
+ {
+  "id": "u1075",
+  "username": "fixture_user_75",
+  "created_at": "2018-04-13T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1275,
+   "tweet_count": 12000,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1076",
+  "username": "fixture_user_76",
+  "created_at": "2019-05-14T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 732,
+   "following_count": 408,
+   "tweet_count": 1084,
+   "listed_count": 4
+  }
+ },
+ {
+  "id": "u1077",
+  "username": "fixture_user_77",
+  "created_at": "2020-06-15T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 739,
+   "following_count": 411,
+   "tweet_count": 1093,
+   "listed_count": 5
+  }
+ },
+ {
+  "id": "u1078",
+  "username": "fixture_user_78",
+  "created_at": "2021-07-16T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 3,
+   "following_count": 1290,
+   "tweet_count": 12120,
+   "listed_count": 0
+  }
+ },
+ {
+  "id": "u1079",
+  "username": "fixture_user_79",
+  "created_at": "2022-08-17T00:00:00.000Z",
+  "description": "fixture account description",
+  "public_metrics": {
+   "followers_count": 753,
+   "following_count": 417,
+   "tweet_count": 1111,
+   "listed_count": 7
+  }
+ }
+]

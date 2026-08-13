@@ -1,0 +1,11 @@
+id,name,screen_name,statuses_count,followers_count,friends_count,favourites_count,listed_count,created_at,description,lang
+4000,Fixture 4000,fixture_traditional_spambots_1_4000,252000,2,37500,0,0,"Mon Jan 05 10:04:05 +0000 2010","fixture bio 4000",en
+4001,Fixture 4001,fixture_traditional_spambots_1_4001,252060,3,37509,1,0,"Mon Jan 06 11:04:05 +0000 2011","fixture bio 4001",en
+4002,Fixture 4002,fixture_traditional_spambots_1_4002,252120,4,37518,2,0,"Mon Jan 07 12:04:05 +0000 2012","fixture bio 4002",en
+4003,Fixture 4003,fixture_traditional_spambots_1_4003,252180,5,37527,3,0,"Mon Jan 08 13:04:05 +0000 2013","fixture bio 4003",en
+4004,Fixture 4004,fixture_traditional_spambots_1_4004,252240,6,37536,4,0,"Mon Jan 09 14:04:05 +0000 2014","fixture bio 4004",en
+4005,Fixture 4005,fixture_traditional_spambots_1_4005,252300,2,37545,5,0,"Mon Jan 01 15:04:05 +0000 2015","fixture bio 4005",en
+4006,Fixture 4006,fixture_traditional_spambots_1_4006,252360,3,37554,6,0,"Mon Jan 02 16:04:05 +0000 2016","fixture bio 4006",en
+4007,Fixture 4007,fixture_traditional_spambots_1_4007,252420,4,37563,7,0,"Mon Jan 03 17:04:05 +0000 2017","fixture bio 4007",en
+4008,Fixture 4008,fixture_traditional_spambots_1_4008,252480,5,37572,8,0,"Mon Jan 04 18:04:05 +0000 2010","fixture bio 4008",en
+4009,Fixture 4009,fixture_traditional_spambots_1_4009,252540,6,37581,9,0,"Mon Jan 05 19:04:05 +0000 2011","fixture bio 4009",en

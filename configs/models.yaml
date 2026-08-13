@@ -57,13 +57,18 @@ misinfo:
   weight_decay: 0.01
   # LIAR's 6-way label collapsed to binary. half-true is DROPPED, not assigned:
   # forcing it to one side manufactures label noise the metrics cannot see.
+  #
+  # Every key and value is quoted. YAML 1.1 parses bare `true`/`false` as
+  # booleans, so an unquoted `false: false` becomes the key `False` and stops
+  # matching LIAR's string label -- which silently drops a sixth of the corpus
+  # and looks like nothing at all went wrong.
   liar_label_map:
-    pants-fire: false
-    false: false
-    barely-true: false
-    "half-true": drop
-    "mostly-true": true
-    "true": true
+    "pants-fire": "false"
+    "false": "false"
+    "barely-true": "false"
+    "half-true": "drop"
+    "mostly-true": "true"
+    "true": "true"
   calibration: isotonic
   decision_threshold: 0.5
 

@@ -1,0 +1,16 @@
+id,title,content,news_url,publish_date
+0,"Fixture fake claim 0 about a treatment","Fixture fake body text 0 describing a health claim in more detail.",http://ex.example/0,2020-05-01
+1,"Fixture fake claim 1 about a treatment","Fixture fake body text 1 describing a health claim in more detail.",http://ex.example/1,2020-05-01
+2,"Fixture fake claim 2 about a treatment","Fixture fake body text 2 describing a health claim in more detail.",http://ex.example/2,2020-05-01
+3,"Fixture fake claim 3 about a treatment","Fixture fake body text 3 describing a health claim in more detail.",http://ex.example/3,2020-05-01
+4,"Fixture fake claim 4 about a treatment","Fixture fake body text 4 describing a health claim in more detail.",http://ex.example/4,2020-05-01
+5,"Fixture fake claim 5 about a treatment","Fixture fake body text 5 describing a health claim in more detail.",http://ex.example/5,2020-05-01
+6,"Fixture fake claim 6 about a treatment","Fixture fake body text 6 describing a health claim in more detail.",http://ex.example/6,2020-05-01
+7,"Fixture fake claim 7 about a treatment","Fixture fake body text 7 describing a health claim in more detail.",http://ex.example/7,2020-05-01
+8,"Fixture fake claim 8 about a treatment","Fixture fake body text 8 describing a health claim in more detail.",http://ex.example/8,2020-05-01
+9,"Fixture fake claim 9 about a treatment","Fixture fake body text 9 describing a health claim in more detail.",http://ex.example/9,2020-05-01
+10,"Fixture fake claim 10 about a treatment","Fixture fake body text 10 describing a health claim in more detail.",http://ex.example/10,2020-05-01
+11,"Fixture fake claim 11 about a treatment","Fixture fake body text 11 describing a health claim in more detail.",http://ex.example/11,2020-05-01
+12,"Fixture fake claim 12 about a treatment","Fixture fake body text 12 describing a health claim in more detail.",http://ex.example/12,2020-05-01
+13,"Fixture fake claim 13 about a treatment","Fixture fake body text 13 describing a health claim in more detail.",http://ex.example/13,2020-05-01
+14,"Fixture fake claim 14 about a treatment","Fixture fake body text 14 describing a health claim in more detail.",http://ex.example/14,2020-05-01

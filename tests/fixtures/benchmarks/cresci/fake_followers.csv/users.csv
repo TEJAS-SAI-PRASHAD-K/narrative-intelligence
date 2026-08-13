@@ -1,0 +1,15 @@
+id,name,screen_name,statuses_count,followers_count,friends_count,favourites_count,listed_count,created_at,description,lang
+5000,Fixture 5000,fixture_fake_followers_5000,312000,2,46500,0,0,"Mon Jan 06 10:04:05 +0000 2010","fixture bio 5000",en
+5001,Fixture 5001,fixture_fake_followers_5001,312060,3,46509,1,0,"Mon Jan 07 11:04:05 +0000 2011","fixture bio 5001",en
+5002,Fixture 5002,fixture_fake_followers_5002,312120,4,46518,2,0,"Mon Jan 08 12:04:05 +0000 2012","fixture bio 5002",en
+5003,Fixture 5003,fixture_fake_followers_5003,312180,5,46527,3,0,"Mon Jan 09 13:04:05 +0000 2013","fixture bio 5003",en
+5004,Fixture 5004,fixture_fake_followers_5004,312240,6,46536,4,0,"Mon Jan 01 14:04:05 +0000 2014","fixture bio 5004",en
+5005,Fixture 5005,fixture_fake_followers_5005,312300,2,46545,5,0,"Mon Jan 02 15:04:05 +0000 2015","fixture bio 5005",en
+5006,Fixture 5006,fixture_fake_followers_5006,312360,3,46554,6,0,"Mon Jan 03 16:04:05 +0000 2016","fixture bio 5006",en
+5007,Fixture 5007,fixture_fake_followers_5007,312420,4,46563,7,0,"Mon Jan 04 17:04:05 +0000 2017","fixture bio 5007",en
+5008,Fixture 5008,fixture_fake_followers_5008,312480,5,46572,8,0,"Mon Jan 05 18:04:05 +0000 2010","fixture bio 5008",en
+5009,Fixture 5009,fixture_fake_followers_5009,312540,6,46581,9,0,"Mon Jan 06 19:04:05 +0000 2011","fixture bio 5009",en
+5010,Fixture 5010,fixture_fake_followers_5010,312600,2,46590,10,0,"Mon Jan 07 10:04:05 +0000 2012","fixture bio 5010",en
+5011,Fixture 5011,fixture_fake_followers_5011,312660,3,46599,11,0,"Mon Jan 08 11:04:05 +0000 2013","fixture bio 5011",en
+5012,Fixture 5012,fixture_fake_followers_5012,312720,4,46608,12,0,"Mon Jan 09 12:04:05 +0000 2014","fixture bio 5012",en
+5013,Fixture 5013,fixture_fake_followers_5013,312780,5,46617,13,0,"Mon Jan 01 13:04:05 +0000 2015","fixture bio 5013",en

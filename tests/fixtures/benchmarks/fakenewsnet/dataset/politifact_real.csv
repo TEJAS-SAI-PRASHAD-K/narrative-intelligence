@@ -1,0 +1,26 @@
+id,news_url,title,tweet_ids
+politifact-100,http://examplenews.com/story/100,"Fixture real headline 100 about a public figure and a policy",1100	1300
+politifact-101,http://dailyfixture.org/story/101,"Fixture real headline 101 about a public figure and a policy",1111	1313
+politifact-102,http://wirefixture.net/story/102,"Fixture real headline 102 about a public figure and a policy",1122	1326
+politifact-103,http://gossipwire.example/story/103,"Fixture real headline 103 about a public figure and a policy",1133	1339
+politifact-104,http://examplenews.com/story/104,"Fixture real headline 104 about a public figure and a policy",1144	1352
+politifact-105,http://dailyfixture.org/story/105,"Fixture real headline 105 about a public figure and a policy",1155	1365
+politifact-106,http://wirefixture.net/story/106,"Fixture real headline 106 about a public figure and a policy",1166	1378
+politifact-107,http://gossipwire.example/story/107,"Fixture real headline 107 about a public figure and a policy",1177	1391
+politifact-108,http://examplenews.com/story/108,"Fixture real headline 108 about a public figure and a policy",1188	1404
+politifact-109,http://dailyfixture.org/story/109,"Fixture real headline 109 about a public figure and a policy",1199	1417
+politifact-110,http://wirefixture.net/story/110,"Fixture real headline 110 about a public figure and a policy",1210	1430
+politifact-111,http://gossipwire.example/story/111,"Fixture real headline 111 about a public figure and a policy",1221	1443
+politifact-112,http://examplenews.com/story/112,"Fixture real headline 112 about a public figure and a policy",1232	1456
+politifact-113,http://dailyfixture.org/story/113,"Fixture real headline 113 about a public figure and a policy",1243	1469
+politifact-114,http://wirefixture.net/story/114,"Fixture real headline 114 about a public figure and a policy",1254	1482
+politifact-115,http://gossipwire.example/story/115,"Fixture real headline 115 about a public figure and a policy",1265	1495
+politifact-116,http://examplenews.com/story/116,"Fixture real headline 116 about a public figure and a policy",1276	1508
+politifact-117,http://dailyfixture.org/story/117,"Fixture real headline 117 about a public figure and a policy",1287	1521
+politifact-118,http://wirefixture.net/story/118,"Fixture real headline 118 about a public figure and a policy",1298	1534
+politifact-119,http://gossipwire.example/story/119,"Fixture real headline 119 about a public figure and a policy",1309	1547
+politifact-120,http://examplenews.com/story/120,"Fixture real headline 120 about a public figure and a policy",1320	1560
+politifact-121,http://dailyfixture.org/story/121,"Fixture real headline 121 about a public figure and a policy",1331	1573
+politifact-122,http://wirefixture.net/story/122,"Fixture real headline 122 about a public figure and a policy",1342	1586
+politifact-123,http://gossipwire.example/story/123,"Fixture real headline 123 about a public figure and a policy",1353	1599
+politifact-124,http://examplenews.com/story/124,"Fixture real headline 124 about a public figure and a policy",1364	1612

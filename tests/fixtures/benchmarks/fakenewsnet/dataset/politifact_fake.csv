@@ -1,0 +1,21 @@
+id,news_url,title,tweet_ids
+politifact-0,http://examplenews.com/story/0,"Fixture fake headline 0 about a public figure and a policy",0	0
+politifact-1,http://dailyfixture.org/story/1,"Fixture fake headline 1 about a public figure and a policy",11	13
+politifact-2,http://wirefixture.net/story/2,"Fixture fake headline 2 about a public figure and a policy",22	26
+politifact-3,http://gossipwire.example/story/3,"Fixture fake headline 3 about a public figure and a policy",33	39
+politifact-4,http://examplenews.com/story/4,"Fixture fake headline 4 about a public figure and a policy",44	52
+politifact-5,http://dailyfixture.org/story/5,"Fixture fake headline 5 about a public figure and a policy",55	65
+politifact-6,http://wirefixture.net/story/6,"Fixture fake headline 6 about a public figure and a policy",66	78
+politifact-7,http://gossipwire.example/story/7,"Fixture fake headline 7 about a public figure and a policy",77	91
+politifact-8,http://examplenews.com/story/8,"Fixture fake headline 8 about a public figure and a policy",88	104
+politifact-9,http://dailyfixture.org/story/9,"Fixture fake headline 9 about a public figure and a policy",99	117
+politifact-10,http://wirefixture.net/story/10,"Fixture fake headline 10 about a public figure and a policy",110	130
+politifact-11,http://gossipwire.example/story/11,"Fixture fake headline 11 about a public figure and a policy",121	143
+politifact-12,http://examplenews.com/story/12,"Fixture fake headline 12 about a public figure and a policy",132	156
+politifact-13,http://dailyfixture.org/story/13,"Fixture fake headline 13 about a public figure and a policy",143	169
+politifact-14,http://wirefixture.net/story/14,"Fixture fake headline 14 about a public figure and a policy",154	182
+politifact-15,http://gossipwire.example/story/15,"Fixture fake headline 15 about a public figure and a policy",165	195
+politifact-16,http://examplenews.com/story/16,"Fixture fake headline 16 about a public figure and a policy",176	208
+politifact-17,http://dailyfixture.org/story/17,"Fixture fake headline 17 about a public figure and a policy",187	221
+politifact-18,http://wirefixture.net/story/18,"Fixture fake headline 18 about a public figure and a policy",198	234
+politifact-19,http://gossipwire.example/story/19,"Fixture fake headline 19 about a public figure and a policy",209	247

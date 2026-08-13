@@ -1,0 +1,21 @@
+ID	Target	Tweet	Stance
+500	Hillary Clinton	Fixture tweet 500 expressing a position with #hashtag	NONE
+501	Hillary Clinton	Fixture tweet 501 expressing a position with #hashtag	FAVOR
+502	Hillary Clinton	Fixture tweet 502 expressing a position with #hashtag	AGAINST
+503	Hillary Clinton	Fixture tweet 503 expressing a position with #hashtag	NONE
+504	Hillary Clinton	Fixture tweet 504 expressing a position with #hashtag	FAVOR
+505	Hillary Clinton	Fixture tweet 505 expressing a position with #hashtag	AGAINST
+506	Hillary Clinton	Fixture tweet 506 expressing a position with #hashtag	NONE
+507	Hillary Clinton	Fixture tweet 507 expressing a position with #hashtag	FAVOR
+508	Hillary Clinton	Fixture tweet 508 expressing a position with #hashtag	AGAINST
+509	Hillary Clinton	Fixture tweet 509 expressing a position with #hashtag	NONE
+510	Hillary Clinton	Fixture tweet 510 expressing a position with #hashtag	FAVOR
+511	Hillary Clinton	Fixture tweet 511 expressing a position with #hashtag	AGAINST
+512	Hillary Clinton	Fixture tweet 512 expressing a position with #hashtag	NONE
+513	Hillary Clinton	Fixture tweet 513 expressing a position with #hashtag	FAVOR
+514	Hillary Clinton	Fixture tweet 514 expressing a position with #hashtag	AGAINST
+515	Hillary Clinton	Fixture tweet 515 expressing a position with #hashtag	NONE
+516	Hillary Clinton	Fixture tweet 516 expressing a position with #hashtag	FAVOR
+517	Hillary Clinton	Fixture tweet 517 expressing a position with #hashtag	AGAINST
+518	Hillary Clinton	Fixture tweet 518 expressing a position with #hashtag	NONE
+519	Hillary Clinton	Fixture tweet 519 expressing a position with #hashtag	FAVOR

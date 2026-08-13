@@ -1,0 +1,16 @@
+id,title,content,news_url,publish_date
+500,"Fixture fake claim 500 about a treatment","Fixture fake body text 500 describing a health claim in more detail.",http://ex.example/500,2020-05-01
+501,"Fixture fake claim 501 about a treatment","Fixture fake body text 501 describing a health claim in more detail.",http://ex.example/501,2020-05-01
+502,"Fixture fake claim 502 about a treatment","Fixture fake body text 502 describing a health claim in more detail.",http://ex.example/502,2020-05-01
+503,"Fixture fake claim 503 about a treatment","Fixture fake body text 503 describing a health claim in more detail.",http://ex.example/503,2020-05-01
+504,"Fixture fake claim 504 about a treatment","Fixture fake body text 504 describing a health claim in more detail.",http://ex.example/504,2020-05-01
+505,"Fixture fake claim 505 about a treatment","Fixture fake body text 505 describing a health claim in more detail.",http://ex.example/505,2020-05-01
+506,"Fixture fake claim 506 about a treatment","Fixture fake body text 506 describing a health claim in more detail.",http://ex.example/506,2020-05-01
+507,"Fixture fake claim 507 about a treatment","Fixture fake body text 507 describing a health claim in more detail.",http://ex.example/507,2020-05-01
+508,"Fixture fake claim 508 about a treatment","Fixture fake body text 508 describing a health claim in more detail.",http://ex.example/508,2020-05-01
+509,"Fixture fake claim 509 about a treatment","Fixture fake body text 509 describing a health claim in more detail.",http://ex.example/509,2020-05-01
+510,"Fixture fake claim 510 about a treatment","Fixture fake body text 510 describing a health claim in more detail.",http://ex.example/510,2020-05-01
+511,"Fixture fake claim 511 about a treatment","Fixture fake body text 511 describing a health claim in more detail.",http://ex.example/511,2020-05-01
+512,"Fixture fake claim 512 about a treatment","Fixture fake body text 512 describing a health claim in more detail.",http://ex.example/512,2020-05-01
+513,"Fixture fake claim 513 about a treatment","Fixture fake body text 513 describing a health claim in more detail.",http://ex.example/513,2020-05-01
+514,"Fixture fake claim 514 about a treatment","Fixture fake body text 514 describing a health claim in more detail.",http://ex.example/514,2020-05-01

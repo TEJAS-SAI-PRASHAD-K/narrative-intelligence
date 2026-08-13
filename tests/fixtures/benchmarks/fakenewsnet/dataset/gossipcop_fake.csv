@@ -1,0 +1,23 @@
+id,news_url,title,tweet_ids
+gossipcop-200,http://examplenews.com/story/200,"Fixture fake headline 200 about a public figure and a policy",2200	2600
+gossipcop-201,http://dailyfixture.org/story/201,"Fixture fake headline 201 about a public figure and a policy",2211	2613
+gossipcop-202,http://wirefixture.net/story/202,"Fixture fake headline 202 about a public figure and a policy",2222	2626
+gossipcop-203,http://gossipwire.example/story/203,"Fixture fake headline 203 about a public figure and a policy",2233	2639
+gossipcop-204,http://examplenews.com/story/204,"Fixture fake headline 204 about a public figure and a policy",2244	2652
+gossipcop-205,http://dailyfixture.org/story/205,"Fixture fake headline 205 about a public figure and a policy",2255	2665
+gossipcop-206,http://wirefixture.net/story/206,"Fixture fake headline 206 about a public figure and a policy",2266	2678
+gossipcop-207,http://gossipwire.example/story/207,"Fixture fake headline 207 about a public figure and a policy",2277	2691
+gossipcop-208,http://examplenews.com/story/208,"Fixture fake headline 208 about a public figure and a policy",2288	2704
+gossipcop-209,http://dailyfixture.org/story/209,"Fixture fake headline 209 about a public figure and a policy",2299	2717
+gossipcop-210,http://wirefixture.net/story/210,"Fixture fake headline 210 about a public figure and a policy",2310	2730
+gossipcop-211,http://gossipwire.example/story/211,"Fixture fake headline 211 about a public figure and a policy",2321	2743
+gossipcop-212,http://examplenews.com/story/212,"Fixture fake headline 212 about a public figure and a policy",2332	2756
+gossipcop-213,http://dailyfixture.org/story/213,"Fixture fake headline 213 about a public figure and a policy",2343	2769
+gossipcop-214,http://wirefixture.net/story/214,"Fixture fake headline 214 about a public figure and a policy",2354	2782
+gossipcop-215,http://gossipwire.example/story/215,"Fixture fake headline 215 about a public figure and a policy",2365	2795
+gossipcop-216,http://examplenews.com/story/216,"Fixture fake headline 216 about a public figure and a policy",2376	2808
+gossipcop-217,http://dailyfixture.org/story/217,"Fixture fake headline 217 about a public figure and a policy",2387	2821
+gossipcop-218,http://wirefixture.net/story/218,"Fixture fake headline 218 about a public figure and a policy",2398	2834
+gossipcop-219,http://gossipwire.example/story/219,"Fixture fake headline 219 about a public figure and a policy",2409	2847
+gossipcop-220,http://examplenews.com/story/220,"Fixture fake headline 220 about a public figure and a policy",2420	2860
+gossipcop-221,http://dailyfixture.org/story/221,"Fixture fake headline 221 about a public figure and a policy",2431	2873
