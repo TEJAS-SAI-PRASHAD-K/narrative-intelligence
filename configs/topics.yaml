@@ -25,9 +25,15 @@ topics:
       - outbreak
       - measles
       - "public health"
-    # GDELT DOC 2.0 accepts quoted phrases and OR/AND; keep queries short --
-    # long boolean strings silently return nothing rather than erroring.
-    gdelt_query: '("vaccine" OR "vaccination" OR "mRNA vaccine") (misinformation OR claim OR debunked)'
+    # GDELT DOC 2.0: a LIST OF EXACT PHRASES, OR-joined by the client into
+    # ("a" OR "b"). Verified against the live API: a hand-written boolean
+    # string is quoted as a single phrase and rejected with "phrase search
+    # that was too short or too long". Two-to-five word phrases work best.
+    gdelt_keywords:
+      - vaccine misinformation
+      - vaccine claim
+      - vaccine debunked
+      - mRNA vaccine claim
     hashtags: [vaccine, vaccines, publichealth, mrna, cdc]
     youtube_queries:
       - vaccine misinformation debunked
@@ -42,7 +48,11 @@ topics:
       - mail-in
       - recount
       - "voting machine"
-    gdelt_query: '("election fraud" OR "voter fraud" OR "ballot" ) (claim OR debunked OR misinformation)'
+    gdelt_keywords:
+      - election fraud claim
+      - voter fraud claim
+      - ballot fraud
+      - election misinformation
     hashtags: [election, voterfraud, ballots, electionintegrity]
     youtube_queries:
       - election fraud claims fact check
@@ -56,7 +66,10 @@ topics:
       - IPCC
       - "net zero"
       - emissions
-    gdelt_query: '("climate change" OR "global warming") (hoax OR misinformation OR debunked)'
+    gdelt_keywords:
+      - climate change hoax
+      - climate misinformation
+      - global warming hoax
     hashtags: [climate, climatechange, globalwarming]
     youtube_queries:
       - climate change claims fact check

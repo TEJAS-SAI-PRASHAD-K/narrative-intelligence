@@ -80,14 +80,18 @@ gdelt:
 
 news_rss:
   # RSS/Atom is the reliable path and needs no credentials.
+  # Verified live 2026-08-13. Two feeds from the original list were removed
+  # because they are dead, not because they were unwanted:
+  #   feeds.reuters.com  -> NXDOMAIN (Reuters retired public RSS)
+  #   apnews.com/index.rss -> 200 but zero entries
+  # The adapter warns and continues on both, so a feed dying does not break a
+  # run; this list is just kept honest.
   feeds:
     - https://feeds.bbci.co.uk/news/world/rss.xml
     - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
     - https://www.theguardian.com/world/rss
     - https://feeds.npr.org/1004/rss.xml
-    - https://apnews.com/index.rss
     - https://www.aljazeera.com/xml/rss/all.xml
-    - https://feeds.reuters.com/reuters/topNews
     - https://www.factcheck.org/feed/
     - https://www.snopes.com/feed/
     - https://fullfact.org/feed/all/
@@ -95,6 +99,10 @@ news_rss:
   # publicly. Concurrency capped, robots.txt honoured, descriptive UA sent.
   fulltext:
     enabled: true
+    # Stop trying a host after this many consecutive extraction failures.
+    # Paywalled outlets (e.g. nytimes.com) 403 every single article, and
+    # hammering them is both rude and pointless.
+    max_consecutive_failures_per_domain: 3
     max_articles: 60
     max_concurrency: 2
     request_delay_seconds: 1.0

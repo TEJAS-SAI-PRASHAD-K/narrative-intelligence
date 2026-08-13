@@ -161,8 +161,19 @@ class GdeltSource(BaseSource):
         end = datetime.now(timezone.utc).date()
         start = end - timedelta(days=lookback)
 
+        # GDELT throttles the DOC API hard and answers with an explicit rate
+        # limit error rather than a 429, so pace ourselves rather than retry.
+        from ingest.ratelimit import TokenBucket
+
+        bucket = TokenBucket(rate_per_sec=float(config.get("queries_per_second", 0.2)), burst=1)
+
         for topic in topics_config().get("topics", []):
-            query = topic.get("gdelt_query") or " OR ".join(topic.get("keywords", []))
+            # `keyword` means *exact phrase* in gdeltdoc; a list is OR-joined
+            # into ("a" OR "b"). Passing a hand-built boolean string instead
+            # gets the whole thing quoted as one phrase, and the API rejects it
+            # with "phrase search that was too short or too long". Verified
+            # against the live API, not the docs.
+            query = topic.get("gdelt_keywords") or topic.get("keywords", [])
             if not query:
                 continue
             cursor_key = f"doc.{topic.get('id')}.{end.isoformat()}"
@@ -170,18 +181,27 @@ class GdeltSource(BaseSource):
                 self.log.info("skipping %s: already fetched today", cursor_key)
                 continue
             filters = Filters(
-                keyword=query,
+                keyword=list(query),
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
                 num_records=max_records,
                 language=config.get("languages", ["English"]),
             )
+            bucket.acquire()
             try:
                 articles = client.article_search(filters)
             except Exception as exc:
-                # A malformed boolean query returns junk rather than erroring;
-                # a network failure should not kill the other topics.
-                self.log.warning("DOC query for %s failed: %s", topic.get("id"), exc)
+                # An invalid query or a throttle must not kill the other topics.
+                # The exception carries no message for some error classes, so
+                # log the type too or the line reads as "failed: " and tells
+                # you nothing at 2am.
+                self.log.warning(
+                    "DOC query for %s failed: %s: %s",
+                    topic.get("id"),
+                    type(exc).__name__,
+                    exc or "(no message from the API)",
+                )
+                self.note("doc_query_failed", f"{topic.get('id')}: {type(exc).__name__}")
                 continue
             if articles is None or getattr(articles, "empty", True):
                 self.log.info("DOC query for %s returned nothing", topic.get("id"))
@@ -197,7 +217,11 @@ class GdeltSource(BaseSource):
                 cursor_key,
                 url="https://api.gdeltproject.org/api/v2/doc/doc",
                 rows=len(rows),
-                extra={"query": query, "start": start.isoformat(), "end": end.isoformat()},
+                extra={
+                    "query": list(query),
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                },
             )
 
     # --- raw 15-minute drops ---------------------------------------------
@@ -225,12 +249,39 @@ class GdeltSource(BaseSource):
             local = self.settings.raw_dir_for(self.name) / url.rsplit("/", 1)[-1]
             try:
                 response = http.get(url)
-                local.write_bytes(response.content)
             except Exception as exc:
                 self.log.warning("download failed for %s: %s", url, exc)
                 continue
 
-            rows = list(_read_zipped_csv(local, GKG_COLUMNS if kind == "gkg" else MENTIONS_COLUMNS))
+            # Observed live (2026-08): lastupdate.txt lists the gkg file, but
+            # requesting it returns 404 while export/mentions return 200. A
+            # listed file is therefore not a guaranteed-present file. Never
+            # leave a truncated artifact on disk -- a 0-byte file would be
+            # "reused" on the next run and fail identically forever.
+            if response.status_code != 200 or not response.content:
+                self.note("raw_file_unavailable", f"{url} -> {response.status_code}")
+                self.log.warning(
+                    "%s listed in lastupdate.txt but not downloadable (status %s); skipping",
+                    url,
+                    response.status_code,
+                )
+                continue
+            if not response.content.startswith(b"PK"):
+                self.note("raw_file_not_a_zip", url)
+                self.log.warning("%s is not a zip archive; skipping", url)
+                continue
+            local.write_bytes(response.content)
+
+            try:
+                rows = list(
+                    _read_zipped_csv(local, GKG_COLUMNS if kind == "gkg" else MENTIONS_COLUMNS)
+                )
+            except SourceUnavailable as exc:
+                # A corrupt drop is a bad file, not a broken pipeline.
+                self.note("raw_file_unreadable", str(exc))
+                self.log.warning("%s", exc)
+                local.unlink(missing_ok=True)
+                continue
             rows = rows[:max_rows]
             self.record_manifest(
                 local.name, path=local, url=url, rows=len(rows), extra={"kind": kind}

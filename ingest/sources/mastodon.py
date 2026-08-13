@@ -100,7 +100,20 @@ class MastodonSource(BaseSource):
         for page in range(pages):
             statuses = call(max_id)
             if not statuses:
-                self.log.info("%s: no more statuses after page %d", cursor_key, page)
+                if page == 0:
+                    # Observed live on mastodon.social: the federated public
+                    # timeline returns nothing for a plain read token, while
+                    # hashtag timelines work normally. Not an error, but it
+                    # silently changes what the corpus covers, so say so.
+                    self.log.warning(
+                        "%s returned nothing on the first page. If this is the public "
+                        "timeline, the instance likely restricts it for this auth "
+                        "context; hashtag timelines are unaffected.",
+                        cursor_key,
+                    )
+                    self.note("timeline_empty", cursor_key)
+                else:
+                    self.log.info("%s: no more statuses after page %d", cursor_key, page)
                 break
             for status in statuses:
                 yield self._jsonable(status) | {"_timeline": cursor_key}

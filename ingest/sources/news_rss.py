@@ -45,6 +45,9 @@ class NewsRssSource(BaseSource):
         super().__init__(*args, **kwargs)
         self._robots: dict[str, RobotFileParser | None] = {}
         self._fulltext_budget = 0
+        # Consecutive extraction failures per host. Paywalled outlets 403 every
+        # article, and retrying each one is both rude and pointless.
+        self._fulltext_failures: dict[str, int] = {}
 
     # --- fetch -----------------------------------------------------------
     def fetch(self) -> Iterator[dict]:
@@ -248,6 +251,12 @@ class NewsRssSource(BaseSource):
             self._fulltext_budget = 0
             return None
 
+        domain = resolve_domain(url) or "unknown"
+        limit = int(config.get("max_consecutive_failures_per_domain", 3))
+        if self._fulltext_failures.get(domain, 0) >= limit:
+            self.note("fulltext_domain_gave_up", domain)
+            return None
+
         if not self._robots_allows(url):
             self.note("robots_disallowed", url)
             return None
@@ -257,16 +266,34 @@ class NewsRssSource(BaseSource):
         try:
             downloaded = trafilatura.fetch_url(url)
             if not downloaded:
-                self.note("fulltext_fetch_failed", url)
+                self._note_fulltext_failure(domain, "fulltext_fetch_failed", url)
                 return None
             text = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
         except Exception as exc:
-            self.note("fulltext_error", f"{url}: {exc}")
+            self._note_fulltext_failure(domain, "fulltext_error", f"{url}: {exc}")
             return None
         if not text:
-            self.note("fulltext_empty", url)
+            self._note_fulltext_failure(domain, "fulltext_empty", url)
             return None
+        self._fulltext_failures[domain] = 0
         return text
+
+    def _note_fulltext_failure(self, domain: str, code: str, detail: str) -> None:
+        self.note(code, detail)
+        count = self._fulltext_failures.get(domain, 0) + 1
+        self._fulltext_failures[domain] = count
+        if count == int(
+            sources_config()
+            .get(self.name, {})
+            .get("fulltext", {})
+            .get("max_consecutive_failures_per_domain", 3)
+        ):
+            self.log.info(
+                "%s failed full-text extraction %d times in a row (paywall or bot wall); "
+                "keeping title+summary for the rest of this run",
+                domain,
+                count,
+            )
 
     def _robots_allows(self, url: str) -> bool:
         """Honour robots.txt per host, fetched once and cached for the run."""
