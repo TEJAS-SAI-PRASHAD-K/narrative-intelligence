@@ -81,12 +81,31 @@ class YouTubeSource(BaseSource):
             return
 
         videos = list(self._hydrate(client, video_ids, config.get("hydration", {})))
+        if videos:
+            path = self.save_raw_payload("videos", videos)
+            self.record_manifest(
+                "videos",
+                path=path,
+                url="https://www.googleapis.com/youtube/v3/videos",
+                rows=len(videos),
+            )
         yield from videos
 
         comments_config = config.get("comments", {})
         if comments_config.get("enabled", True):
+            harvested: list[dict] = []
             for video in videos[: int(comments_config.get("max_videos", 50))]:
-                yield from self._comments(client, video["id"], comments_config)
+                for comment in self._comments(client, video["id"], comments_config):
+                    harvested.append(comment)
+                    yield comment
+            if harvested:
+                path = self.save_raw_payload("comments", harvested)
+                self.record_manifest(
+                    "comments",
+                    path=path,
+                    url="https://www.googleapis.com/youtube/v3/commentThreads",
+                    rows=len(harvested),
+                )
 
     def _discover(self, client: Any, config: dict) -> list[str]:
         """search.list at 100 units a call, capped by config *and* by .env.

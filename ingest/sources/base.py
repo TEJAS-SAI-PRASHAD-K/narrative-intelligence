@@ -18,6 +18,8 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -252,6 +254,31 @@ class BaseSource(ABC):
     # --- helpers for adapters -------------------------------------------
     def record_manifest(self, key: str, **kwargs: Any) -> None:
         self.store.manifest.record_artifact(f"{self.name}:{key}", **kwargs)
+
+    def save_raw_payload(self, name: str, rows: Any, *, suffix: str = ".jsonl") -> Path | None:
+        """Persist exactly what the API returned, so the manifest can checksum it.
+
+        Reproducibility is a checksum over bytes that exist. An API response
+        that is parsed and thrown away leaves a manifest entry with no hash,
+        which proves nothing about what the corpus was built from.
+        """
+        import json
+
+        directory = self.settings.raw_dir_for(self.name)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in name)[:80]
+        path = directory / f"{safe}-{stamp}{suffix}"
+        try:
+            if isinstance(rows, (bytes, bytearray)):
+                path.write_bytes(rows)
+            else:
+                with path.open("w", encoding="utf-8") as fh:
+                    for row in rows:
+                        fh.write(json.dumps(row, default=str, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            self.log.warning("could not archive raw payload %s: %s", path, exc)
+            return None
+        return path
 
     def http(self, rate_per_sec: float | None = None):
         from ingest.ratelimit import RateLimitedSession

@@ -87,7 +87,10 @@ class NewsRssSource(BaseSource):
                     **{k: _jsonable(v) for k, v in entry.items()},
                 }
             self.checkpoint.set(f"last_seen.{feed_url}", datetime.now(timezone.utc).isoformat())
-            self.record_manifest(_feed_key(feed_url), url=feed_url, rows=len(entries))
+            archived = self.save_raw_payload(_feed_key(feed_url), response.content, suffix=".xml")
+            self.record_manifest(
+                _feed_key(feed_url), path=archived, url=feed_url, rows=len(entries)
+            )
 
     def _fetch_newsapi(self, config: dict) -> Iterator[dict]:
         if not config.get("enabled", True):
@@ -128,6 +131,13 @@ class NewsRssSource(BaseSource):
                     self.log.warning("newsapi error: %s", payload.get("message"))
                     break
                 articles = payload.get("articles", [])
+                archived = self.save_raw_payload(f"newsapi-{topic.get('id')}-p{page}", articles)
+                self.record_manifest(
+                    f"newsapi:{topic.get('id')}:p{page}",
+                    path=archived,
+                    url=NEWSAPI_URL,
+                    rows=len(articles),
+                )
                 for article in articles:
                     yield {"_kind": "newsapi", "_topic": topic.get("id"), **article}
                 if len(articles) < page_size:

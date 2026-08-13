@@ -29,6 +29,7 @@ import re
 import zipfile
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from itertools import islice
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -218,8 +219,10 @@ class GdeltSource(BaseSource):
             for row in rows:
                 yield {"_kind": "doc", "_topic": topic.get("id"), **row}
             self.checkpoint.mark_done(cursor_key)
+            archived = self.save_raw_payload(cursor_key, rows)
             self.record_manifest(
                 cursor_key,
+                path=archived,
                 url="https://api.gdeltproject.org/api/v2/doc/doc",
                 rows=len(rows),
                 extra={
@@ -297,8 +300,15 @@ class GdeltSource(BaseSource):
             local.write_bytes(response.content)
 
             try:
+                # islice, not list(...)[:n]: a busy GKG drop is hundreds of
+                # thousands of rows with multi-hundred-KB fields, and
+                # materializing all of them to keep the first 5,000 is a
+                # gigabyte of pointless allocation.
                 rows = list(
-                    _read_zipped_csv(local, GKG_COLUMNS if kind == "gkg" else MENTIONS_COLUMNS)
+                    islice(
+                        _read_zipped_csv(local, GKG_COLUMNS if kind == "gkg" else MENTIONS_COLUMNS),
+                        max_rows,
+                    )
                 )
             except SourceUnavailable as exc:
                 # A corrupt drop is a bad file, not a broken pipeline.
@@ -306,7 +316,6 @@ class GdeltSource(BaseSource):
                 self.log.warning("%s", exc)
                 local.unlink(missing_ok=True)
                 continue
-            rows = rows[:max_rows]
             self.record_manifest(
                 local.name, path=local, url=url, rows=len(rows), extra={"kind": kind}
             )
@@ -480,8 +489,15 @@ def _file_kind(url: str) -> str:
     return "unknown"
 
 
+#: GKG's GCAM and V2Themes fields run to hundreds of kilobytes on a busy drop,
+#: far past the csv module's 128KB default. Without this the parse dies with
+#: "field larger than field limit" on perfectly valid data.
+CSV_FIELD_LIMIT = 10 * 1024 * 1024
+
+
 def _read_zipped_csv(path, columns: list[str]) -> Iterator[dict]:
     """Stream a zipped, headerless, tab-separated GDELT file into dicts."""
+    csv.field_size_limit(CSV_FIELD_LIMIT)
     try:
         with zipfile.ZipFile(path) as archive:
             name = archive.namelist()[0]
@@ -493,7 +509,10 @@ def _read_zipped_csv(path, columns: list[str]) -> Iterator[dict]:
                     # Pad/truncate: GDELT occasionally ships a short trailing row.
                     padded = (row + [""] * len(columns))[: len(columns)]
                     yield dict(zip(columns, padded, strict=False))
-    except (zipfile.BadZipFile, IndexError, OSError) as exc:
+    except (zipfile.BadZipFile, IndexError, OSError, csv.Error, UnicodeDecodeError) as exc:
+        # csv.Error belongs here too: it is raised mid-iteration on a malformed
+        # row, and letting it escape the generator would fail the whole run
+        # over one bad drop.
         raise SourceUnavailable(f"could not read GDELT archive {path}: {exc}") from exc
 
 

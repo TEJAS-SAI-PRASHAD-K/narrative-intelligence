@@ -97,6 +97,7 @@ class MastodonSource(BaseSource):
         it was in the middle of rather than restarting the whole backfill.
         """
         max_id = self.checkpoint.get(f"max_id.{cursor_key}")
+        archive: list[dict] = []
         for page in range(pages):
             statuses = call(max_id)
             if not statuses:
@@ -116,10 +117,21 @@ class MastodonSource(BaseSource):
                     self.log.info("%s: no more statuses after page %d", cursor_key, page)
                 break
             for status in statuses:
-                yield self._jsonable(status) | {"_timeline": cursor_key}
+                payload = self._jsonable(status) | {"_timeline": cursor_key}
+                archive.append(payload)
+                yield payload
             max_id = statuses[-1]["id"]
             self.checkpoint.set(f"max_id.{cursor_key}", str(max_id))
             self.log.debug("%s: page %d done, max_id=%s", cursor_key, page + 1, max_id)
+
+        if archive:
+            path = self.save_raw_payload(cursor_key, archive)
+            self.record_manifest(
+                cursor_key,
+                path=path,
+                url=f"{self.settings.mastodon_api_base_url} ({cursor_key})",
+                rows=len(archive),
+            )
 
     def stream(self, minutes: float = 2.0) -> Iterator[dict]:
         """Bounded live tail of the public stream.

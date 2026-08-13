@@ -60,6 +60,17 @@ class RedditKaggleSource(BaseSource):
     source = "reddit"
     requires_package = None  # the kaggle CLI is only needed to *download*
 
+    def preflight(self) -> None:
+        """Kaggle credentials are needed to *download*, not to read a local dump.
+
+        The Academic Torrents path hands us an already-downloaded directory via
+        ``--path``. Gating that behind a Kaggle key would make the documented
+        bulk-import workflow impossible on a machine with no Kaggle account.
+        """
+        if self.options.get("path"):
+            return
+        super().preflight()
+
     # --- fetch -----------------------------------------------------------
     def fetch(self) -> Iterator[dict]:
         config = sources_config().get(self.name, {})

@@ -587,6 +587,39 @@ class TestRedditKaggleMapping:
         assert raw["dataset"] == "example-owner/reddit-posts"
         assert raw["columns"]["subreddit"] == "conspiracy"
 
+    def test_local_path_does_not_require_kaggle_credentials(self, settings, store, tmp_path):
+        # The Academic Torrents workflow is "point at an already-downloaded
+        # directory". Gating it behind a Kaggle key makes that impossible on a
+        # machine with no Kaggle account.
+        from ingest.sources.reddit_kaggle import RedditKaggleSource
+
+        dump = tmp_path / "dump"
+        dump.mkdir()
+        (dump / "posts.csv").write_text(
+            "id,title,author,created_utc\nk1,A local post about a claim,someone,1714564800\n",
+            encoding="utf-8",
+        )
+        spec = {
+            "slug": "local-dump",
+            "timestamp_format": "epoch",
+            "column_map": {
+                "native_id": "id",
+                "title": "title",
+                "author": "author",
+                "timestamp": "created_utc",
+            },
+        }
+        source = RedditKaggleSource(settings=settings, store=store, path=str(dump), spec=spec)
+        source.preflight()  # must not raise
+        result = source.run()
+        assert result.ok and result.written == 1
+
+    def test_download_path_still_requires_credentials(self, kaggle):
+        from ingest.sources.base import SourceUnavailable
+
+        with pytest.raises(SourceUnavailable, match="credentials absent"):
+            kaggle.preflight()
+
     def test_no_configured_datasets_warns_and_yields_nothing(self, kaggle):
         assert list(kaggle.fetch()) == []
 
@@ -664,3 +697,45 @@ class TestGdeltQueryConstruction:
             ).query_string
             # Never a parenthesized single term: that is the rejected form.
             assert "(sourcelang:English)" not in query
+
+
+class TestGdeltArchiveReading:
+    """GKG fields are enormous and GDELT drops are occasionally malformed."""
+
+    def _zip(self, tmp_path, rows: list[list[str]]):
+        import zipfile
+
+        path = tmp_path / "20240501120000.gkg.csv.zip"
+        body = "\n".join("\t".join(cell for cell in row) for row in rows)
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("20240501120000.gkg.csv", body)
+        return path
+
+    def test_huge_field_does_not_blow_the_csv_limit(self, tmp_path):
+        # GCAM/V2Themes run to hundreds of KB; the csv default is 128KB.
+        from ingest.sources.gdelt import GKG_COLUMNS, _read_zipped_csv
+
+        row = [""] * len(GKG_COLUMNS)
+        row[0] = "20240501120000-1"
+        row[1] = "20240501120000"
+        row[4] = "https://example-news.com/story"
+        row[17] = "x" * 300_000  # GCAM
+        rows = list(_read_zipped_csv(self._zip(tmp_path, [row]), GKG_COLUMNS))
+        assert len(rows) == 1
+        assert len(rows[0]["GCAM"]) == 300_000
+
+    def test_short_rows_are_padded_not_dropped(self, tmp_path):
+        from ingest.sources.gdelt import GKG_COLUMNS, _read_zipped_csv
+
+        rows = list(_read_zipped_csv(self._zip(tmp_path, [["id1", "20240501120000"]]), GKG_COLUMNS))
+        assert rows[0]["GKGRECORDID"] == "id1"
+        assert rows[0]["Extras"] == ""
+
+    def test_corrupt_archive_raises_source_unavailable_not_a_raw_error(self, tmp_path):
+        from ingest.sources.base import SourceUnavailable
+        from ingest.sources.gdelt import GKG_COLUMNS, _read_zipped_csv
+
+        bad = tmp_path / "broken.zip"
+        bad.write_bytes(b"not a zip at all")
+        with pytest.raises(SourceUnavailable, match="could not read GDELT archive"):
+            list(_read_zipped_csv(bad, GKG_COLUMNS))

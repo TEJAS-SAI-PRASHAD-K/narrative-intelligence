@@ -18,13 +18,28 @@ from pathlib import Path
 NOTEBOOK = Path(__file__).resolve().parent / "01_corpus_eda.ipynb"
 
 
+_COUNTER = iter(range(1, 1000))
+
+
+def _cell_id(kind: str) -> str:
+    # Stable, deterministic ids: nbformat >=4.5 requires them, and random ones
+    # would churn the diff on every regeneration.
+    return f"{kind}-{next(_COUNTER):02d}"
+
+
 def md(text: str) -> dict:
-    return {"cell_type": "markdown", "metadata": {}, "source": text.strip().splitlines(keepends=True)}
+    return {
+        "cell_type": "markdown",
+        "id": _cell_id("md"),
+        "metadata": {},
+        "source": text.strip().splitlines(keepends=True),
+    }
 
 
 def code(text: str) -> dict:
     return {
         "cell_type": "code",
+        "id": _cell_id("code"),
         "execution_count": None,
         "metadata": {},
         "outputs": [],
@@ -117,7 +132,8 @@ coverage = (
     .sort_values("records", ascending=False)
 )
 coverage["span_days"] = (coverage["last"] - coverage["first"]).dt.total_seconds() / 86400
-coverage.round(1)
+# Round only the numeric columns; .round() on a frame holding datetimes warns.
+coverage.style.format({"median_chars": "{:.0f}", "span_days": "{:.1f}"})
 """),
     code("""
 fig, ax = plt.subplots(figsize=(11, 4.5))
