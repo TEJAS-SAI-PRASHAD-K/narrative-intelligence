@@ -136,6 +136,83 @@ def test_rerunning_with_unchanged_input_writes_zero_rows(store):
     assert second == {"written": 0, "updated": 0, "unchanged": 3}
 
 
+def test_arrow_round_trip_representations_hash_identically(store):
+    """The three ways Arrow changes a value's representation without changing
+    its meaning. Each one, left alone, made every row look "updated" on every
+    rerun -- an idempotency guarantee that was nominal rather than real."""
+    from modeling.io import _row_content_hash
+
+    volatile = ("scored_at", "generated_at")
+
+    # A nullable int64 column comes back from pandas as float64.
+    assert _row_content_hash({"community_size": 5}, volatile) == _row_content_hash(
+        {"community_size": 5.0}, volatile
+    )
+    # An empty map comes back as a list of pairs, i.e. [].
+    assert _row_content_hash({"model_versions": {}}, volatile) == _row_content_hash(
+        {"model_versions": []}, volatile
+    )
+    # A float64 computation and its float32 storage differ in the low bits.
+    import numpy as np
+
+    assert _row_content_hash({"toxicity": 0.000642}, volatile) == _row_content_hash(
+        {"toxicity": float(np.float32(0.000642))}, volatile
+    )
+    # And a genuine change still registers as one.
+    assert _row_content_hash({"toxicity": 0.1}, volatile) != _row_content_hash(
+        {"toxicity": 0.2}, volatile
+    )
+
+
+def test_merge_is_column_wise_so_stages_do_not_blank_each_other(store):
+    """The aux pass writes toxicity; the misinfo stage writes misinfo_prob. A
+    row-wise merge lets whichever ran last null every column it does not know
+    about."""
+    ids = ["reddit:a"]
+    store.write("record_scores", make_record_scores(ids), known_keys=set(ids))
+
+    later = pd.DataFrame(
+        [
+            {
+                "record_id": "reddit:a",
+                "source": "reddit",
+                "misinfo_prob": 0.42,
+                "model_versions": {"misinfo": "v0.1.0"},
+                "scored_at": datetime.now(timezone.utc),
+            }
+        ]
+    )
+    store.write("record_scores", later, known_keys=set(ids))
+
+    back = store.read("record_scores").iloc[0]
+    assert back["misinfo_prob"] == pytest.approx(0.42)
+    assert back["toxicity"] == pytest.approx(0.1), "the aux score was blanked"
+    # model_versions is a union: the row is current for both scorers.
+    assert _as_version_dict(back["model_versions"]) == {
+        "toxicity": "v0.1.0",
+        "misinfo": "v0.1.0",
+    }
+
+
+def test_replace_mode_still_reports_unchanged_rows(store):
+    """`merge=False` drops rows the caller did not supply -- a narrative that no
+    longer exists must disappear -- but it must still compare the rows it did
+    supply, or every replace-mode rerun rewrites its whole table."""
+    ids = ["reddit:a", "reddit:b"]
+    store.write("record_scores", make_record_scores(ids), known_keys=set(ids))
+    again = store.write("record_scores", make_record_scores(ids), known_keys=set(ids), merge=False)
+    assert again == {"written": 0, "updated": 0, "unchanged": 2}
+
+
+def test_replace_mode_drops_rows_no_longer_produced(store):
+    ids = ["reddit:a", "reddit:b"]
+    store.write("record_scores", make_record_scores(ids), known_keys=set(ids))
+    store.write(
+        "record_scores", make_record_scores(["reddit:a"]), known_keys=set(ids), merge=False
+    )
+    assert set(store.read("record_scores")["record_id"]) == {"reddit:a"}
+
+
 def test_a_changed_score_is_an_update_not_a_duplicate(store):
     ids = ["reddit:a"]
     store.write("record_scores", make_record_scores(ids), known_keys=set(ids))

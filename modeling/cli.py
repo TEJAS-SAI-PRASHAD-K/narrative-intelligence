@@ -320,6 +320,80 @@ def ablate(
     console.print(result.render())
 
 
+@app.command(name="sample-for-labelling")
+def sample_for_labelling(
+    what: str = typer.Argument(..., help="misinfo | narratives"),
+    n: int = typer.Option(100, help="How many rows to sample."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Write a blank-label CSV for hand-labelling.
+
+    This is how the two most informative tables in the whole report get
+    produced, and neither can be automated:
+
+    * ``misinfo`` — 100 real corpus records. Scoring them measures the
+      benchmark-to-corpus transfer gap, which is the only number that describes
+      production behaviour.
+    * ``narratives`` — narrative-level risk labels, which the ablation table
+      needs before its quality columns mean anything.
+    """
+    _bootstrap(verbose)
+
+    from modeling.io import CorpusReader, ScoredStore
+
+    settings = get_settings()
+    target_dir = settings.artifacts_dir / "hand_labels"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if what == "misinfo":
+        records = CorpusReader(settings).records(columns=["id", "source", "text", "lang"])
+        if not len(records):
+            console.print("[red]no corpus on disk[/]")
+            raise typer.Exit(code=1)
+        # Stratified by source so the sample is not all Reddit: the transfer gap
+        # is a per-platform question, and a single-source sample cannot see it.
+        per_source = max(1, n // records["source"].nunique())
+        sample = (
+            records.groupby("source", group_keys=False)
+            .apply(lambda g: g.sample(min(len(g), per_source), random_state=settings.seed))
+            .head(n)
+        )
+        scores = ScoredStore(settings).read("record_scores")
+        if len(scores) and "misinfo_prob" in scores.columns:
+            sample = sample.merge(
+                scores[["record_id", "misinfo_prob"]].rename(
+                    columns={"misinfo_prob": "score"}
+                ),
+                left_on="id",
+                right_on="record_id",
+                how="left",
+            )
+        sample["label"] = ""  # 1 = misinformation-like, 0 = not
+        path = target_dir / "misinfo_corpus_sample.csv"
+        columns = [c for c in ("id", "source", "lang", "text", "score", "label") if c in sample]
+        sample[columns].to_csv(path, index=False)
+    elif what == "narratives":
+        narratives = ScoredStore(settings).read("narratives")
+        if not len(narratives):
+            console.print("[red]no narratives on disk; run `modeling score cluster` first[/]")
+            raise typer.Exit(code=1)
+        sample = narratives.nlargest(min(n, len(narratives)), "size")[
+            ["narrative_id", "label", "size", "author_count", "coherence"]
+        ].rename(columns={"label": "narrative_label"})
+        sample["risk"] = ""  # 0-1, your judgement of how concerning this narrative is
+        path = target_dir / "narratives.csv"
+        sample.to_csv(path, index=False)
+    else:
+        raise typer.BadParameter("what must be 'misinfo' or 'narratives'")
+
+    console.print(f"wrote {path}")
+    console.print(
+        "[yellow]Fill in the blank column by hand[/], then rerun "
+        f"`modeling {'evaluate misinfo' if what == 'misinfo' else 'ablate'}`. "
+        "Until it is filled in, the corresponding table reports the gap as unmeasured."
+    )
+
+
 @app.command(name="model-version")
 def model_version_command(module: str = typer.Argument(...)) -> None:
     """The version string this module stamps into every scored row."""

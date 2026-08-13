@@ -36,15 +36,44 @@ stats: ## Per-source summary table of the corpus on disk
 benchmarks: ## Download LIAR / FakeNewsNet / CoAID for Phase 2 (not used in Phase 1)
 	$(BIN)/python scripts/download_benchmarks.py
 
+# --- Phase 2: modeling & scoring -------------------------------------------
+setup-modeling: ## Install the Phase 2 dependencies
+	$(BIN)/pip install -e ".[modeling]"
+
+warm-cache: ## Pre-download the auxiliary models so scoring runs work offline
+	$(BIN)/python -m modeling.cli warm-cache
+
+score: ## Score the corpus into data/scored/ (resumable, idempotent)
+	$(BIN)/python -m modeling.cli score --all
+
+score-demo: ## Score the committed fixtures: no network, no benchmarks, ~12s
+	$(BIN)/python -m modeling.cli score --all --demo
+
+train-misinfo: ## Train the misinformation classifier (needs a benchmark on disk)
+	$(BIN)/python -m modeling.cli train misinfo
+
+eval-report: ## Regenerate artifacts/eval/** from saved predictions, no retraining
+	$(BIN)/python -m modeling.cli report
+
+ablate: ## The module-ablation table
+	$(BIN)/python -m modeling.cli ablate
+
+notebooks: ## Regenerate the notebook skeletons from their build scripts
+	$(BIN)/python notebooks/build_eda_notebook.py
+	$(BIN)/python notebooks/build_phase2_notebooks.py
+
+fixtures: ## Regenerate the committed test fixtures
+	$(BIN)/python scripts/make_fixtures.py
+
 test: ## Run the test suite (no live network calls)
 	$(BIN)/pytest
 
 lint: ## Lint
-	$(BIN)/ruff check ingest tests scripts
+	$(BIN)/ruff check ingest modeling tests scripts
 
 fmt: ## Auto-fix lint + format
-	$(BIN)/ruff check --fix ingest tests scripts
-	$(BIN)/ruff format ingest tests scripts
+	$(BIN)/ruff check --fix ingest modeling tests scripts
+	$(BIN)/ruff format ingest modeling tests scripts
 
 clean: ## Remove caches and build junk (keeps data/)
 	rm -rf .pytest_cache .ruff_cache **/__pycache__ *.egg-info build dist

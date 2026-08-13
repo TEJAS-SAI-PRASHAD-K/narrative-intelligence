@@ -4,6 +4,137 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-08-13
+
+Phase 2: the modeling and scoring layer. Turns the Phase 1 corpus into scored Parquet
+tables, plus the evaluation evidence that says what those scores are worth. No API, no
+dashboard, and deliberately no fused risk score — the weighting is a Phase 4 product
+decision, not a model output.
+
+`ingest/` was not modified.
+
+### Added
+
+**Foundation** (`modeling/config.py`, `registry.py`, `io.py`)
+- One seed for `random`, `numpy`, `torch` and every estimator; `run_fingerprint()` stamps
+  seed, device, library versions and the input corpus manifest hash into every eval
+  artifact.
+- `registry.py` resolves checkpoints by name+version from a local cache, a private HF Hub
+  repo or a Drive mount. `models/` is gitignored — the repo commits the pointer, never
+  the blob.
+- The scored output contract as explicit Arrow schemas, with joinability, idempotency and
+  resumability enforced on write rather than asserted in a notebook.
+
+**Group-aware splitting** (`modeling/datasets/splits.py`)
+- The only splitter in the codebase. `tests/test_splits.py` proves the leakage detector
+  fires on a post-level split, on a frame-level split, and on the second-order case where
+  two rows carry different claim ids and the same sentence — then scans the source tree
+  and fails if any module outside `splits.py` imports a scikit-learn splitter.
+- Dedupe happens before splitting, because near-duplicates straddling the boundary leak
+  even when the group keys differ.
+
+**Benchmark loaders** (`modeling/datasets/`)
+- Eight loaders (LIAR, FakeNewsNet, CoAID, SemEval stance, TwiBot-22, Cresci-2017,
+  FaceForensics++, DFDC). None downloads: every benchmark is access-gated, so an absent
+  dataset raises with the exact manual steps instead of returning an empty frame that
+  would train a model on nothing.
+- Each declares the group key that makes an honest split possible — LIAR by speaker,
+  Cresci by *campaign* rather than account, FF++ and DFDC by source video with untied
+  fakes dropped.
+- Committed fixtures reproducing every real format, so parsing, label mapping and grouping
+  run offline. Regenerate with `python scripts/make_fixtures.py`.
+
+**Auxiliary scorers** (`modeling/aux/`)
+- Toxicity (`unitary/toxic-bert`), sentiment (`cardiffnlp/twitter-roberta-base-sentiment-latest`),
+  emotion (`j-hartmann/emotion-english-distilroberta-base`) and an IsolationForest
+  behavioural anomaly rank. Batched, CPU-capable, cached by text hash, language-gated.
+- Scored the 4190-record corpus in 9m37s on CPU: 96% coverage for the three transformer
+  scorers, 54% for anomaly, every gap carrying a reason code.
+
+**Text and narrative** (`modeling/text/`)
+- Cached embeddings with the dimension read from the model rather than hardcoded, and a
+  recorded truncation policy that keeps an article's lede whole.
+- HDBSCAN clustering with near-duplicate collapse, so one repost swarm cannot become a
+  narrative, and cross-run `narrative_id` carry-forward by centroid match with splits,
+  merges and deaths logged.
+- Misinformation classifier: fine-tune, calibrate on validation, report per-benchmark and
+  cross-domain breakdowns.
+- LLM narrative summarization, bounded to one call per cluster, cached, with a proven
+  centroid fallback when no API key is present.
+
+**Accounts and coordination** (`modeling/accounts/`)
+- Feature tiers (universal / social-graph / threading) with an enforced intersection, so a
+  model is never trained on features the target corpus cannot compute.
+- Bot classifier with campaign-grouped CV, out-of-fold calibration, a precision-targeted
+  operating point and per-account SHAP into the contract.
+- Coordination: an evidence-typed co-behaviour graph with LSH bucketing, Louvain
+  communities, and a within-author time-shuffled null model.
+
+**Evaluation** (`modeling/eval/`)
+- Metrics with bootstrap CIs (accuracy is banned from the report; PR-AUC leads),
+  isotonic/Platt calibration with a documented fallback below 200 validation rows,
+  baselines that run *before* the main model so the bar is fixed first, a counted error
+  taxonomy, and report writers that regenerate from saved predictions without retraining.
+- Module ablation with a provisional fusion labelled, in three places, as
+  for-measurement-only.
+
+**Interface**
+- `modeling/cli.py`: `score`, `train`, `evaluate`, `report`, `cluster`, `ablate`,
+  `datasets`, `registry`, `stats`, `warm-cache`, `sample-for-labelling`.
+- Notebooks 02–05, generated from `notebooks/build_phase2_notebooks.py` so the diffs stay
+  reviewable. Notebook 05 is the consolidated evaluation report.
+- Model cards for all seven modules, error-analysis scaffolds, and a Phase 2 README
+  section with the limitations stated plainly.
+
+### Fixed
+
+Six defects found by running the code against the real corpus rather than the plan:
+
+- **Velocity divided microsecond timestamps by 1e9.** pandas 3 stores `datetime64` as
+  microseconds, so every timeline compressed 1000×, one "hour" swallowed six weeks, and
+  every narrative reported its entire size as its peak-hour velocity — a wrong number that
+  looked perfectly plausible.
+- **YAML 1.1 parsed the LIAR label map's bare `false:` as a boolean**, so it stopped
+  matching the string label and silently dropped every `false` row. The map is now quoted
+  and the loader refuses to run if it does not cover all six labels.
+- **Severity as a 75th percentile scored 0.02 on a narrative that is a quarter alarming.**
+  Replaced with an engagement-weighted mean of the top quartile, and the reasoning for
+  rejecting the mean, the percentile and the maximum is written out.
+- **pandas NA sentinels reached a string Arrow field and the language gate.** `str(NaN)`
+  is the three-character string `"nan"`, which sailed through a length check and got
+  scored as content.
+- **Parquet list columns arrive as numpy arrays**, so `value or []` raised rather than
+  defaulting. Every read now goes through `modeling.io.as_list`.
+- **`anomaly_score` was fitted on the resumed subset.** It is a within-corpus percentile,
+  so a record's score depended on how the previous run happened to die.
+
+### Known gaps
+
+Stated rather than hidden; each has a model card explaining what is missing.
+
+- **Bot, stance and deepfake are not trained.** Every benchmark they need is access-gated.
+  Each ships its complete training path, its split discipline and an honest null scoring
+  path.
+- **The misinformation fine-tune does not clear TF-IDF + logistic regression** on the demo
+  fixture (macro-F1 0.908 vs 0.927, intervals overlapping). Reported, not tuned away.
+- **Coordination modularity does not exceed the time-shuffled null on this corpus**
+  (0.912 vs 0.979 ± 0.000). The mechanism works — it recovers a planted burst on the
+  fixture — but this corpus does not contain the phenomenon at a detectable level.
+- **The benchmark-to-corpus transfer gap is unmeasured.** Closing it needs a person to
+  hand-label 100 corpus records via `modeling sample-for-labelling misinfo`.
+- **Multi-label author cohorts** have a schema (`modeling.io.AUTHOR_COHORTS`) and are
+  deliberately unpopulated.
+
+### Notes
+
+- `sklearn.cluster.HDBSCAN` is used rather than the standalone `hdbscan` package, and
+  `networkx.community.louvain_communities` rather than `python-louvain` — same algorithms,
+  two fewer build-fragile dependencies.
+- Phase 1 observations found while consuming the corpus, not fixed here because `ingest/`
+  is read-only to Phase 2: two duplicate `record_id`s across `date=` partitions in the
+  news source, and no author roll-ups for GDELT/news (their `author_id` is an outlet
+  domain). Both are handled defensively on the Phase 2 side with a logged warning.
+
 ## [0.1.0] — 2026-08-13
 
 Phase 1: the data and ingestion layer. Produces a reproducible, schema-normalized,

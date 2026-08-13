@@ -1,0 +1,80 @@
+{
+  "warning": "PROVISIONAL FUSION \u2014 FOR MEASUREMENT ONLY. This is an equally-weighted mean of the available components, defined in modeling/eval/ablation.py. It is NOT the product's risk score: Phase 4 owns that formula, because the weighting is a documented product decision rather than a model output.",
+  "n_narratives": 21,
+  "n_labelled": 0,
+  "label_source": "none",
+  "rows": [
+    {
+      "configuration": "text only",
+      "components": [
+        "misinfo",
+        "toxicity"
+      ],
+      "n_scored": 21,
+      "coverage": {
+        "misinfo": 1.0,
+        "toxicity": 1.0
+      },
+      "spearman": null,
+      "top_k_precision": null,
+      "note": "no hand labels"
+    },
+    {
+      "configuration": "+ accounts",
+      "components": [
+        "misinfo",
+        "toxicity",
+        "bot"
+      ],
+      "n_scored": 21,
+      "coverage": {
+        "misinfo": 1.0,
+        "toxicity": 1.0,
+        "bot": 0.0
+      },
+      "spearman": null,
+      "top_k_precision": null,
+      "note": "no hand labels; bot contributed nothing (0% coverage)"
+    },
+    {
+      "configuration": "+ coordination",
+      "components": [
+        "misinfo",
+        "toxicity",
+        "bot",
+        "coordination"
+      ],
+      "n_scored": 21,
+      "coverage": {
+        "misinfo": 1.0,
+        "toxicity": 1.0,
+        "bot": 0.0,
+        "coordination": 0.9047619047619048
+      },
+      "spearman": null,
+      "top_k_precision": null,
+      "note": "no hand labels; bot contributed nothing (0% coverage)"
+    },
+    {
+      "configuration": "+ media",
+      "components": [
+        "misinfo",
+        "toxicity",
+        "bot",
+        "coordination",
+        "deepfake"
+      ],
+      "n_scored": 21,
+      "coverage": {
+        "misinfo": 1.0,
+        "toxicity": 1.0,
+        "bot": 0.0,
+        "coordination": 0.9047619047619048,
+        "deepfake": 0.0
+      },
+      "spearman": null,
+      "top_k_precision": null,
+      "note": "no hand labels; bot, deepfake contributed nothing (0% coverage)"
+    }
+  ]
+}

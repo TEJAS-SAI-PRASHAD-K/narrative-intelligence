@@ -439,16 +439,44 @@ def _canonical(value: Any) -> Any:
         return _canonical(value.tolist())
     if hasattr(value, "item"):  # numpy scalar
         return _canonical(value.item())
+    if isinstance(value, bool):
+        return value
     if isinstance(value, float):
-        # Float32 storage round-trips lossily; compare at storage precision.
-        return round(value, 6)
+        # An Arrow int64 column that contains nulls comes back from pandas as
+        # float64, so a freshly-computed `community_size` of 5 and the same
+        # value read from disk as 5.0 must hash identically. Without this, every
+        # table with a nullable integer column reported all its rows as
+        # "updated" on every rerun.
+        if value.is_integer():
+            return int(value)
+        # Compare at *storage* precision, not at some arbitrary decimal place.
+        #
+        # Every float column in the contract is float32. A freshly-computed
+        # float64 prediction and the same value read back from Parquet differ in
+        # the low bits, so rounding to a fixed number of decimals still reports a
+        # difference for values near 1 -- which made every scored row look
+        # "updated" on a rerun even though nothing had changed. Casting through
+        # float32 asks the only question that matters: would writing this produce
+        # different bytes?
+        import numpy as np
+
+        return float(np.float32(value))
     return value
 
 
 def _row_content_hash(row: dict[str, Any], volatile: tuple[str, ...]) -> str:
     payload = {k: _canonical(v) for k, v in sorted(row.items()) if k not in volatile}
-    # An absent column and a null column mean the same thing: not assessed.
-    payload = {k: v for k, v in payload.items() if v is not None and v != []}
+    # Absent, null and empty all mean the same thing: nothing was recorded here.
+    #
+    # Dropping them also reconciles the representations Arrow round-trips
+    # through: an empty `map<string,string>` comes back as `[]` while a freshly
+    # built one is `{}`, and treating those as different made every row with an
+    # empty model_versions look "updated" on every rerun.
+    payload = {
+        key: value
+        for key, value in payload.items()
+        if value is not None and value != [] and value != {}
+    }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
@@ -579,7 +607,16 @@ class ScoredStore:
             frame[col] = frame[col].astype(str)
         assert_joinable(frame, table, known_keys)
 
-        existing = self.read(name) if merge else pd.DataFrame()
+        # Existing rows are always read, in both modes.
+        #
+        # `merge` controls what happens to rows the caller did *not* supply, not
+        # whether the previous state is consulted. Replace mode (merge=False)
+        # drops them -- a narrative that no longer exists must disappear rather
+        # than linger as a stale row -- but it still compares the rows it does
+        # supply against what is on disk. Skipping that comparison would make
+        # every replace-mode rerun report its whole table as newly written, and
+        # the idempotency guarantee would be nominal rather than real.
+        existing = self.read(name)
         stamp = "generated_at" if "generated_at" in {f.name for f in table.schema} else "scored_at"
         if stamp not in frame.columns:
             frame[stamp] = utcnow()
@@ -592,24 +629,49 @@ class ScoredStore:
             for row in existing.to_dict(orient="records"):
                 old_rows[tuple(str(row[k]) for k in table.keys)] = row
 
+        # Merge is column-wise, not row-wise.
+        #
+        # Stages fill different columns of the same table: the aux pass writes
+        # toxicity and sentiment, the misinfo stage writes misinfo_prob. A
+        # row-wise merge lets whichever stage ran last blank every column it does
+        # not know about -- so each run wiped and re-added misinfo_prob, churning
+        # the table forever and leaving a window where the column was null.
+        # Columns the incoming frame does not carry keep their prior value.
+        incoming_columns = set(frame.columns)
+
         written = updated = unchanged = 0
-        merged: dict[tuple[str, ...], dict[str, Any]] = dict(old_rows)
+        merged: dict[tuple[str, ...], dict[str, Any]] = dict(old_rows) if merge else {}
         for key, row in new_rows.items():
             prior = old_rows.get(key)
+            if prior is not None and merge:
+                candidate = dict(prior)
+                candidate.update({k: v for k, v in row.items() if k in incoming_columns})
+                if "model_versions" in incoming_columns:
+                    # Union, not overwrite: a row is current for every scorer
+                    # that has ever produced a value for it.
+                    candidate["model_versions"] = {
+                        **_as_version_dict(prior.get("model_versions")),
+                        **_as_version_dict(row.get("model_versions")),
+                    }
+                row = candidate
             if prior is None:
                 merged[key] = row
                 written += 1
             elif _row_content_hash(prior, table.volatile) == _row_content_hash(row, table.volatile):
                 # Identical content: keep the *older* row so scored_at reflects
                 # when the score was actually produced, not when it was re-checked.
+                merged[key] = prior
                 unchanged += 1
             else:
                 merged[key] = row
                 updated += 1
 
-        if written == 0 and updated == 0 and len(old_rows):
+        dropped = 0 if merge else len(set(old_rows) - set(new_rows))
+        if written == 0 and updated == 0 and dropped == 0 and len(old_rows):
             log.info("%s: %d rows unchanged, nothing written", name, unchanged)
             return {"written": 0, "updated": 0, "unchanged": unchanged}
+        if dropped:
+            log.info("%s: %d row(s) no longer produced and were dropped", name, dropped)
 
         out_frame = pd.DataFrame(list(merged.values()))
         # Deterministic row order on disk.

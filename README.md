@@ -1,15 +1,24 @@
-# Narrative Intelligence Platform — Phase 1: Data & Ingestion Layer
+# Narrative Intelligence Platform — Phases 1–2: Ingestion, Modeling & Scoring
 
 A reproducible, schema-normalized, multi-platform corpus for research on coordinated
 misinformation narratives.
 
-**Phase 1 scope is ingestion only.** No models, no API, no dashboard. The deliverable is a
-partitioned Parquet corpus in which every record — Reddit comment, Mastodon toot, news
-article, YouTube comment — obeys one schema, plus the tooling to rebuild it from scratch
-and an EDA notebook that states honestly what the corpus can and cannot support.
+**Phase 1** is ingestion: a partitioned Parquet corpus in which every record — Reddit
+comment, Mastodon toot, news article, YouTube comment — obeys one schema, plus the tooling
+to rebuild it from scratch.
 
-Phases 2–6 (model training, backend API, dashboard, deployment) build on this. The only
-contract they should depend on is `ingest/schema.py`.
+**Phase 2** is modeling and scoring: trained models, reproducible evaluation evidence, and
+a batch pipeline that turns the corpus into scored Parquet tables. No API, no dashboard,
+no fused risk score — those are Phases 4–6, and the fusion weighting is deliberately left
+to Phase 4 because it is a product decision rather than a model output.
+
+Two things are equally the Phase 2 deliverable: the models, and the evidence that they
+work. A model without a group-split evaluation, a baseline comparison and an error
+analysis is not done, and several modules here are honestly marked *not done* on exactly
+that basis.
+
+`ingest/schema.py` is the only interface Phase 2 depends on, and Phase 2 never writes to
+`ingest/`.
 
 ---
 
@@ -332,6 +341,215 @@ stay reviewable), then run it.
   than article text, and CoAID's tweet content cannot be recollected in this project.
 - **Coordination work is only valid on `reddit` (ConvoKit), `mastodon` and `youtube`.**
   `news` and `gdelt` have no threading, and Kaggle-sourced Reddit has none either.
+
+
+---
+
+# Phase 2 — Modeling & Scoring
+
+## Quickstart
+
+```bash
+pip install -e ".[modeling]"          # add ".[media]" for deepfake, ".[llm]" for summaries
+python -m modeling.cli warm-cache      # pre-download the auxiliary models, once
+python -m modeling.cli score --all     # -> data/scored/
+```
+
+Everything runs with **no benchmarks, no API key and no GPU**. Modules that cannot run
+write `null` with a reason code rather than a number:
+
+```bash
+python -m modeling.cli score --all --demo    # committed fixtures, ~12s, no network
+```
+
+| command | what it does |
+|---|---|
+| `score --all` | produce every scored table; resumable and idempotent |
+| `train <module>` | misinfo \| bot — load, split, baseline, fit, calibrate, report |
+| `evaluate <module>` | evaluate a trained checkpoint without retraining |
+| `report [module]` | regenerate `artifacts/eval/**` from saved predictions |
+| `cluster --audit 20` | re-cluster and print the manual coherence audit |
+| `ablate` | the module-ablation table |
+| `datasets` | what benchmark data is on disk, and how to get what is not |
+| `registry` | local checkpoints (weights are never in git) |
+| `show-config` | seed, device, corpus hash, library versions |
+| `sample-for-labelling misinfo` | write the CSV for the corpus-transfer hand-label |
+
+## What Phase 2 produces
+
+Partitioned Parquet under `data/scored/`, plus a manifest mirroring Phase 1's pattern.
+
+| table | grain | key columns |
+|---|---|---|
+| `record_scores` | one row per record | `misinfo_prob`, `stance`, `toxicity`, `sentiment`, `emotion`, `anomaly_score` |
+| `narratives` | one row per narrative | `label`, `size`, `velocity`, `severity`, `coherence`, `centroid` |
+| `narrative_membership` | record × narrative | `membership_prob`, `is_representative` |
+| `author_scores` | one row per author | `bot_prob`, `bot_top_features`, `coordination_score`, `community_id` |
+| `coordination_edges` | account pair × evidence | `weight`, `evidence`, `observations`, window |
+| `media_scores` | record × media url | `deepfake_prob`, `face_detected`, `explanation` |
+
+Four contract rules, enforced in `modeling/io.py` rather than by convention:
+
+1. **Every table joins back to Phase 1.** Zero orphan `record_id` / `author_id`, asserted
+   on write. This assertion has already caught one real gap (see *What the corpus told
+   us*).
+2. **`null` means "not assessed", never zero.** Every null carries a reason code. A
+   fabricated `0.0` is indistinguishable from a confident negative once it reaches a
+   dashboard.
+3. **Every row carries `model_versions`** for the scorers that actually produced a value
+   for *that row*, so a stale score is detectable after a retrain.
+4. **Scoring is idempotent and resumable.** Rerunning over unchanged inputs with unchanged
+   model versions writes zero rows — verified in `tests/test_scoring_io.py`.
+
+## The one rule everything rests on
+
+**Every split is group-aware, and `modeling/datasets/splits.py` is the only splitter.**
+
+A random post-level split puts the same story in train and test, every metric goes up, and
+nothing looks wrong. So the unit of a split is never a post:
+
+| module | group key | why |
+|---|---|---|
+| misinfo | speaker, claim id, outlet | one politician's statements share phrasing and history |
+| stance | claim/target | SemEval's unseen-target structure is the entire benchmark |
+| bot | **campaign**, not account | each Cresci spambot directory is one botnet running one template |
+| deepfake | **source video**, not frame | frames of one clip in both splits is *the* cause of fake 99% accuracy |
+
+`tests/test_splits.py` proves the leakage detector fires on a post-level split, on a
+frame-level split, and on the second-order case where two rows carry different claim ids
+and the same sentence. It also **scans the source tree** and fails if any module outside
+`splits.py` imports a scikit-learn splitter.
+
+## How each score is meant to be read
+
+| score | what it is | what it is **not** |
+|---|---|---|
+| `misinfo_prob` | calibrated similarity to claims fact-checkers rated false | a determination that a claim is false |
+| `bot_prob` | calibrated similarity to accounts labelled automated on Twitter | a determination that an account is automated |
+| `coordination_score` | a transparent 3-term formula over graph position | evidence about an individual |
+| `toxicity` | an off-the-shelf classifier's output, **uncalibrated** | a judgement that an account is abusive |
+| `anomaly_score` | a **within-corpus percentile rank** | a probability; it cannot be multiplied into one |
+| `severity` | engagement-weighted mean of a narrative's top-quartile `misinfo_prob` | a mean, or a percentile — both fail on real narrative shape |
+| `deepfake_prob` | top-k frame score for a detected face | evidence a video is authentic; `null` means "could not look" |
+
+## Retraining a module
+
+```bash
+python -m modeling.cli datasets              # what is missing, and the exact steps
+python -m modeling.cli train misinfo         # after the benchmark is on disk
+python -m modeling.cli report misinfo        # regenerate charts without retraining
+```
+
+Training happens on Colab (T4); inference is CPU. Checkpoints save **every epoch**, then
+`modeling/registry.py` resolves them by name+version from the local cache, a private HF Hub
+repo (`HF_REPO`) or a Drive mount (`GDRIVE_DIR`). `models/` is gitignored — the repo
+commits the pointer, never the blob.
+
+## What the corpus told us that the plan did not
+
+Trusting the data over the notes, as instructed. Each of these is a real property that
+changed the code:
+
+- **Two duplicate `record_id`s** across `date=` partitions in the news source. Phase 1
+  dedupes *within* a partition, so an article whose timestamp shifts between fetches
+  survives twice. `ingest/` is read-only to Phase 2, so `CorpusReader` collapses them
+  loudly instead. Worth a Phase 1 fix if you want the row counts to reconcile exactly.
+- **GDELT and news authors have no roll-up.** Their `author_id` is an outlet domain, and
+  `data/authors/` only covers sources with real accounts. The joinability assertion caught
+  115 of these; "exists in Phase 1" now means the union of the roll-up and the record
+  author ids.
+- **`lang` is null for 316 records** and arrives from Parquet as `NaN`, not `None`.
+  `str(NaN)` is the three-character string `"nan"`, which sails through a length check and
+  gets scored as if it were content.
+- **Parquet list columns arrive as numpy arrays**, so `value or []` raises rather than
+  defaulting. Every read of a list column now goes through `modeling.io.as_list`.
+- **pandas 3 stores `datetime64` as microseconds**, not nanoseconds. The velocity metric
+  divided the raw int64 by 1e9 and compressed every timeline 1000×, so every narrative
+  reported its entire size as its peak-hour velocity — a wrong number that looked
+  perfectly plausible.
+- **YAML 1.1 parses a bare `false:` as a boolean.** The LIAR label map silently stopped
+  matching the string label and dropped every `false` row with no error anywhere.
+
+## Findings worth stating plainly
+
+- **The misinformation fine-tune does not clear TF-IDF + logistic regression** on the demo
+  fixture (macro-F1 0.908 vs 0.927, intervals overlapping). Reported in
+  `artifacts/eval/misinfo/v0.1.0/report.md` rather than tuned away. On real benchmarks this
+  comparison must be re-run, and **if the transformer still fails to clear TF-IDF there, it
+  should not ship** — it costs orders of magnitude more inference for no measured gain.
+- **Coordination modularity does not exceed the time-shuffled null on this corpus**
+  (0.912 observed vs 0.979 ± 0.000 shuffled). Any graph has communities; on this data the
+  communities found are **not** evidence of coordination, and the report says so. The
+  detector does recover a planted coordinated burst on the demo fixture, so the mechanism
+  works — the corpus simply does not contain the phenomenon at a detectable level.
+- **Three modules are not trained** — bot, stance and deepfake — because every benchmark
+  they need is access-gated. Each ships its complete training path, its split discipline
+  and an honest null scoring path, and each model card says exactly what is missing.
+
+## Limitations
+
+Everything in Phase 1's limitations still holds. Phase 2 adds:
+
+- **Benchmark performance is not production performance.** LIAR is politicians'
+  statements, FakeNewsNet is news headlines, CoAID is COVID-era health claims, and this
+  corpus is Reddit comments, Mastodon toots and GDELT article metadata. **Expect a large
+  drop.** The transfer gap is currently **unmeasured**; closing it needs a person to
+  hand-label 100 corpus records (`sample-for-labelling misinfo`), and that single table is
+  worth more than any hyperparameter sweep.
+- **English-only, by decision.** Non-English text is skipped with a reason code, never
+  scored by an English model. 316 records have no language tag at all and are admitted
+  under a stated assumption.
+- **The toxicity model carries a known demographic bias.** Jigsaw-trained classifiers
+  over-flag African-American English and identity terms in non-pejorative use. `toxicity`
+  must never be read as "this account is abusive" and nothing should be ranked by it alone.
+- **`bot_prob` is trained on Twitter and applied to Mastodon.** Cross-platform transfer is
+  unmeasured and should be assumed degraded.
+- **Coordination cannot see across platforms.** Author identity does not survive between
+  services, so one person coordinating from two accounts on two platforms appears as two
+  unlinked nodes. It also excludes `news`, `gdelt` and Kaggle-flat Reddit entirely.
+- **Narrative clusters are regions of embedding space, not claims.** Embedding similarity
+  is topical, so posts taking *opposite positions* on one subject cluster together. The
+  stance module that would separate them is the one that was descoped.
+- **A high risk score is a prompt to look, not a conclusion.** It says a set of posts
+  resembles patterns that have accompanied coordinated misinformation before.
+
+**No output of this system is a determination that a person is a bot or that a claim is
+false.** Not `bot_prob`, not `misinfo_prob`, not `coordination_score`, and not any
+combination of them. They are research signals over public behaviour, every one of which
+has innocent explanations, and they are reported with the intervals and domain caveats that
+make that visible.
+
+## Evidence
+
+| artifact | what is in it |
+|---|---|
+| `artifacts/eval/<module>/<version>/` | `metrics.json`, `report.md`, `confusion.png`, `reliability.png`, `predictions.parquet` |
+| `artifacts/model_cards/*.md` | one per module: data, label mapping, split, metrics with CIs, calibration, domain shift, intended and out-of-scope use |
+| `artifacts/error_analysis/*.md` | counted failure taxonomies, plus the uncategorized examples that a human still has to read |
+| `artifacts/eval/ablation/` | the module-ablation table |
+| `notebooks/02`–`05` | **notebook 05 is the one to read end to end** |
+
+Every eval artifact carries the run fingerprint — seed, device, library versions, corpus
+manifest hash — so a rerun that disagrees can be diagnosed rather than argued about.
+
+## Phase 4 handoff
+
+- Load `data/scored/**` with any Parquet reader; `data/scored/manifest.json` reports rows,
+  model versions and the input corpus hash per table.
+- **Read the embedding dimension from `narratives.centroid`**, or call
+  `modeling.text.embed.embedding_dim()`. It is 384 for the default model and 768 for the
+  bge alternative; do not hardcode it in the pgvector column.
+- **`null` means "not assessed".** Render it as such. Do not coalesce to zero anywhere.
+- **The fused 0–100 risk score is yours.** `modeling/eval/ablation.py` contains a
+  provisional equally-weighted fusion used *for measurement only*, and it is labelled as
+  such in three places. The weighting is a documented product decision, not a model output,
+  which is exactly why Phase 2 does not make it.
+- `author_scores.bot_top_features` is per-account SHAP, ready for a "why is this flagged"
+  panel. If an entry is suffixed `(global)`, SHAP was unavailable and the values are global
+  importances — a different question, and it should not be presented as per-account.
+- Multi-label author cohorts: the schema exists (`modeling.io.AUTHOR_COHORTS`) and is
+  deliberately unpopulated. The 135-cohort taxonomy is a labelling project of its own.
+
 
 ## Troubleshooting
 

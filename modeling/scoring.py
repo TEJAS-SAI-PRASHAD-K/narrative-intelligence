@@ -193,6 +193,37 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
     }
     now = utcnow_local()
     narrative_rows = [n.as_row(versions, now) for n in result.narratives]
+
+    # Carry the label forward for narratives whose id survived.
+    #
+    # Clustering does not produce labels -- the summarize stage does -- so a
+    # re-cluster that wrote `label = None` would blank every label, the
+    # summarize stage would regenerate them, and the two stages would churn the
+    # table against each other on every run. A carried id keeps its label until
+    # something re-summarizes it, which is also what the UI expects: the
+    # narrative the user is looking at does not lose its name because the
+    # corpus grew.
+    if len(previous):
+        carried = {
+            str(row["narrative_id"]): row
+            for row in previous.to_dict(orient="records")
+        }
+        for row in narrative_rows:
+            prior = carried.get(str(row["narrative_id"]))
+            if prior is None:
+                continue
+            for column in ("label", "label_source", "summary"):
+                if prior.get(column) is not None and row.get(column) is None:
+                    row[column] = prior[column]
+            # And its provenance. The summarize stage adds its own entries to
+            # this map; blanking them here would leave the two stages
+            # overwriting each other's model_versions on every run.
+            from modeling.io import _as_version_dict
+
+            row["model_versions"] = {
+                **_as_version_dict(prior.get("model_versions")),
+                **row["model_versions"],
+            }
     membership_rows = [
         {
             "record_id": member,
@@ -305,7 +336,9 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
              "note": ctx.note(f"dry-run; would score {len(frame)} rows")}
         ]
 
-    result = _merge_record_scores(ctx, frame)
+    # A plain merge write: ScoredStore merges column-wise, so the aux pass's
+    # toxicity and sentiment survive a frame that only carries misinfo_prob.
+    result = ctx.store.write("record_scores", frame, known_keys=ctx.known_record_ids or None)
     return [
         {
             "stage": "misinfo",
@@ -387,7 +420,10 @@ def _summarize_stage(ctx: StageContext) -> list[dict[str, Any]]:
     summarizer = NarrativeSummarizer(ctx.settings)
     run = summarizer.summarize(payload, texts)
 
-    updated = narratives.copy()
+    # Only the columns this stage owns. ScoredStore merges column-wise, so
+    # everything the cluster stage computed survives untouched and the two
+    # stages stop overwriting each other on every run.
+    updated = narratives[["narrative_id"]].copy()
     updated["label"] = updated["narrative_id"].map(
         lambda n: run.results[n].label if n in run.results else None
     )
@@ -409,7 +445,7 @@ def _summarize_stage(ctx: StageContext) -> list[dict[str, Any]]:
     if ctx.dry_run:
         return [{"stage": "summarize", "table": "narratives", "note": ctx.note("dry-run; " + note)}]
 
-    result = ctx.store.write("narratives", updated, merge=False)
+    result = ctx.store.write("narratives", updated)
     return [{"stage": "summarize", "table": "narratives", **result, "note": ctx.note(note)}]
 
 
@@ -620,59 +656,6 @@ def _media_stage(ctx: StageContext) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # helpers shared by the stages
 # ---------------------------------------------------------------------------
-def _merge_record_scores(ctx: StageContext, frame: pd.DataFrame) -> dict[str, int]:
-    """Fold new columns into existing record_scores rows.
-
-    Column-wise merge, not row replacement: the aux stage already wrote
-    toxicity and sentiment for these records, and a naive write would blank
-    them. Existing values win only where the incoming frame has nothing to say.
-    """
-    existing = ctx.store.read("record_scores")
-    if not len(existing):
-        return ctx.store.write("record_scores", frame, known_keys=ctx.known_record_ids or None)
-
-    # Merged as dicts rather than by pandas assignment. A column that is null
-    # for every row reads back from Parquet with a dtype that cannot hold the
-    # incoming floats, and `.loc[...] = ...` raises rather than widening -- which
-    # is exactly the case here, because misinfo_prob is null until this stage
-    # first runs. Dicts sidestep dtype negotiation entirely.
-    incoming = {str(row["record_id"]): row for row in frame.to_dict(orient="records")}
-    now = utcnow_local()
-    rows: list[dict[str, Any]] = []
-
-    for row in existing.to_dict(orient="records"):
-        record_id = str(row["record_id"])
-        update = incoming.pop(record_id, None)
-        if update is None:
-            rows.append(row)
-            continue
-        merged = dict(row)
-        for column, value in update.items():
-            if column in {"record_id", "source", "scored_at"}:
-                continue
-            if column == "model_versions":
-                merged["model_versions"] = {
-                    **_as_dict(row.get("model_versions")),
-                    **_as_dict(value),
-                }
-                continue
-            merged[column] = value
-        merged["scored_at"] = now
-        rows.append(merged)
-
-    # Records scored by this stage that the aux pass never wrote a row for.
-    rows.extend(incoming.values())
-    return ctx.store.write(
-        "record_scores", pd.DataFrame(rows), known_keys=ctx.known_record_ids or None, merge=False
-    )
-
-
-def _as_dict(value: Any) -> dict[str, str]:
-    from modeling.io import _as_version_dict
-
-    return _as_version_dict(value)
-
-
 def _author_aggregates(records: pd.DataFrame, scores: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Per-author means and modes over record_scores.
 
@@ -816,7 +799,17 @@ def run_stages(
         demo=demo,
         dry_run=dry_run,
         known_record_ids=set(records["id"].astype(str)) if "id" in records else set(),
-        known_author_ids=set(authors["author_id"].astype(str)) if len(authors) else set(),
+        # "Exists in Phase 1" means "appears in the corpus", which is the union
+        # of the author roll-up and the author_ids on the records themselves.
+        # Phase 1 writes roll-ups only for sources that expose a real account
+        # (Mastodon, Reddit, YouTube); GDELT and news records carry an author_id
+        # derived from the outlet domain with no roll-up behind it. Taking only
+        # the roll-up would make 115 legitimate GDELT authors look like orphans
+        # and abort the whole stage.
+        known_author_ids=(
+            (set(authors["author_id"].astype(str)) if len(authors) else set())
+            | (set(records["author_id"].astype(str)) if "author_id" in records else set())
+        ),
     )
     log.info(
         "scoring %d records / %d authors from %d source(s)%s",

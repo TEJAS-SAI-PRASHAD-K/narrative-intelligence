@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "narrative-intelligence"
-version = "0.1.0"
-description = "Phase 1 ingestion layer for the Narrative Intelligence Platform: a reproducible, schema-normalized multi-platform corpus."
+version = "0.2.0"
+description = "Narrative Intelligence Platform, phases 1-2: a reproducible schema-normalized multi-platform corpus, plus the models and scored tables built on it."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
