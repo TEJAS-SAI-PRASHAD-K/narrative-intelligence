@@ -519,6 +519,95 @@ class TestYouTubeMapping:
             youtube._client()
 
 
+# --- reddit / kaggle ------------------------------------------------------
+
+
+@pytest.fixture
+def kaggle(settings, store):
+    from ingest.sources.reddit_kaggle import RedditKaggleSource
+
+    return RedditKaggleSource(settings=settings, store=store)
+
+
+@pytest.fixture
+def kaggle_rows(fixtures_dir):
+    return load_fixture(fixtures_dir, "reddit_kaggle_rows.json")
+
+
+class TestRedditKaggleMapping:
+    def test_column_map_drives_the_mapping(self, kaggle, kaggle_rows):
+        record = kaggle.to_record(kaggle_rows[0])
+        assert record.id == "reddit:9x1abc"
+        assert record.author_id == "reddit:concerned_citizen"
+        assert record.source_detail == "conspiracy"
+        assert record.engagement.likes == 1284
+
+    def test_title_and_body_combined(self, kaggle, kaggle_rows):
+        record = kaggle.to_record(kaggle_rows[0])
+        assert record.text.startswith("Six outlets, identical phrasing")
+        assert "Screenshots in the comments" in record.text
+
+    def test_epoch_string_becomes_utc(self, kaggle, kaggle_rows):
+        assert kaggle.to_record(kaggle_rows[0]).timestamp.isoformat() == "2024-05-01T12:00:00+00:00"
+
+    def test_absent_threading_is_null_not_invented(self, kaggle, kaggle_rows):
+        # This is why README says Kaggle Reddit data cannot support the
+        # coordination graph: there is nothing to build edges from.
+        record = kaggle.to_record(kaggle_rows[0])
+        assert record.parent_id is None and record.conversation_id is None
+        assert record.raw["threading_available"] is False
+        assert kaggle.flags["no_threading_in_dataset"] == 1
+
+    def test_deleted_author_sentinel(self, kaggle, kaggle_rows):
+        record = kaggle.to_record(kaggle_rows[1])
+        assert record.author_is_deleted and record.author_handle is None
+        assert record.text == "Archive of the six versions"
+
+    def test_second_dataset_with_different_columns(self, kaggle, kaggle_rows):
+        record = kaggle.to_record(kaggle_rows[2])
+        assert record.content_type == "comment"
+        assert record.engagement.likes == -12
+        assert record.timestamp.isoformat() == "2024-05-01T13:00:00+00:00"
+
+    def test_threading_used_when_the_dataset_has_it(self, kaggle, kaggle_rows):
+        record = kaggle.to_record(kaggle_rows[2])
+        assert record.parent_id == "reddit:t3_9x1abc"
+        assert record.raw["threading_available"] is True
+
+    def test_removed_body_without_title_dropped(self, kaggle, kaggle_rows):
+        assert kaggle.to_record(kaggle_rows[3]) is None
+        assert kaggle.dropped[DropReason.DELETED_TEXT.value] == 1
+
+    def test_unparseable_timestamp_dropped(self, kaggle, kaggle_rows):
+        assert kaggle.to_record(kaggle_rows[4]) is None
+        assert kaggle.dropped[DropReason.MISSING_TIMESTAMP.value] == 1
+
+    def test_original_columns_preserved_in_raw(self, kaggle, kaggle_rows):
+        raw = kaggle.to_record(kaggle_rows[0]).raw
+        assert raw["dataset"] == "example-owner/reddit-posts"
+        assert raw["columns"]["subreddit"] == "conspiracy"
+
+    def test_no_configured_datasets_warns_and_yields_nothing(self, kaggle):
+        assert list(kaggle.fetch()) == []
+
+    @pytest.mark.parametrize(
+        "value,fmt,expected",
+        [
+            ("1714564800", "epoch", "2024-05-01T12:00:00+00:00"),
+            (1714564800000, "epoch", "2024-05-01T12:00:00+00:00"),
+            ("2024-05-01T12:00:00Z", "iso", "2024-05-01T12:00:00+00:00"),
+            ("2024-05-01 12:00:00", "%Y-%m-%d %H:%M:%S", "2024-05-01T12:00:00+00:00"),
+            ("", "epoch", None),
+            ("garbage", "iso", None),
+        ],
+    )
+    def test_timestamp_formats(self, value, fmt, expected):
+        from ingest.sources.reddit_kaggle import _parse_timestamp
+
+        parsed = _parse_timestamp(value, fmt)
+        assert (parsed.isoformat() if parsed else None) == expected
+
+
 # --- registry -------------------------------------------------------------
 
 
