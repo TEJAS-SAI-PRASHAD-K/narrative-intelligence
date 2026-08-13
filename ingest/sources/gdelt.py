@@ -165,7 +165,12 @@ class GdeltSource(BaseSource):
         # limit error rather than a 429, so pace ourselves rather than retry.
         from ingest.ratelimit import TokenBucket
 
-        bucket = TokenBucket(rate_per_sec=float(config.get("queries_per_second", 0.2)), burst=1)
+        # 1 query / 10s. GDELT documents "one every 5 seconds" but enforces it
+        # with a penalty window: once tripped, even 35-second spacing keeps
+        # getting refused for a while. Pacing well under the stated limit is
+        # cheaper than losing a topic's worth of coverage to a throttle.
+        bucket = TokenBucket(rate_per_sec=float(config.get("queries_per_second", 0.1)), burst=1)
+        cooloff = float(config.get("rate_limit_cooloff_seconds", 30))
 
         for topic in topics_config().get("topics", []):
             # `keyword` means *exact phrase* in gdeltdoc; a list is OR-joined
@@ -185,11 +190,11 @@ class GdeltSource(BaseSource):
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
                 num_records=max_records,
-                language=config.get("languages", ["English"]),
+                language=_language_filter(config.get("languages", ["English"])),
             )
             bucket.acquire()
             try:
-                articles = client.article_search(filters)
+                articles = self._search_with_cooloff(client, filters, cooloff)
             except Exception as exc:
                 # An invalid query or a throttle must not kill the other topics.
                 # The exception carries no message for some error classes, so
@@ -223,6 +228,25 @@ class GdeltSource(BaseSource):
                     "end": end.isoformat(),
                 },
             )
+
+    def _search_with_cooloff(self, client: Any, filters: Any, cooloff: float) -> Any:
+        """One retry after a throttle, because GDELT's limiter is stateful.
+
+        A rate-limited query is not a failed query -- it is a query asked too
+        soon. Dropping the topic instead of waiting would silently bias the
+        corpus toward whichever topic happens to run first.
+        """
+        import time
+
+        try:
+            return client.article_search(filters)
+        except Exception as exc:
+            if "RateLimit" not in type(exc).__name__:
+                raise
+            self.log.warning("gdelt throttled; waiting %.0fs before one retry", cooloff)
+            self.note("doc_rate_limited")
+            time.sleep(cooloff)
+            return client.article_search(filters)
 
     # --- raw 15-minute drops ---------------------------------------------
     def _fetch_raw_files(self, config: dict) -> Iterator[dict]:
@@ -416,6 +440,26 @@ class GdeltSource(BaseSource):
 
 
 # --- module helpers -------------------------------------------------------
+
+
+def _language_filter(languages: Any) -> str | list[str] | None:
+    """Normalize the language filter into a form gdeltdoc emits validly.
+
+    gdeltdoc renders a *list* as a parenthesized OR group. With one element
+    that becomes ``(sourcelang:English)`` -- parentheses around a single term --
+    and GDELT rejects it outright: "Parentheses may only be used around OR'd
+    statements." A bare string renders as ``sourcelang:English``, which is
+    accepted, and two or more languages render as a genuine OR group, which is
+    also accepted. Verified against the live API; the docs do not mention it.
+    """
+    if not languages:
+        return None
+    if isinstance(languages, str):
+        return languages
+    values = [str(v) for v in languages if str(v).strip()]
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else values
 
 
 def _parse_lastupdate(text: str) -> list[str]:

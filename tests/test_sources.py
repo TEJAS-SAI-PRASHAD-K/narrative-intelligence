@@ -626,3 +626,41 @@ class TestRegistry:
 
         with pytest.raises(KeyError, match="unknown source"):
             get_source_class("twitter")
+
+
+class TestGdeltQueryConstruction:
+    """The DOC query form, pinned offline after the live API rejected the docs' version."""
+
+    def test_single_language_is_passed_as_a_string_not_a_list(self):
+        from ingest.sources.gdelt import _language_filter
+
+        # A one-element list makes gdeltdoc emit "(sourcelang:English)", and
+        # GDELT rejects parentheses around a non-OR'd term.
+        assert _language_filter(["English"]) == "English"
+        assert _language_filter("English") == "English"
+
+    def test_multiple_languages_stay_a_list(self):
+        from ingest.sources.gdelt import _language_filter
+
+        assert _language_filter(["English", "Spanish"]) == ["English", "Spanish"]
+
+    def test_absent_language_is_none(self):
+        from ingest.sources.gdelt import _language_filter
+
+        assert _language_filter([]) is None
+        assert _language_filter(None) is None
+
+    def test_emitted_query_string_is_valid_for_each_form(self):
+        gdeltdoc = pytest.importorskip("gdeltdoc")
+        from ingest.sources.gdelt import _language_filter
+
+        for languages in (["English"], ["English", "Spanish"], []):
+            query = gdeltdoc.Filters(
+                keyword=["ballot fraud"],
+                start_date="2024-05-01",
+                end_date="2024-05-08",
+                num_records=10,
+                language=_language_filter(languages),
+            ).query_string
+            # Never a parenthesized single term: that is the rejected form.
+            assert "(sourcelang:English)" not in query
