@@ -41,3 +41,6 @@ htmlcov/
 
 # Local agent settings
 .claude/settings.local.json
+
+# Hand-label CSVs carry verbatim corpus text; see artifacts/hand_labels/README.md
+artifacts/hand_labels/*.csv
