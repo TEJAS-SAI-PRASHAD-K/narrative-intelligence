@@ -1,0 +1,210 @@
+{
+  "module": "bot",
+  "version": "v0.1.0",
+  "generated_at": "2026-08-15T14:43:56.054321+00:00",
+  "run": {
+    "seed": 20260813,
+    "device": "mps",
+    "input_manifest_hash": "b6ba18d6285f05da",
+    "languages": [
+      "en"
+    ],
+    "library_versions": {
+      "python": "3.13.7",
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "numpy": "2.5.2",
+      "scipy": "1.18.0",
+      "pandas": "3.0.5",
+      "pyarrow": "25.0.1",
+      "scikit-learn": "1.9.0",
+      "xgboost": "3.4.0",
+      "shap": "0.52.0",
+      "torch": "2.13.0",
+      "transformers": "5.15.0",
+      "sentence-transformers": "5.7.0",
+      "timm": "1.0.28",
+      "networkx": "3.6.1",
+      "anthropic": "0.121.0"
+    }
+  },
+  "metrics": {
+    "module": "bot",
+    "split": "out-of-fold, grouped by split_group (3482 groups; train/test = 10217/0/4151; seed=20260813)",
+    "n_test": 14368,
+    "is_demo": false,
+    "positive_rate": 0.7582,
+    "macro_f1": {
+      "value": 0.7047,
+      "ci_low": 0.6957,
+      "ci_high": 0.7127,
+      "n_bootstrap": 1000
+    },
+    "roc_auc": {
+      "value": 0.8005,
+      "ci_low": 0.7928,
+      "ci_high": 0.8084,
+      "n_bootstrap": 1000
+    },
+    "pr_auc": {
+      "value": 0.9084,
+      "ci_low": 0.9032,
+      "ci_high": 0.9136,
+      "n_bootstrap": 1000
+    },
+    "brier": 0.1402,
+    "per_class": {
+      "human": {
+        "precision": 0.5251,
+        "recall": 0.6079,
+        "f1": 0.5635,
+        "support": 3474
+      },
+      "bot": {
+        "precision": 0.8684,
+        "recall": 0.8247,
+        "f1": 0.846,
+        "support": 10894
+      }
+    },
+    "confusion": [
+      [
+        2112,
+        1362
+      ],
+      [
+        1910,
+        8984
+      ]
+    ]
+  },
+  "baselines": {
+    "main_macro_f1": {
+      "value": 0.7047,
+      "ci_low": 0.6957,
+      "ci_high": 0.7127,
+      "n_bootstrap": 1000
+    },
+    "verdicts": {
+      "majority class": {
+        "baseline_macro_f1": {
+          "value": 0.4312,
+          "ci_low": 0.429,
+          "ci_high": 0.4335,
+          "n_bootstrap": 1000
+        },
+        "delta": 0.2735,
+        "verdict": "beats"
+      },
+      "logreg on follower_following_ratio only": {
+        "baseline_macro_f1": {
+          "value": 0.6467,
+          "ci_low": 0.6236,
+          "ci_high": 0.6677,
+          "n_bootstrap": 1000
+        },
+        "delta": 0.058,
+        "verdict": "beats"
+      }
+    },
+    "clears_every_baseline": true
+  },
+  "calibration": {
+    "method": "isotonic",
+    "n_calibration": 14368,
+    "brier_before": 0.4345,
+    "brier_after": 0.1402,
+    "improvement": 0.2943,
+    "degraded": false,
+    "note": "",
+    "reliability_before": {
+      "predicted": [
+        0.0283,
+        0.1512,
+        0.2502,
+        0.3479,
+        0.4443,
+        0.5435,
+        0.6528,
+        0.7542,
+        0.8524,
+        0.9641
+      ],
+      "observed": [
+        0.5327,
+        0.8623,
+        0.9418,
+        0.9629,
+        0.9224,
+        0.891,
+        0.8701,
+        0.9208,
+        0.9451,
+        0.9642
+      ],
+      "counts": [
+        6129,
+        1678,
+        2027,
+        1535,
+        683,
+        367,
+        231,
+        265,
+        419,
+        1034
+      ]
+    },
+    "reliability_after": {
+      "predicted": [
+        0.0,
+        0.475,
+        0.5293,
+        0.6663,
+        0.7458,
+        0.841,
+        0.9426
+      ],
+      "observed": [
+        0.0,
+        0.475,
+        0.5293,
+        0.6663,
+        0.7458,
+        0.841,
+        0.9426
+      ],
+      "counts": [
+        1,
+        4021,
+        735,
+        920,
+        358,
+        1377,
+        6956
+      ]
+    }
+  },
+  "dataset": {
+    "cresci": {
+      "dataset": "cresci",
+      "rows": 14368,
+      "groups": 3482,
+      "group_col": "split_group",
+      "is_demo": false,
+      "dropped": {
+        "user_without_id": 0,
+        "unparseable_created_at": 1000
+      },
+      "label_balance": {
+        "1": 0.758,
+        "0": 0.242
+      },
+      "domains": [
+        "fake_followers",
+        "genuine",
+        "social_spambots",
+        "traditional_spambots"
+      ]
+    }
+  }
+}

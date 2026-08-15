@@ -18,6 +18,7 @@ from modeling.datasets import (  # noqa: F401  (registration side effect)
     dfdc,
     faceforensics,
     fakenewsnet,
+    fnc1,
     liar,
     stance,
     twibot,

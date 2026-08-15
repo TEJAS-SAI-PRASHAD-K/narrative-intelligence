@@ -4,6 +4,70 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-08-15
+
+Real benchmark data arrived. The bot classifier is trained on it, a better
+stance corpus replaced the planned one, and three defects surfaced that only
+real data could expose.
+
+### Added
+
+- **FNC-1 stance loader** (`modeling/datasets/fnc1.py`). The data supplied as
+  "SemEval-2016" turned out to be the Fake News Challenge corpus, which is the
+  better fit: its four labels map one-to-one onto the contract's
+  support/deny/discuss/unrelated, where SemEval has no `unrelated` class at all
+  and could never produce one. 75,385 pairs over 2,587 article bodies, versus
+  SemEval's ~4k. `train_stance_classifier` now prefers it, falling back to
+  SemEval — the same pattern the bot trainer uses for Cresci/TwiBot.
+- Both stance corpora share `benchmarks/stance/`; each loader reads only what it
+  recognises, and a test asserts they do not collide.
+
+### Changed
+
+- **Bot classifier trained on real Cresci-2017** (14,368 accounts, 8 bot
+  campaigns). Pooled out-of-fold macro-F1 0.705 [0.696, 0.713], PR-AUC 0.908.
+  Beats both baselines. Calibration improved Brier 0.4345 -> 0.1402; operating
+  point 0.868 precision at 0.825 recall, meeting the 0.85 target.
+- **Cresci grouping is now hybrid** — campaign for bots, account for humans.
+  Campaign-only grouping is impossible on this dataset because the label is a
+  deterministic function of the campaign, so every group is single-class and no
+  fold can be stratified. Account-only grouping leaks the botnet template. Each
+  test fold now holds out one or two entire campaigns.
+
+### Fixed
+
+- **A single-class training fold crashed the process with SIGSEGV and no
+  message** — exit 139, empty output, nothing written. Two separate causes, both
+  fixed: the hybrid grouping above, and an import-order constraint.
+- **`xgboost` must be imported before `torch`.** On macOS both ship their own
+  OpenMP runtime; torch-then-xgboost segfaults on the first `fit()`, while
+  xgboost-then-torch is fine with full threading on both. Claimed at the package
+  root in `modeling/__init__.py`. `OMP_NUM_THREADS=1` also avoids it but
+  serialises transformer training, and `KMP_DUPLICATE_LIB_OK=TRUE` is documented
+  by Intel as able to produce wrong results.
+- **`modeling train` now reports failures instead of exiting silently.** Any
+  exception is caught, named, and given a non-zero exit; a skipped run also
+  exits non-zero. Silence is indistinguishable from success in a terminal.
+
+### Known gaps
+
+- **The misinformation classifier is still on its demo checkpoint.** Real
+  training (26,777 rows, roberta-base) was started and stopped for machine
+  load; it needs a GPU run. Every number in its model card remains marked
+  DEMO FIXTURE until then.
+- **Bot generalisation to unseen campaigns is weak, and the report says so.**
+  Per-fold macro-F1 is 0.416 ± 0.187 with a worst fold of 0.249, against the
+  pooled 0.705. The pooled figure averages away the folds where a held-out
+  botnet looked nothing like the training ones; the per-fold mean is the number
+  to quote.
+- **Human recall is 0.608** at the chosen threshold — 39% of genuine accounts
+  are flagged. That is the number to design the UI around.
+- Cresci's `genuine_accounts/users.csv` has a different column order, so
+  `created_at` fails to parse for exactly the human class — a textbook label
+  proxy. It did not dominate (`account_age_is_missing` reaches the top-5 SHAP
+  set for 4% of accounts, against `post_count` at 99%), but it is worth
+  re-checking after any loader change.
+
 ## [0.2.0] — 2026-08-13
 
 Phase 2: the modeling and scoring layer. Turns the Phase 1 corpus into scored Parquet

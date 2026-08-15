@@ -17,6 +17,7 @@ from modeling.datasets.splits import group_train_val_test, grouped_kfold
 
 ALL_KEYS = [
     "liar",
+    "fnc1",
     "fakenewsnet",
     "coaid",
     "stance",
@@ -131,6 +132,58 @@ def test_stance_maps_none_to_discuss_and_leaves_unrelated_unattested():
     assert "discuss" in labels
 
 
+def test_fnc1_covers_all_four_contract_stance_classes():
+    """The reason FNC-1 is preferred over SemEval-2016.
+
+    SemEval's three-class scheme cannot express `unrelated` at all, so a model
+    trained on it can never predict one -- a permanent coverage gap in the
+    contract. FNC-1 maps one-to-one, with nothing synthesized.
+    """
+    loaded = get_dataset("fnc1").load(demo=True)
+    assert set(loaded.frame["label"]) == {"support", "deny", "discuss", "unrelated"}
+
+
+def test_fnc1_label_map_stays_one_to_one():
+    from modeling.datasets.fnc1 import LABEL_MAP
+
+    assert LABEL_MAP == {
+        "agree": "support",
+        "disagree": "deny",
+        "discuss": "discuss",
+        "unrelated": "unrelated",
+    }
+    assert len(set(LABEL_MAP.values())) == 4, "two FNC-1 labels collapsed into one bucket"
+
+
+def test_fnc1_groups_by_body_not_by_row():
+    """The organizers' own key: their competition test set shares zero bodies
+    with train. Row-level splitting would let one body's text train and test."""
+    loaded = get_dataset("fnc1").load(demo=True)
+    assert loaded.group_col == "body_id"
+    assert loaded.frame["body_id"].nunique() < len(loaded.frame)
+
+
+def test_fnc1_namespaces_body_ids_across_the_two_files():
+    """Body ids restart from 0 in each file. Without namespacing, train body 3
+    and competition-test body 3 silently merge into one group -- which would
+    put the same article on both sides of the split."""
+    frame = get_dataset("fnc1").load(demo=True).frame
+    train_bodies = set(frame.loc[frame["official_split"] == "train", "body_id"])
+    test_bodies = set(frame.loc[frame["official_split"] == "competition_test", "body_id"])
+    assert train_bodies and test_bodies
+    assert not (train_bodies & test_bodies)
+
+
+def test_fnc1_and_semeval_share_a_directory_without_colliding():
+    """Both stance corpora live in benchmarks/stance/. Each must read only what
+    it recognises rather than tripping over the other's files."""
+    fnc1 = get_dataset("fnc1").load(demo=True)
+    semeval = get_dataset("stance").load(demo=True)
+    assert len(fnc1) > 0 and len(semeval) > 0
+    assert fnc1.group_col == "body_id"
+    assert semeval.group_col == "claim_id"
+
+
 def test_fakenewsnet_carries_both_domains_for_the_transfer_table():
     loaded = get_dataset("fakenewsnet").load(demo=True)
     assert set(loaded.frame["domain"].unique()) == {"politifact", "gossipcop"}
@@ -156,23 +209,52 @@ def test_coaid_groups_by_claim_text_so_waves_cannot_leak():
     assert counts.max() >= 1
 
 
-def test_cresci_groups_by_campaign_not_by_account():
-    """Each spambot directory is one botnet running one template. Grouping by
-    account would put siblings in train and test and report near-perfect F1."""
+def test_cresci_groups_bots_by_campaign_and_humans_by_account():
+    """The hybrid key, and why it is not either extreme.
+
+    Bots must group by campaign (each directory is one botnet running one
+    template). Humans must not, because in this dataset the label is a
+    deterministic function of the campaign -- one genuine directory, eight bot
+    directories -- so campaign-only grouping makes every group single-class and
+    no fold can be stratified.
+    """
     loaded = get_dataset("cresci").load(demo=True)
-    assert loaded.group_col == "campaign"
-    assert loaded.frame["campaign"].nunique() < loaded.frame["account_id"].nunique()
+    assert loaded.group_col == "split_group"
+    frame = loaded.frame
+
+    bots = frame.loc[frame["label"] == 1]
+    assert set(bots["split_group"]) == set(bots["campaign"]), "bots must group by campaign"
+
+    humans = frame.loc[frame["label"] == 0]
+    assert humans["split_group"].nunique() == humans["account_id"].nunique(), (
+        "humans must group by account"
+    )
 
 
-def test_cresci_grouped_cv_isolates_every_campaign():
+def test_cresci_folds_always_contain_both_classes():
+    """The failure this grouping exists to prevent: a single-class training
+    fold, which aborts the estimator with an unhelpful error deep in XGBoost."""
     loaded = get_dataset("cresci").load(demo=True)
     work, folds = grouped_kfold(
-        loaded.frame, group_col="campaign", label_col="label", n_splits=5
+        loaded.frame, group_col="split_group", label_col="label", n_splits=5
     )
     for fold in folds:
-        train_campaigns = set(work["campaign"].iloc[fold.train])
-        test_campaigns = set(work["campaign"].iloc[fold.test])
-        assert not (train_campaigns & test_campaigns)
+        assert work["label"].iloc[fold.train].nunique() == 2, "single-class training fold"
+        assert len(fold.test) > 0
+
+
+def test_cresci_grouped_cv_never_splits_a_botnet():
+    """A held-out campaign must be held out whole, or its template leaks."""
+    loaded = get_dataset("cresci").load(demo=True)
+    work, folds = grouped_kfold(
+        loaded.frame, group_col="split_group", label_col="label", n_splits=5
+    )
+    for fold in folds:
+        train = work.iloc[fold.train]
+        test = work.iloc[fold.test]
+        train_campaigns = set(train.loc[train["label"] == 1, "campaign"])
+        test_campaigns = set(test.loc[test["label"] == 1, "campaign"])
+        assert not (train_campaigns & test_campaigns), "a botnet straddled the split"
 
 
 def test_twibot_reads_nested_public_metrics():

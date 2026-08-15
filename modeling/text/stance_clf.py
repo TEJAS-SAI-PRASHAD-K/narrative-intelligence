@@ -139,13 +139,26 @@ def train_stance_classifier(
     settings = settings or get_settings()
     version = str(module_config("stance").get("version"))
 
-    dataset = get_dataset("stance")
-    if not dataset.available(data_path, demo=demo):
-        raise DatasetUnavailable(dataset.info.instructions(dataset.resolve_path(data_path, demo)))
+    # Prefer FNC-1 over SemEval-2016. Same slot on disk, different corpora:
+    # FNC-1 attests all four contract classes (SemEval cannot produce
+    # `unrelated` at all) and is ~12x larger. Same "prefer the better benchmark,
+    # fall back to the other" pattern the bot trainer uses for Cresci/TwiBot.
+    dataset = None
+    for key in ("fnc1", "stance"):
+        candidate = get_dataset(key)
+        if candidate.available(data_path, demo=demo):
+            dataset = candidate
+            break
+    if dataset is None:
+        raise DatasetUnavailable(
+            get_dataset("fnc1").info.instructions(
+                get_dataset("fnc1").resolve_path(data_path, demo)
+            )
+        )
 
     loaded = dataset.load(data_path, demo=demo)
     work, split = group_train_val_test(
-        loaded.frame, group_col="claim_id", label_col="label", seed=settings.seed
+        loaded.frame, group_col=loaded.group_col, label_col="label", seed=settings.seed
     )
     attested = sorted(set(work["label"].unique()))
     missing = [label for label in STANCE_LABELS if label not in attested]

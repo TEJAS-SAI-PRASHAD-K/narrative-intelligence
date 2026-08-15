@@ -472,19 +472,29 @@ changed the code:
 
 ## Findings worth stating plainly
 
+- **The bot classifier does not generalise to unseen botnets.** Trained on real
+  Cresci-2017: pooled out-of-fold macro-F1 0.705, but the **mean across folds is 0.416 ±
+  0.187 with a worst fold of 0.249**. The pooled figure averages away the folds where the
+  held-out campaign looked nothing like the training ones. Quote the per-fold mean. Human
+  recall is 0.608 — 39% of genuine accounts get flagged at the chosen threshold.
 - **The misinformation fine-tune does not clear TF-IDF + logistic regression** on the demo
   fixture (macro-F1 0.908 vs 0.927, intervals overlapping). Reported in
-  `artifacts/eval/misinfo/v0.1.0/report.md` rather than tuned away. On real benchmarks this
-  comparison must be re-run, and **if the transformer still fails to clear TF-IDF there, it
-  should not ship** — it costs orders of magnitude more inference for no measured gain.
+  `artifacts/eval/misinfo/v0.1.0/report.md` rather than tuned away. **Still on the demo
+  checkpoint** — real training on 26,777 rows needs a GPU. When it runs, if the transformer
+  still fails to clear TF-IDF, it should not ship: it costs orders of magnitude more
+  inference for no measured gain.
 - **Coordination modularity does not exceed the time-shuffled null on this corpus**
   (0.912 observed vs 0.979 ± 0.000 shuffled). Any graph has communities; on this data the
   communities found are **not** evidence of coordination, and the report says so. The
   detector does recover a planted coordinated burst on the demo fixture, so the mechanism
   works — the corpus simply does not contain the phenomenon at a detectable level.
-- **Three modules are not trained** — bot, stance and deepfake — because every benchmark
-  they need is access-gated. Each ships its complete training path, its split discipline
-  and an honest null scoring path, and each model card says exactly what is missing.
+- **Stance is unblocked but untrained.** The corpus supplied as SemEval-2016 is actually
+  **FNC-1**, which is the better fit: its four labels map one-to-one onto the contract,
+  where SemEval has no `unrelated` class and could never predict one. 75,385 pairs over
+  2,587 bodies. The loader ships; the 75k-pair fine-tune is GPU work.
+- **Deepfake remains untrained.** FaceForensics++ is 17 GB behind a signed agreement, and
+  the DFDC copy on disk is pre-extracted crops with no `metadata.json` — so a fake cannot
+  be tied to its source video and the split cannot be made honest. Documented, not faked.
 
 ## Limitations
 
@@ -503,7 +513,8 @@ Everything in Phase 1's limitations still holds. Phase 2 adds:
   over-flag African-American English and identity terms in non-pejorative use. `toxicity`
   must never be read as "this account is abusive" and nothing should be ranked by it alone.
 - **`bot_prob` is trained on Twitter and applied to Mastodon.** Cross-platform transfer is
-  unmeasured and should be assumed degraded.
+  unmeasured and should be assumed degraded — and given a worst fold of 0.249 on
+  *in-platform* held-out campaigns, degraded from an already weak base.
 - **Coordination cannot see across platforms.** Author identity does not survive between
   services, so one person coordinating from two accounts on two platforms appears as two
   unlinked nodes. It also excludes `news`, `gdelt` and Kaggle-flat Reddit entirely.

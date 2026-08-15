@@ -16,10 +16,19 @@ construction. Group by account id and 5-fold CV will place siblings from the
 same botnet in train and test, and the model will report near-perfect F1 for
 having memorized one campaign's signature.
 
-So the group key here is the **campaign directory**, not the account. That is
-strictly stronger, it is what ``group_col`` returns, and it is the difference
-between an F1 that means "detects bots" and one that means "recognizes these
-seven botnets".
+**But campaign alone does not work either**, because in this dataset the label
+is a deterministic function of the campaign: one genuine directory, eight bot
+directories, every group 100% one class. Stratification becomes impossible and
+some fold's training set ends up single-class.
+
+So the group key is a hybrid -- ``split_group``: **campaign for bots, account
+for humans**. The leakage worth preventing is the shared bot template, and
+genuine accounts have no template to share. Each test fold then holds out one
+or two entire botnets plus a random sample of humans, which answers the
+question that matters: does this detect a campaign it has never seen?
+
+Expect high fold-to-fold variance from only eight bot campaigns. Report mean
++/- std and the per-fold numbers, never the mean alone.
 """
 
 from __future__ import annotations
@@ -85,12 +94,14 @@ class Cresci2017(BenchmarkDataset):
             "only users.csv is read; tweets.csv is optional and used for content features",
         ],
         notes=(
-            "Group by campaign, not account: each spambot directory is one botnet running "
-            "one template, and account-level grouping leaks it."
+            "Hybrid grouping: campaign for bots (each directory is one botnet running one "
+            "template), account for humans (no shared template to leak). Campaign-only "
+            "grouping is impossible here -- label is a function of campaign."
         ),
     )
-    #: The campaign directory. See the module docstring for why not account_id.
-    group_col = "campaign"
+    #: Hybrid: campaign for bots, account for humans. See the note in _read for
+    #: why neither key works alone on this dataset.
+    group_col = "split_group"
     label_col = "label"
     domain_col = "campaign_family"
 
@@ -156,6 +167,32 @@ class Cresci2017(BenchmarkDataset):
         merged["account_id"] = "twitter:" + merged["native_id"].astype(str)
         merged["platform"] = "twitter"
         merged["source_dataset"] = "cresci"
+
+        # Hybrid split key. Grouping by campaign alone is impossible here, and
+        # grouping by account alone is wrong.
+        #
+        # In Cresci-2017 the label is a *deterministic function of the campaign*:
+        # there is exactly one genuine directory and eight bot directories, so
+        # every campaign is 100% one class. StratifiedGroupKFold then cannot
+        # balance a fold -- some fold's training set ends up all-bot, and
+        # XGBoost aborts with "Invalid classes inferred from unique values of y".
+        #
+        # The leakage this grouping exists to prevent is *within* bot campaigns:
+        # each spambot directory is one botnet running one content template, so
+        # its accounts are near-identical by construction and splitting inside
+        # one leaks the template. Genuine accounts have no such shared template
+        # -- they are independent individuals -- so there is nothing to leak
+        # between them and account-level grouping is correct for that class.
+        #
+        # So: bots group by campaign, humans group by account. Each test fold
+        # then holds out one or two entire botnets plus a random sample of
+        # humans, which is exactly the question worth answering -- does this
+        # detect a campaign it has never seen? Expect high fold-to-fold variance
+        # with only eight bot campaigns; report mean +/- std and the per-fold
+        # numbers, never the mean alone.
+        merged["split_group"] = merged["campaign"].where(
+            merged["label"] == 1, "genuine:" + merged["account_id"]
+        )
         merged["description"] = merged["description"].fillna("")
         merged["handle"] = merged["handle"].fillna("")
         return merged, dropped

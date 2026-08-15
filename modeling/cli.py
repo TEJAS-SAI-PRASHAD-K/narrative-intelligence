@@ -231,12 +231,27 @@ def train(
     _bootstrap(verbose)
     from modeling.training import train_module
 
-    result = train_module(module, data_path=data, demo=demo, epochs=epochs)
+    # A training failure must never be silent.
+    #
+    # An estimator aborting inside native code (XGBoost on a single-class fold,
+    # for instance) took the interpreter down with SIGSEGV and no message at
+    # all -- exit 139, empty output, and nothing written. Silence is
+    # indistinguishable from success to anyone reading a terminal, so every
+    # failure is caught, named, and given a non-zero exit.
+    try:
+        result = train_module(module, data_path=data, demo=demo, epochs=epochs)
+    except Exception as exc:
+        log.exception("training %s failed", module)
+        console.print(f"\n[red]training {module} failed:[/] {type(exc).__name__}: {exc}")
+        raise typer.Exit(code=1) from exc
+
     console.print(f"\n[bold]{module}[/] {result.headline()}")
     if result.artifacts:
         console.print("artifacts:")
         for path in result.artifacts:
             console.print(f"  {path}")
+    if result.skipped:
+        raise typer.Exit(code=1)
 
 
 @app.command()

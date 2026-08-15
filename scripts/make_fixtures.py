@@ -471,12 +471,61 @@ def write_corpus() -> None:
     print(f"  corpus: {len(records)} records, {len(authors)} authors")
 
 
+def write_fnc1() -> None:
+    """FNC-1 fixture, written into the shared `stance/` slot.
+
+    Both stance corpora live in that directory (see FNC1.default_path), so the
+    fixture carries both: the SemEval annotation .txt files and the FNC-1 CSVs.
+    The loaders pick whichever they recognise, which is exactly what happens
+    with real data.
+    """
+    out = ROOT / "stance"
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Deliberately imbalanced the way the real corpus is: unrelated dominates
+    # and disagree is rare, so a fixture-trained model that ignores the rare
+    # class still looks fine on accuracy -- which is the trap being guarded.
+    stances = ["unrelated"] * 44 + ["discuss"] * 11 + ["agree"] * 4 + ["disagree"] * 1
+    bodies = ["Body ID,articleBody"]
+    for body_id in range(12):
+        bodies.append(
+            f'{body_id},"Fixture article body {body_id}. It describes an event in several '
+            f'sentences so the text is long enough to survive the length floor, and it '
+            f'repeats the word contract {body_id} times."'
+        )
+    (out / "train_bodies.csv").write_text("\n".join(bodies) + "\n")
+
+    rows = ["Headline,Body ID,Stance"]
+    for i, stance in enumerate(stances):
+        rows.append(
+            f'"Fixture headline {i} claiming something about a public matter",'
+            f"{i % 12},{stance}"
+        )
+    (out / "train_stances.csv").write_text("\n".join(rows) + "\n")
+
+    # A competition test half with disjoint body ids, mirroring the real split.
+    test_bodies = ["Body ID,articleBody"]
+    for body_id in range(6):
+        test_bodies.append(
+            f'{body_id},"Held-out fixture body {body_id} with enough words to pass the floor."'
+        )
+    (out / "competition_test_bodies.csv").write_text("\n".join(test_bodies) + "\n")
+    test_rows = ["Headline,Body ID,Stance"]
+    for i in range(24):
+        test_rows.append(
+            f'"Held-out fixture headline {i} about the same public matter",{i % 6},'
+            f'{["unrelated","discuss","agree","disagree"][i % 4]}'
+        )
+    (out / "competition_test_stances.csv").write_text("\n".join(test_rows) + "\n")
+
+
 BUILDERS = {
     "corpus": write_corpus,
     "liar": write_liar,
     "fakenewsnet": write_fakenewsnet,
     "coaid": write_coaid,
     "stance": write_stance,
+    "fnc1": write_fnc1,
     "twibot": write_twibot,
     "cresci": write_cresci,
     "faceforensics": write_faceforensics,

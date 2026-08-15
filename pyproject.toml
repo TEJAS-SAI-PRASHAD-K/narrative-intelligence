@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "narrative-intelligence"
-version = "0.2.0"
+version = "0.2.1"
 description = "Narrative Intelligence Platform, phases 1-2: a reproducible schema-normalized multi-platform corpus, plus the models and scored tables built on it."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -5,21 +5,33 @@
 
 ---
 
-## Status: deliberately not trained
+## Status: not trained. Data is now present.
 
-Stance was descoped behind the misinformation classifier, as the phase plan
-allowed. `stance` and `stance_conf` are written as **null**, which the output
-contract explicitly permits and which Phase 4 renders as "not assessed".
+`stance` and `stance_conf` are written as **null**, which the contract permits
+and Phase 4 renders as "not assessed". An untrained model producing confident
+stance labels would be worse than an empty column.
 
-This is a legitimate outcome. An untrained model producing confident stance
-labels would be worse than an empty column — it would populate a UI field with
-noise that looks like signal. The complete training path ships in this module;
-closing the gap needs the benchmark on disk and one command.
+**What changed: the corpus is on disk and the label-coverage gap is closed.**
+`data/benchmarks/stance/` holds **FNC-1** (Fake News Challenge), not SemEval-2016
+as originally planned, and FNC-1 is the better corpus for this project:
+
+| | SemEval-2016 Task 6 | **FNC-1** |
+|---|---|---|
+| classes | FAVOR / AGAINST / NONE | agree / disagree / discuss / **unrelated** |
+| covers the contract? | **no** — cannot express `unrelated` | **yes**, one-to-one |
+| size | ~4k pairs | **75,385 pairs / 2,587 bodies** |
+| pairing | target phrase vs tweet | headline vs article body |
+
+`modeling/datasets/fnc1.py` loads it and `train_stance_classifier` prefers it
+over SemEval automatically. Remaining work is the fine-tune itself — a 75k-pair
+transformer run, which belongs on a GPU:
 
 ```bash
-# after the SemEval-2016 Task 6 data arrives:
 python -m modeling.cli train stance
 ```
+
+**Do not run that on a laptop CPU.** 75k pairs of (headline, article body) at
+256 tokens is Colab work.
 
 ## What is already decided
 
