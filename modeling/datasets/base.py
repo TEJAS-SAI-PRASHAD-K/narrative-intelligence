@@ -296,6 +296,39 @@ def availability_table(demo: bool = False) -> list[dict[str, Any]]:
                 "path": str(path),
                 "available": dataset.available(demo=demo),
                 "fixture": dataset.available(demo=True),
+                "note": "",
             }
         )
+
+    # Some loaders share a directory because they are alternatives for the same
+    # job -- FNC-1 and SemEval both answer "stance", and whichever the user
+    # obtained lands in benchmarks/stance/. Without this note the unsatisfied
+    # sibling reads as a broken loader rather than as "you have the other one",
+    # which is exactly the wrong thing to send someone debugging.
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_path.setdefault(row["path"], []).append(row)
+    for siblings in by_path.values():
+        if len(siblings) < 2:
+            continue
+        satisfied = [s["key"] for s in siblings if s["available"]]
+        for row in siblings:
+            if not row["available"] and satisfied:
+                row["note"] = f"shares this path; satisfied by {', '.join(satisfied)}"
+            elif row["available"] and len(siblings) > 1:
+                others = [s["key"] for s in siblings if s["key"] != row["key"]]
+                row["note"] = f"alternative to {', '.join(others)}"
     return rows
+
+
+def unsatisfied_datasets(demo: bool = False) -> list[str]:
+    """Datasets genuinely missing -- excluding ones a sibling already covers.
+
+    Used for the "N dataset(s) not on disk" line, which should not count a
+    loader whose slot another loader has already filled.
+    """
+    return [
+        row["key"]
+        for row in availability_table(demo)
+        if not row["available"] and not row["note"]
+    ]

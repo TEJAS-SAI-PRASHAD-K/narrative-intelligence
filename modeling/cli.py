@@ -61,10 +61,10 @@ def datasets(
 ) -> None:
     """What benchmark data is on disk, and how to get what is not."""
     _bootstrap()
-    from modeling.datasets import all_datasets, availability_table
+    from modeling.datasets import availability_table, unsatisfied_datasets
 
     table = Table(title="benchmark availability", show_lines=False)
-    for column in ("dataset", "access", "on disk", "fixture", "path"):
+    for column in ("dataset", "access", "on disk", "fixture", "note"):
         table.add_column(column)
     for row in availability_table(demo):
         table.add_row(
@@ -72,17 +72,20 @@ def datasets(
             row["access"],
             "[green]yes[/]" if row["available"] else "[red]no[/]",
             "[green]yes[/]" if row["fixture"] else "[red]no[/]",
-            row["path"],
+            row["note"] or "",
         )
     console.print(table)
 
-    missing = [d for d in all_datasets() if not d.available()]
+    missing = unsatisfied_datasets(demo)
     if missing:
         console.print(
-            f"\n[yellow]{len(missing)} dataset(s) not on disk.[/] Every benchmark this "
-            "project uses is access-gated; run a command with [bold]--demo[/] to exercise "
-            "the pipeline on fixtures, or follow the steps printed by the loader."
+            f"\n[yellow]{len(missing)} dataset(s) not on disk: {', '.join(missing)}.[/] "
+            "Every benchmark this project uses is access-gated; run a command with "
+            "[bold]--demo[/] to exercise the pipeline on fixtures, or follow the steps "
+            "printed by the loader."
         )
+    else:
+        console.print("\n[green]every benchmark slot is filled.[/]")
 
 
 @app.command()

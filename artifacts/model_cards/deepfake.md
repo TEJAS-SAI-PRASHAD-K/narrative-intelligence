@@ -5,11 +5,30 @@
 
 ---
 
-## Status: not trained
+## Status: not trained. DFDC is present as a test set only.
 
 FaceForensics++ requires a signed agreement and the fine-tune requires a GPU;
 neither is available in this environment. What ships is the complete pipeline,
 the split discipline, the aggregation policy and the honest null path.
+
+**DFDC is on disk in a repackaged form**: 3,745 pre-extracted face crops over
+381 source videos (305 fake, 76 real), as `fake/` and `real/` directories of
+`<video_id>_<frame>.png`. The loader reads this layout, groups by `video_id`,
+and marks every row `paired_source_known = False`.
+
+**That layout is usable for testing and not for training.** The original release
+ships a `metadata.json` whose `original` field names the real clip each fake was
+derived from; this repackaging drops it, and the fake and real video ids do not
+overlap, so there is no way to recover which actor a fake depicts. DFDC swaps
+faces between actors recorded in the same sessions, so one person appears across
+many clips — trained on this, a model could memorise a face and be scored on
+that same face from the other side of the split.
+
+Grouping by `video_id` does prevent the frame-level leakage that causes
+implausible deepfake accuracy: ten crops of one clip cannot straddle a split.
+That is sufficient for DFDC's actual role here — a cross-dataset generalisation
+check against a model trained on FF++ — because a set used purely for testing
+has no internal boundary to leak across.
 
 The scoring stage runs and writes rows with `deepfake_prob = null` and an
 explanation saying why. **`face_detected` and `frames_analyzed` are still

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +39,12 @@ log = logging.getLogger(__name__)
 #: The real dataset is .mp4; the committed demo fixture is .png for the reasons
 #: given in modeling/datasets/faceforensics.py. metadata.json drives the parse
 #: either way, so the pairing logic is unaffected.
+
+#: Pre-extracted face crops, named "<video_id>_<frame_index>.png" under fake/
+#: and real/. This is how the widely-mirrored Kaggle repackagings ship, and it
+#: carries no metadata.json -- see _read_crops for what that costs.
+CROP_NAME = re.compile(r"^(?P<video>.+)_(?P<frame>\d+)$")
+CROP_DIRS = {"fake": 1, "real": 0}
 
 
 @register_dataset
@@ -74,13 +81,18 @@ class DFDC(BenchmarkDataset):
     def validate(self, path: Path) -> None:
         if not path.exists():
             raise self.unavailable(path)
-        metadata_files = sorted(path.rglob("metadata.json"))
-        if not metadata_files:
-            raise DatasetUnavailable(
-                self.info.instructions(path) + f"\n  no metadata.json found under {path}"
-            )
+        if sorted(path.rglob("metadata.json")):
+            return
+        if _crop_dirs_present(path):
+            return
+        raise DatasetUnavailable(
+            self.info.instructions(path)
+            + f"\n  no metadata.json and no fake/ + real/ crop directories under {path}"
+        )
 
     def _read(self, path: Path) -> tuple[pd.DataFrame, dict[str, int]]:
+        if not sorted(path.rglob("metadata.json")) and _crop_dirs_present(path):
+            return _read_crops(path)
         dropped: dict[str, int] = {}
         rows = []
         for metadata_file in sorted(path.rglob("metadata.json")):
@@ -140,3 +152,80 @@ class DFDC(BenchmarkDataset):
         frame = pd.DataFrame(rows)
         frame["source_dataset"] = "dfdc"
         return frame, dropped
+
+
+def _crop_dirs_present(path: Path) -> bool:
+    return all(
+        (path / name).is_dir() and any((path / name).glob("*.png")) for name in CROP_DIRS
+    )
+
+
+def _read_crops(path: Path) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Parse the pre-extracted-crops repackaging: fake/ and real/ PNGs.
+
+    **What this layout can and cannot support.**
+
+    Filenames encode ``<video_id>_<frame_index>``, so grouping by ``video_id``
+    prevents the frame-level leakage that is the usual cause of implausible
+    deepfake accuracy -- ten crops of one clip cannot straddle a split.
+
+    What it cannot support is *identity* pairing. The original release ships a
+    ``metadata.json`` whose ``original`` field names the real clip each fake was
+    derived from; this repackaging drops it, and the fake and real video ids do
+    not overlap, so there is no way to recover which actor a given fake depicts.
+    DFDC swaps faces between actors recorded in the same sessions, so one
+    person appears across many clips: trained on this, a model could memorise a
+    face and be scored on that same face from the other side of the split.
+
+    **Hence: test-only.** DFDC's role in this project is a cross-dataset
+    generalisation check against a model trained on FaceForensics++, and a set
+    used purely for testing has no internal boundary to leak across. The frame
+    ``paired_source_known`` is False on every row so a future trainer can refuse
+    it, and the warning below fires on every load.
+    """
+    dropped: dict[str, int] = {}
+    rows = []
+    for directory, label in CROP_DIRS.items():
+        for image in sorted((path / directory).glob("*.png")):
+            match = CROP_NAME.match(image.stem)
+            if match is None:
+                dropped["unparseable_crop_name"] = dropped.get("unparseable_crop_name", 0) + 1
+                continue
+            rows.append(
+                {
+                    "video_id": match.group("video"),
+                    # The clip is its own group. Not the actor -- that is the
+                    # part this layout cannot tell us.
+                    "source_video": match.group("video"),
+                    "frame_index": int(match.group("frame")),
+                    "path": str(image),
+                    "label": label,
+                    "method": "unknown",
+                    "part": f"crops_{directory}",
+                }
+            )
+
+    if not rows:
+        raise DatasetUnavailable(
+            f"DFDC crops at {path}: fake/ and real/ exist but no parseable "
+            "<video_id>_<frame>.png files were found inside them."
+        )
+
+    frame = pd.DataFrame(rows)
+    frame["source_dataset"] = "dfdc"
+    frame["layout"] = "crops"
+    # Read by the deepfake trainer, which must refuse a set it cannot group by
+    # identity. Never silently True.
+    frame["paired_source_known"] = False
+
+    log.warning(
+        "DFDC loaded from the pre-extracted-crops layout: %d frames over %d videos "
+        "(%d fake, %d real). This packaging has no metadata.json, so a fake cannot be "
+        "tied to the real clip it came from and the set is USABLE FOR TESTING ONLY. "
+        "Training on it risks identity leakage; see modeling/datasets/dfdc.py.",
+        len(frame),
+        frame["video_id"].nunique(),
+        int((frame["label"] == 1).sum()),
+        int((frame["label"] == 0).sum()),
+    )
+    return frame, dropped

@@ -31,6 +31,7 @@ from modeling.datasets.base import (
     all_datasets,
     availability_table,
     get_dataset,
+    unsatisfied_datasets,
 )
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "all_datasets",
     "availability_table",
     "get_dataset",
+    "unsatisfied_datasets",
 ]
