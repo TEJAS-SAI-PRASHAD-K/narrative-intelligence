@@ -50,6 +50,9 @@ from modeling.eval.metrics import (
 
 log = logging.getLogger(__name__)
 
+#: Below this many self-declared accounts, domain recalibration is fitting noise.
+MIN_ROWS_FOR_DOMAIN_CALIBRATION = 100
+
 LABEL_NAMES = ["human", "bot"]
 
 
@@ -531,3 +534,123 @@ def _transfer_section(dataset_key: str) -> str:
             "a research signal and not a finding.",
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# domain recalibration
+# ---------------------------------------------------------------------------
+#: Mastodon accounts self-declare automation via a `bot` field on their profile,
+#: which Phase 1 preserves verbatim in ``Author.raw``. It is the only bot label
+#: this project has for its own corpus.
+WEAK_LABEL_FIELD = "bot"
+
+
+def extract_weak_bot_labels(authors: pd.DataFrame) -> pd.Series:
+    """Self-declared bot flags from the platform's own profile payload.
+
+    Returns a Series indexed by ``author_id`` holding only the accounts that
+    actually declare one. Platforms that do not expose the field contribute
+    nothing rather than a default -- an absent declaration is not a declaration
+    of "human".
+    """
+    import json
+
+    if not len(authors) or "raw" not in authors.columns:
+        return pd.Series(dtype=float)
+
+    values: dict[str, float] = {}
+    for author_id, raw in zip(authors["author_id"], authors["raw"], strict=True):
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if isinstance(raw, dict) and isinstance(raw.get(WEAK_LABEL_FIELD), bool):
+            values[str(author_id)] = float(raw[WEAK_LABEL_FIELD])
+    return pd.Series(values, dtype=float)
+
+
+def recalibrate_on_domain(
+    scores: np.ndarray,
+    weak_labels: np.ndarray,
+    *,
+    method: str = "platt",
+) -> tuple[Calibrator | None, dict[str, Any]]:
+    """Refit calibration against a weak in-domain label.
+
+    **Why this exists.** The benchmark calibration does not survive the domain
+    shift. Measured on this corpus: every Mastodon account scored between 0.66
+    and 0.99, so 100% sat above the operating threshold, while only 14.7%
+    self-declare as bots. The *ranking* transferred (ROC-AUC 0.829) but the
+    probabilities were meaningless, and ``bot_prob`` is contractually a
+    calibrated probability that Phase 4 multiplies into a fused score.
+
+    Recalibrating on the target domain is the standard fix and the labels are
+    free. Platt rather than isotonic: with a few hundred accounts and a handful
+    of positives, isotonic fits a step function to noise.
+
+    **This label is weak, and the bias has a direction.** Declaring yourself a
+    bot on Mastodon is opt-in and honest bots do it, so undeclared automation is
+    a false negative in the label. Recalibration will therefore *understate*
+    bot probability, and the resulting numbers are a floor rather than an
+    estimate. Stated in the model card, not just here.
+
+    **Never a training feature.** Used for calibration only. Fitting on it would
+    teach the model to read the flag, and the flag is exactly what an
+    undeclared bot omits.
+    """
+    report: dict[str, Any] = {
+        "attempted": True,
+        "n_labelled": int(len(weak_labels)),
+        "n_positive": int(np.nansum(weak_labels)) if len(weak_labels) else 0,
+        "applied": False,
+    }
+    if len(weak_labels) < MIN_ROWS_FOR_DOMAIN_CALIBRATION:
+        report["reason"] = (
+            f"only {len(weak_labels)} labelled accounts; below the "
+            f"{MIN_ROWS_FOR_DOMAIN_CALIBRATION}-row floor"
+        )
+        return None, report
+    if len(np.unique(weak_labels)) < 2:
+        report["reason"] = "the weak label has only one class; nothing to calibrate against"
+        return None, report
+
+    try:
+        from sklearn.metrics import roc_auc_score
+
+        report["roc_auc_vs_weak_label"] = round(float(roc_auc_score(weak_labels, scores)), 4)
+    except Exception:  # pragma: no cover - degenerate input
+        report["roc_auc_vs_weak_label"] = None
+
+    calibrator = Calibrator(method)
+    result = calibrator.fit(scores, weak_labels)
+    report.update(
+        {
+            "applied": True,
+            "method": result.method,
+            "brier_before": round(result.brier_before, 4),
+            "brier_after": round(result.brier_after, 4),
+            "improved": result.brier_after <= result.brier_before,
+        }
+    )
+    if not report["improved"]:
+        # Refuse a calibration that makes things worse rather than shipping it.
+        report["applied"] = False
+        report["reason"] = (
+            f"Brier got worse ({result.brier_before:.4f} -> {result.brier_after:.4f}); "
+            "keeping the benchmark calibration and leaving the domain gap reported"
+        )
+        log.warning("bot domain recalibration rejected: %s", report["reason"])
+        return None, report
+
+    log.info(
+        "bot domain recalibration: %s on %d accounts (%d declared bots), "
+        "Brier %.4f -> %.4f, ranking ROC-AUC %s",
+        result.method,
+        report["n_labelled"],
+        report["n_positive"],
+        result.brier_before,
+        result.brier_after,
+        report.get("roc_auc_vs_weak_label"),
+    )
+    return calibrator, report

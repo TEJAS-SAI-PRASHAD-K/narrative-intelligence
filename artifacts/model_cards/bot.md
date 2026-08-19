@@ -142,18 +142,61 @@ values are global gain importances — a different question ("what does the mode
 use in general" vs "why this account"), and it must not be presented as
 per-account in a panel labelled "why".
 
-## Known domain shift
+## Domain shift — now measured, not assumed
 
-**Cresci-2017 is Twitter. This corpus is Mastodon, Reddit and YouTube.
-Cross-platform transfer is UNMEASURED and should be assumed degraded.**
+Cresci-2017 is Twitter; this corpus is Mastodon, Reddit and YouTube. That
+transfer is no longer an unmeasured caveat.
 
-Restricting to the social-graph tier bounds the shift without removing it:
-follower counts mean different things on a follow-graph platform and a federated
-one, and Reddit has no follower concept at all.
+**Coverage.** Only **232 of 2,021** accounts are scored at all. Reddit, YouTube,
+news and GDELT supply none of the model's features — no followers, no account
+age — so they get `bot_prob = null` with reason `bot:features_not_supplied`.
+Scoring them anyway produced a constant 0.938–0.991 for the whole corpus, which
+is the failure this guard now prevents.
 
-To measure it: hand-label 50 Mastodon accounts, score them, report the result.
-Until then, `bot_prob` on non-Twitter accounts is a research signal, not a
-finding — and given the fold variance above, a weak one.
+**A semantic mismatch that survived the name-level intersection.** Phase 1's
+`Author.post_count` is *records ingested* (corpus median 1); the benchmark's is
+Twitter's lifetime `statuses_count` (human median 6,609). Same name, different
+quantity. `features.py` now reads the platform's lifetime count from
+`Author.raw`. An intersection matched on column name is not an intersection.
+
+**Validation against a real in-domain label.** Mastodon accounts self-declare
+automation via a `bot` field, which Phase 1 preserves. Against it:
+
+| | before recalibration | after |
+|---|---|---|
+| flagged at 0.5 | 232 / 232 (**100%**) | 33 / 232 (**14%**) |
+| base rate (self-declared) | 14.7% | 14.7% |
+| Brier | 0.7905 | **0.0886** |
+| ROC-AUC | 0.829 | 0.829 (unchanged) |
+| mean, declared bots | 0.983 | 0.382 |
+| mean, declared humans | 0.962 | 0.106 |
+
+**The ranking transferred; the calibration did not.** ROC-AUC 0.829 says higher
+scores really are more likely to be bots. But every account sat above threshold,
+and `bot_prob` is contractually a calibrated probability Phase 4 multiplies into
+a fused score — so the raw output was unusable.
+
+## Domain recalibration
+
+`bot_prob` on this corpus is **Platt-recalibrated against Mastodon's
+self-declared bot flag**, fitted at scoring time on the 232 scored accounts.
+Recorded in `model_versions` as `bot_domain_calibration =
+platt-mastodon-selfdeclared`, and in `data/scored/manifest.json` under
+`domain_recalibration`. Platt rather than isotonic: 34 positives is far too few
+for a step function. A recalibration that worsens Brier is rejected rather than
+shipped.
+
+**The label is weak and the bias has a direction.** Declaring yourself a bot on
+Mastodon is opt-in, and it is the *honest* automation that declares. Undeclared
+bots are therefore false negatives in the calibration label, which means these
+probabilities **understate** bot likelihood. Treat them as a floor.
+
+**Never a training feature.** The flag is used for calibration only. Fitting on
+it would teach the model to read a field that any undeclared bot simply omits —
+the leak this model card warned about from the beginning.
+
+**Still unmeasured:** transfer to Reddit and YouTube, where the model does not
+run at all. That is not a gap to close by scoring them anyway.
 
 ## Error analysis
 

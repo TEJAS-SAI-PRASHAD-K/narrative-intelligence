@@ -368,3 +368,83 @@ def test_empty_corpus_does_not_crash(isolated_settings):
     )
     assert result.edges == []
     assert result.n_records == 0
+
+
+# ---------------------------------------------------------------------------
+# domain recalibration
+# ---------------------------------------------------------------------------
+def test_weak_labels_come_only_from_accounts_that_declare_one():
+    """An absent declaration is not a declaration of 'human'."""
+    import json
+
+    from modeling.accounts.bot_clf import extract_weak_bot_labels
+
+    authors = pd.DataFrame(
+        [
+            {"author_id": "mastodon:a", "raw": json.dumps({"bot": True})},
+            {"author_id": "mastodon:b", "raw": json.dumps({"bot": False})},
+            {"author_id": "reddit:c", "raw": json.dumps({})},  # no such field
+            {"author_id": "reddit:d", "raw": "not json"},
+        ]
+    )
+    labels = extract_weak_bot_labels(authors)
+    assert set(labels.index) == {"mastodon:a", "mastodon:b"}
+    assert labels["mastodon:a"] == 1.0
+    assert labels["mastodon:b"] == 0.0
+
+
+def test_domain_recalibration_refuses_a_tiny_label_set():
+    from modeling.accounts.bot_clf import recalibrate_on_domain
+
+    rng = np.random.default_rng(0)
+    calibrator, report = recalibrate_on_domain(
+        rng.random(20), (rng.random(20) > 0.7).astype(float)
+    )
+    assert calibrator is None
+    assert report["applied"] is False
+    assert "floor" in report["reason"]
+
+
+def test_domain_recalibration_refuses_a_single_class_label():
+    from modeling.accounts.bot_clf import recalibrate_on_domain
+
+    rng = np.random.default_rng(0)
+    calibrator, report = recalibrate_on_domain(rng.random(200), np.zeros(200))
+    assert calibrator is None
+    assert "one class" in report["reason"]
+
+
+def test_domain_recalibration_fixes_a_shifted_score_distribution():
+    """The measured failure: benchmark calibration puts every account above the
+    threshold while only a small fraction are really bots. Recalibration must
+    restore the base rate while preserving the ranking."""
+    from modeling.accounts.bot_clf import recalibrate_on_domain
+
+    rng = np.random.default_rng(7)
+    n = 300
+    labels = (rng.random(n) < 0.15).astype(float)
+    # Every score crammed into [0.9, 1.0], bots only slightly higher -- the
+    # shape actually observed on Mastodon.
+    scores = 0.90 + 0.09 * rng.random(n) + 0.02 * labels
+    scores = np.clip(scores, 0, 1)
+
+    calibrator, report = recalibrate_on_domain(scores, labels)
+    assert calibrator is not None and report["applied"]
+    assert report["brier_after"] < report["brier_before"]
+
+    calibrated = calibrator.transform(scores)
+    assert (calibrated >= 0.5).mean() < 0.5, "still flagging most of the corpus"
+    # Platt is monotone, so the ranking must be untouched.
+    assert np.array_equal(np.argsort(scores), np.argsort(calibrated))
+
+
+def test_domain_recalibration_is_rejected_when_it_makes_brier_worse():
+    """A calibration that hurts is not shipped."""
+    from modeling.accounts.bot_clf import recalibrate_on_domain
+
+    rng = np.random.default_rng(3)
+    labels = (rng.random(400) < 0.5).astype(float)
+    # Already perfectly calibrated and perfectly separating.
+    scores = np.where(labels == 1, 0.99, 0.01)
+    calibrator, report = recalibrate_on_domain(scores, labels)
+    assert calibrator is None or report["applied"] is True

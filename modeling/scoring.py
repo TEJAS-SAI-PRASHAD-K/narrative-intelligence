@@ -499,7 +499,12 @@ def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
 @stage("accounts")
 def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
     """Assemble author_scores from every per-author signal available."""
-    from modeling.accounts.bot_clf import BotModel, shap_contributions
+    from modeling.accounts.bot_clf import (
+        BotModel,
+        extract_weak_bot_labels,
+        recalibrate_on_domain,
+        shap_contributions,
+    )
     from modeling.accounts.features import available_tiers, build_features
     from modeling.config import module_config
     from modeling.registry import resolve
@@ -584,6 +589,37 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
                     for account, ok in zip(features.account_ids, supplied, strict=True)
                     if ok
                 ]
+
+                # Recalibrate against the platform's own self-declared bot flag.
+                #
+                # The benchmark calibration does not survive the domain shift:
+                # measured here, every scored account landed above the operating
+                # threshold while only ~15% declare themselves bots. The ranking
+                # transferred, the probabilities did not, and bot_prob is
+                # contractually a calibrated probability Phase 4 multiplies into
+                # a fused score. The flag is used for calibration only -- never
+                # as a feature, because an undeclared bot is precisely the one
+                # that omits it.
+                weak = extract_weak_bot_labels(ctx.authors)
+                aligned = weak.reindex(scored_ids).dropna()
+                if len(aligned):
+                    index = {account: i for i, account in enumerate(scored_ids)}
+                    positions = [index[a] for a in aligned.index]
+                    calibrator, calibration_report = recalibrate_on_domain(
+                        probabilities[positions], aligned.to_numpy()
+                    )
+                    if calibrator is not None:
+                        probabilities = calibrator.transform(probabilities)
+                        versions["bot_domain_calibration"] = (
+                            f"{calibration_report['method']}-mastodon-selfdeclared"
+                        )
+                    ctx.store.update_manifest(
+                        table="author_scores",
+                        rows=len(scored_ids),
+                        model_versions={"bot": bot_version},
+                        extra={"domain_recalibration": calibration_report},
+                    )
+
                 for account, probability, contribution in zip(
                     scored_ids, probabilities, contributions, strict=True
                 ):
