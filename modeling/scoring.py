@@ -303,7 +303,8 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             }
         ]
 
-    versions = {"misinfo": version}
+    demo_note = warn_if_demo_checkpoint("misinfo", checkpoint, ctx.demo)
+    versions = {"misinfo": checkpoint_stamp("misinfo", version, checkpoint)}
     done = {key[0] for key in ctx.store.already_scored("record_scores", versions)}
     eligible = ctx.records.loc[
         ctx.records["lang"].map(ctx.settings.language_allowed)
@@ -344,7 +345,10 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             "stage": "misinfo",
             "table": "record_scores",
             **result,
-            "note": ctx.note(f"scored {len(frame)}/{len(ctx.records)} records"),
+            "note": ctx.note(
+                f"scored {len(frame)}/{len(ctx.records)} records"
+                + (f" [{demo_note}]" if demo_note else "")
+            ),
         }
     ]
 
@@ -522,6 +526,7 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
     top_features: dict[str, list[dict[str, Any]]] = {}
     bot_version = str(module_config("bot").get("version"))
     checkpoint = resolve("bot", bot_version, required=False)
+    warn_if_demo_checkpoint("bot", checkpoint, ctx.demo)
     model = BotModel.load(checkpoint.path) if checkpoint else None
     if model is None:
         for account in features.account_ids:
@@ -625,7 +630,7 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 ):
                     bot_probs[account] = float(probability)
                     top_features[account] = contribution
-                versions["bot"] = bot_version
+                versions["bot"] = checkpoint_stamp("bot", bot_version, checkpoint)
 
     # --- coordination ------------------------------------------------------
     coordination = getattr(ctx, "coordination", None)
@@ -817,6 +822,50 @@ def _narratives_touched(records: pd.DataFrame, membership: pd.DataFrame) -> dict
         .apply(lambda s: sorted(set(s.astype(str))))
         .to_dict()
     )
+
+
+def checkpoint_stamp(module: str, version: str, checkpoint) -> str:
+    """The version string a scored row carries: ``<version>+<sha8>``.
+
+    The configured version alone is not a staleness signal. Retraining a model
+    writes new weights under the same ``v0.1.0``, so every previously-scored row
+    still claims the current version, ``already_scored`` skips it, and the
+    scorer reports "resumed: nothing to do" while the old scores stay on disk.
+    That is silent and total: a whole corpus keeps predictions from a model that
+    no longer exists.
+
+    Appending the checkpoint's content hash makes the identity follow the
+    *weights* rather than a hand-maintained string, so a retrain invalidates its
+    own scores with no discipline required from anyone.
+    """
+    if checkpoint is None or not getattr(checkpoint, "sha256", None):
+        return version
+    return f"{version}+{checkpoint.sha256[:8]}"
+
+
+def warn_if_demo_checkpoint(module: str, checkpoint, demo_run: bool) -> str | None:
+    """Loudly refuse to let a fixture-trained model masquerade as a real one.
+
+    ``registry.json`` records ``is_demo`` for anything trained on the committed
+    fixtures. Scoring a real corpus with one produces numbers that look exactly
+    like results, so this is a warning the log cannot swallow.
+    """
+    if checkpoint is None or demo_run:
+        return None
+    from modeling.registry import metadata
+
+    if metadata(module, checkpoint.version).get("is_demo"):
+        note = (
+            f"{module} checkpoint {checkpoint.version} was trained on the DEMO FIXTURE "
+            "-- these scores are plumbing evidence, not results"
+        )
+        log.warning(
+            "%s. Train on real benchmarks and re-score before citing anything from "
+            "this column.",
+            note,
+        )
+        return note
+    return None
 
 
 def _apply_length_floor(records: pd.DataFrame, policy: dict[str, Any]) -> pd.DataFrame:
