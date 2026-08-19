@@ -522,30 +522,74 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
         for account in features.account_ids:
             reasons[account].append("bot:model_unavailable")
     else:
-        missing = [name for name in model.feature_names if name not in features.names]
-        if missing:
-            # The corpus cannot supply what the model was trained on. Scoring
-            # anyway would apply the model to a distribution it never saw.
+        absent = [name for name in model.feature_names if name not in features.names]
+        if absent:
+            # The corpus cannot even compute these columns.
             log.warning(
                 "bot model needs feature(s) %s that this corpus cannot compute; bot_prob "
                 "stays null. This is the feature-intersection discipline doing its job.",
-                missing,
+                absent,
             )
             for account in features.account_ids:
                 reasons[account].append("bot:feature_intersection_empty")
         else:
-            matrix = features.subset(model.feature_names).matrix
-            probabilities = model.predict_proba(matrix)
-            contributions = shap_contributions(
-                model.estimator, matrix, model.feature_names,
-                int(module_config("bot").get("shap_top_k", 5)),
-            )
-            for account, probability, contribution in zip(
-                features.account_ids, probabilities, contributions, strict=True
-            ):
-                bot_probs[account] = float(probability)
-                top_features[account] = contribution
-            versions["bot"] = bot_version
+            # A column existing is not the same as a column carrying data.
+            #
+            # build_features emits every declared feature, filling what the
+            # platform cannot supply with 0 and setting a paired `*_is_missing`
+            # indicator. So the name-level check above passes for the whole
+            # corpus while Reddit, YouTube, news and GDELT actually supply
+            # *nothing*: no followers, no account age. Scored anyway, the model
+            # saw 0 followers / 0 following / 0 days old -- a region of feature
+            # space absent from its Twitter training data, where a tree ensemble
+            # simply falls into whichever leaf its splits happen to route to.
+            #
+            # Measured on this corpus: every one of 2021 accounts came back
+            # between 0.938 and 0.991. A constant 0.99 "bot" for every human on
+            # Reddit is exactly the confident garbage a null exists to prevent,
+            # and it is worse than no score because it looks like a finding.
+            #
+            # So the guard is per-account and about data: an account is scored
+            # only when the features the model actually relies on are present
+            # for *that account*.
+            supplied = _features_supplied(features, model.feature_names)
+            n_supplied = int(supplied.sum())
+            if n_supplied == 0:
+                log.warning(
+                    "no account has the features the bot model needs (%s); bot_prob "
+                    "stays null for all %d accounts",
+                    ", ".join(model.feature_names[:3]) + "...",
+                    len(features.account_ids),
+                )
+            for account, ok in zip(features.account_ids, supplied, strict=True):
+                if not ok:
+                    reasons[account].append("bot:features_not_supplied")
+
+            if n_supplied:
+                log.info(
+                    "bot: scoring %d/%d accounts that actually supply the model's "
+                    "features; the rest get null with a reason code",
+                    n_supplied,
+                    len(features.account_ids),
+                )
+                subset = features.subset(model.feature_names)
+                matrix = subset.matrix[supplied]
+                probabilities = model.predict_proba(matrix)
+                contributions = shap_contributions(
+                    model.estimator, matrix, model.feature_names,
+                    int(module_config("bot").get("shap_top_k", 5)),
+                )
+                scored_ids = [
+                    account
+                    for account, ok in zip(features.account_ids, supplied, strict=True)
+                    if ok
+                ]
+                for account, probability, contribution in zip(
+                    scored_ids, probabilities, contributions, strict=True
+                ):
+                    bot_probs[account] = float(probability)
+                    top_features[account] = contribution
+                versions["bot"] = bot_version
 
     # --- coordination ------------------------------------------------------
     coordination = getattr(ctx, "coordination", None)
@@ -656,6 +700,32 @@ def _media_stage(ctx: StageContext) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # helpers shared by the stages
 # ---------------------------------------------------------------------------
+def _features_supplied(features, feature_names: Sequence[str]):
+    """Which accounts actually carry the features a model depends on.
+
+    A feature is "not supplied" for an account when its paired
+    ``<feature>_is_missing`` indicator is set. The indicators themselves are
+    exempt -- they are metadata about the others, and requiring them to be
+    "present" would reject every row.
+
+    Returns a boolean mask over ``features.account_ids``. Conservative on
+    purpose: an account is scored only when *every* substantive feature the
+    model uses is real for it. A tree ensemble handed a half-imputed row still
+    returns a confident number, and there is nothing behind it.
+    """
+    import numpy as np
+
+    frame = features.as_frame()
+    mask = np.ones(len(frame), dtype=bool)
+    for name in feature_names:
+        if name.endswith("_is_missing"):
+            continue
+        indicator = f"{name}_is_missing"
+        if indicator in frame.columns:
+            mask &= frame[indicator].to_numpy() < 0.5
+    return mask
+
+
 def _author_aggregates(records: pd.DataFrame, scores: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Per-author means and modes over record_scores.
 

@@ -71,6 +71,7 @@ SOCIAL_GRAPH = [
     "posts_per_day_per_follower",
     "account_age_days",
     "posts_per_account_day",
+    "post_count_is_missing",
     "followers_is_missing",
     "account_age_is_missing",
 ]
@@ -321,6 +322,20 @@ def build_features(
             following = _numeric(profile.get("following"))
             created_at = profile.get("created_at")
             age_days = _age_days(created_at, now)
+            # The account's *lifetime* post count, not the number of posts this
+            # corpus happens to have collected.
+            #
+            # These two are wildly different numbers and share a name, which is
+            # how the mismatch survived review. Phase 1's Author.post_count is
+            # "records we ingested for this author" -- median 1 on this corpus.
+            # The bot benchmarks' post_count is Twitter's `statuses_count`, a
+            # lifetime total with a human median of 6609. Feeding the former
+            # where the model expects the latter makes every real account look
+            # like a near-dead one, which in Cresci's feature space reads as
+            # bot: measured, every Mastodon account scored >= 0.938.
+            #
+            # An intersection matched on column *name* is not an intersection.
+            lifetime_posts = _lifetime_post_count(profile)
             feature.update(
                 {
                     "followers": followers if followers is not None else 0.0,
@@ -334,14 +349,27 @@ def build_features(
                         posts_per_day(timestamps) / ((followers or 0.0) + 1.0)
                     ),
                     "account_age_days": age_days if age_days is not None else 0.0,
+                    # Both of these now use the lifetime count, so they mean the
+                    # same thing here as they do in the benchmark.
+                    "post_count": (
+                        lifetime_posts if lifetime_posts is not None else float(n)
+                    ),
                     "posts_per_account_day": (
-                        n / age_days if age_days and age_days > 0 else float(n)
+                        (lifetime_posts if lifetime_posts is not None else float(n))
+                        / age_days
+                        if age_days and age_days > 0
+                        else float(lifetime_posts if lifetime_posts is not None else n)
                     ),
                     # Indicators, so "no follower data" never looks like "zero
                     # followers" -- the difference between ConvoKit Reddit and a
                     # brand-new account.
                     "followers_is_missing": 1.0 if followers is None else 0.0,
                     "account_age_is_missing": 1.0 if age_days is None else 0.0,
+                    # A platform that cannot report a lifetime total is a
+                    # platform this model must not be applied to. Without the
+                    # indicator the fallback to observed-post-count would be
+                    # invisible, and the score would look valid.
+                    "post_count_is_missing": 1.0 if lifetime_posts is None else 0.0,
                 }
             )
 
@@ -418,6 +446,33 @@ def available_tiers(records: pd.DataFrame, authors: pd.DataFrame | None = None) 
     if "parent_id" in records.columns and records["parent_id"].notna().any():
         tiers.append("threading")
     return tiers
+
+
+def _lifetime_post_count(profile: dict) -> float | None:
+    """The account's total posts ever, from the platform's own profile payload.
+
+    Phase 1 keeps the untouched provider payload in ``Author.raw``; Mastodon
+    reports ``statuses_count`` there, and it is the only field on this corpus
+    that means the same thing as the bot benchmarks' ``post_count``. Returns
+    ``None`` when the platform does not report one -- ConvoKit Reddit and
+    YouTube have no such concept -- so the caller can set the missingness
+    indicator rather than substituting a number with different semantics.
+    """
+    import json
+
+    raw = profile.get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    for key in ("statuses_count", "tweet_count", "post_count", "videoCount"):
+        value = _numeric(raw.get(key))
+        if value is not None:
+            return float(value)
+    return None
 
 
 def _numeric(value: Any) -> float | None:

@@ -25,6 +25,14 @@ Every engagement-derived feature therefore ships with an explicit
 *feature's own median* rather than 0 -- filling with 0 would make an unmeasurable
 metric look like a measured absence, which is exactly the conflation Phase 1
 refused to make at ingest.
+
+**But the indicators are not fitted.** They are held out of the matrix the
+forest sees. An indicator is near-constant within a platform and perfectly
+separating between platforms, so isolating on it costs one cut and produces a
+"most anomalous" list that just names whichever source reports the least
+metadata. The first hand-audit found exactly that: zero of the top 20 were
+explicable. They remain available on ``AnomalyFeatures.context`` for anyone
+auditing a score.
 """
 
 from __future__ import annotations
@@ -53,9 +61,29 @@ class AnomalyFeatures:
     matrix: np.ndarray
     names: list[str]
     record_ids: list[str]
+    #: Missingness indicators, kept for the audit trail but deliberately not
+    #: fitted. See the note in build_features.
+    context: pd.DataFrame | None = None
 
     def as_frame(self) -> pd.DataFrame:
-        return pd.DataFrame(self.matrix, columns=self.names, index=self.record_ids)
+        """The audit view: every feature, including the ones held out of the fit.
+
+        Deliberately wider than ``matrix``. Someone auditing why a record was
+        flagged needs to see that its engagement was unmeasurable, even though
+        that fact was withheld from the forest -- ``matrix`` is what the model
+        saw, this is what a human needs.
+        """
+        frame = pd.DataFrame(self.matrix, columns=self.names, index=self.record_ids)
+        if self.context is not None and len(self.context.columns):
+            context = self.context.copy()
+            context.index = self.record_ids
+            frame = pd.concat([frame, context], axis=1)
+        return frame
+
+    @property
+    def fitted_names(self) -> list[str]:
+        """Only the features the forest actually saw."""
+        return list(self.names)
 
 
 class AnomalyScorer:
@@ -146,13 +174,33 @@ class AnomalyScorer:
             work.groupby("author_id")["id"].transform("size").astype(float)
         )
 
-        matrix = features.to_numpy(dtype=float)
+        # Missingness indicators are context, not evidence of anomaly.
+        #
+        # The hand-audit of the top 20 came back 0 explicable / 10 artefact /
+        # 10 uninteresting -- a complete failure, and the indicators were the
+        # cause. `gap_is_missing` fires on every author's *first* post and
+        # `engagement_is_missing` fires for entire platforms at once, so both
+        # are near-constant within a group and perfectly separating between
+        # groups. An IsolationForest isolates exactly that: a rare binary column
+        # splits off a whole platform in one cut, and the top of the ranking
+        # fills with "this record came from a source that reports no
+        # engagement" -- true, and not an anomaly.
+        #
+        # They stay in the frame, because a downstream consumer auditing a score
+        # needs to see them, and they stay out of the matrix the forest fits.
+        scored_columns = [c for c in features.columns if not c.endswith("_is_missing")]
+        excluded = [c for c in features.columns if c.endswith("_is_missing")]
+        if excluded:
+            log.debug("anomaly: %s held out of the forest as context", ", ".join(excluded))
+
+        matrix = features[scored_columns].to_numpy(dtype=float)
         matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
         return (
             AnomalyFeatures(
                 matrix=matrix,
-                names=list(features.columns),
+                names=list(scored_columns),
                 record_ids=[str(v) for v in work["id"].tolist()],
+                context=features[excluded].reset_index(drop=True) if excluded else None,
             ),
             skipped,
         )
