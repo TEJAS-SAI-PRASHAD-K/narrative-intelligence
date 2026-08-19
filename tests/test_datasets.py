@@ -333,3 +333,52 @@ def test_every_registered_dataset_declares_its_access_terms():
 def test_unknown_dataset_key_is_a_clear_error():
     with pytest.raises(KeyError, match="unknown benchmark"):
         get_dataset("imagenet")
+
+
+# ---------------------------------------------------------------------------
+# layout robustness -- the data is present and the loader must find it
+# ---------------------------------------------------------------------------
+def test_loaders_find_data_the_download_script_actually_produces(tmp_path):
+    """`scripts/download_benchmarks.py` does not put files where a human would.
+
+    It unzips LIAR into `<key>/extracted/` and clones FakeNewsNet into
+    `<key>/FakeNewsNet/`. Both loaders originally required an exact top-level
+    path, so a correct download reported as "not on disk" -- on Colab, where
+    hand-fixing it with `mv` is not obvious, that reads as a broken download.
+    """
+    import shutil
+
+    liar_src = FIXTURE_ROOT / "liar"
+    nested_liar = tmp_path / "liar" / "extracted"
+    nested_liar.mkdir(parents=True)
+    for name in ("train.tsv", "valid.tsv", "test.tsv"):
+        shutil.copy(liar_src / name, nested_liar / name)
+
+    fnn_src = FIXTURE_ROOT / "fakenewsnet" / "dataset"
+    nested_fnn = tmp_path / "fakenewsnet" / "FakeNewsNet" / "dataset"
+    nested_fnn.mkdir(parents=True)
+    for csv in fnn_src.glob("*.csv"):
+        shutil.copy(csv, nested_fnn / csv.name)
+
+    for key in ("liar", "fakenewsnet"):
+        dataset = get_dataset(key)
+        assert dataset.available(tmp_path / key), f"{key} not found in its real download layout"
+        assert len(dataset.load(tmp_path / key)) > 0
+
+
+def test_loaders_still_accept_a_flat_layout(tmp_path):
+    """The nested search must not break the hand-unpacked case."""
+    import shutil
+
+    flat = tmp_path / "liar"
+    flat.mkdir(parents=True)
+    for name in ("train.tsv", "valid.tsv", "test.tsv"):
+        shutil.copy(FIXTURE_ROOT / "liar" / name, flat / name)
+    assert get_dataset("liar").available(flat)
+
+
+def test_find_dir_containing_returns_root_when_nothing_matches(tmp_path):
+    """So the caller's own validation produces the actionable error."""
+    from modeling.datasets.base import find_dir_containing
+
+    assert find_dir_containing(tmp_path, "nope.csv") == tmp_path

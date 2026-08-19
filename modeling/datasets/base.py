@@ -223,6 +223,30 @@ class BenchmarkDataset(ABC):
 # ---------------------------------------------------------------------------
 # shared helpers
 # ---------------------------------------------------------------------------
+def find_dir_containing(root: Path, *names: str, max_depth: int = 3) -> Path:
+    """Locate the directory that actually holds ``names``, searching downward.
+
+    Archives and clones do not land where a human would put them. The bundled
+    download script unzips LIAR into ``liar/extracted/`` and clones FakeNewsNet
+    into ``fakenewsnet/FakeNewsNet/``; someone unpacking by hand produces a
+    third layout. Requiring one exact path means the data can be present,
+    correct, and still reported missing -- which sends a person hunting for a
+    download problem that does not exist. CoAID never had this failure only
+    because its loader happened to glob recursively.
+
+    Returns ``root`` unchanged when nothing matches, so the caller's own
+    validation produces the useful error rather than this function.
+    """
+    if all((root / name).exists() for name in names):
+        return root
+    for depth in range(1, max_depth + 1):
+        for candidate in sorted(root.glob("/".join(["*"] * depth))):
+            if candidate.is_dir() and all((candidate / name).exists() for name in names):
+                log.debug("resolved %s to %s", names, candidate)
+                return candidate
+    return root
+
+
 def require_files(dataset: BenchmarkDataset, path: Path, *names: str) -> None:
     """Raise unless every named file exists under ``path``."""
     if not path.exists():

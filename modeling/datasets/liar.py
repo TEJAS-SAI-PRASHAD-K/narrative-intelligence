@@ -37,6 +37,7 @@ from modeling.datasets.base import (
     BenchmarkDataset,
     DatasetInfo,
     drop_empty_text,
+    find_dir_containing,
     normalize_text,
     register_dataset,
     require_files,
@@ -90,10 +91,19 @@ class Liar(BenchmarkDataset):
     label_col = "label"
     domain_col = "party"
 
+    #: The three files the loader needs, in whichever directory holds them.
+    REQUIRED = ("train.tsv", "valid.tsv", "test.tsv")
+
+    def _resolve_dir(self, path: Path) -> Path:
+        # The bundled download script unzips into <path>/extracted/, so accept
+        # that as readily as a hand-unpacked archive at the top level.
+        return find_dir_containing(path, *self.REQUIRED)
+
     def validate(self, path: Path) -> None:
-        require_files(self, path, "train.tsv", "valid.tsv", "test.tsv")
+        require_files(self, self._resolve_dir(path), *self.REQUIRED)
 
     def _read(self, path: Path) -> tuple[pd.DataFrame, dict[str, int]]:
+        path = self._resolve_dir(path)
         dropped: dict[str, int] = {}
         frames = []
         for split_name in ("train", "valid", "test"):

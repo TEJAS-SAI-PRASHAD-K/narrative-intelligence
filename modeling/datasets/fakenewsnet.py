@@ -27,6 +27,7 @@ from modeling.datasets.base import (
     DatasetInfo,
     DatasetUnavailable,
     drop_empty_text,
+    find_dir_containing,
     normalize_text,
     register_dataset,
 )
@@ -74,8 +75,18 @@ class FakeNewsNet(BenchmarkDataset):
     domain_col = "domain"
 
     def _dataset_dir(self, path: Path) -> Path:
-        # The repo nests the CSVs under dataset/; a user who copied just the
-        # CSVs will have them at the root. Accept both.
+        """Find the directory holding the four CSVs, however it got there.
+
+        The repo nests them under ``dataset/``; ``git clone`` into the benchmark
+        folder adds another level (``fakenewsnet/FakeNewsNet/dataset/``); a user
+        who copied only the CSVs has them at the root. All three are the same
+        dataset and all three should load.
+        """
+        # Enough to identify the directory: both halves must be present anyway,
+        # and validate() reports properly if one is missing.
+        found = find_dir_containing(path, "politifact_fake.csv", "gossipcop_fake.csv")
+        if found != path:
+            return found
         if (path / "dataset").is_dir():
             return path / "dataset"
         return path
