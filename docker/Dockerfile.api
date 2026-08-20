@@ -1,0 +1,37 @@
+# The API image. Deliberately does NOT install the modeling extras: the API
+# never runs inference, so pulling torch into it would triple the image size and
+# the cold-start time for no benefit. The worker image carries that weight.
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# libpq for psycopg's binary wheel fallback; curl for the compose healthcheck.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libpq5 curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv
+
+# Dependency layer first so a source edit does not reinstall the world.
+COPY pyproject.toml README.md ./
+COPY ingest/__init__.py ingest/__init__.py
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install ".[api]"
+
+COPY . .
+RUN pip install --no-deps -e .
+
+# Non-root. The uploads volume is chowned in the entrypoint because compose
+# creates it root-owned on first run.
+RUN useradd --create-home --uid 10001 app \
+ && mkdir -p /srv/uploads /srv/reports /srv/data \
+ && chown -R app:app /srv
+USER app
+
+ENV PORT=8000
+EXPOSE 8000
+ENTRYPOINT ["/srv/docker/entrypoint.sh"]
+CMD ["api"]

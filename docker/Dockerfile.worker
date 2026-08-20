@@ -1,0 +1,38 @@
+# The worker image. Same source tree as the API, plus the inference extras.
+#
+# Split from Dockerfile.api rather than parameterised with a build arg because
+# the two images have genuinely different dependency closures and cache
+# lifetimes: the API layer rebuilds on every source edit, and rebuilding a
+# torch layer for a routing change is a five-minute tax paid many times a day.
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/srv/.cache/huggingface \
+    TRANSFORMERS_OFFLINE=0
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libpq5 curl git \
+      libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv
+
+COPY pyproject.toml README.md ./
+COPY ingest/__init__.py ingest/__init__.py
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install ".[api,modeling,llm]"
+
+COPY . .
+RUN pip install --no-deps -e .
+
+RUN useradd --create-home --uid 10001 app \
+ && mkdir -p /srv/uploads /srv/reports /srv/data /srv/models /srv/.cache \
+ && chown -R app:app /srv
+USER app
+
+ENTRYPOINT ["/srv/docker/entrypoint.sh"]
+CMD ["worker"]

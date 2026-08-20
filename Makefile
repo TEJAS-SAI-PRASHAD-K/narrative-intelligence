@@ -3,7 +3,8 @@ PY ?= python3
 VENV := .venv
 BIN := $(VENV)/bin
 
-.PHONY: help setup data fetch normalize validate stats test lint fmt benchmarks clean clean-data
+.PHONY: help setup data fetch normalize validate stats test lint fmt benchmarks clean clean-data \
+	up down logs ps migrate revision downgrade load reload verify seed openapi api-shell db-shell
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -81,3 +82,73 @@ clean: ## Remove caches and build junk (keeps data/)
 clean-data: ## DESTRUCTIVE: delete the entire local corpus
 	@echo "This deletes data/ (raw + normalized + checkpoints + manifest)."
 	@read -p "Type 'yes' to confirm: " ok && [ "$$ok" = "yes" ] && rm -rf data || echo "aborted"
+
+# --- Phase 4: backend, persistence & API ------------------------------------
+COMPOSE ?= docker compose
+
+setup-api: ## Install the Phase 4 backend dependencies into the venv
+	$(BIN)/pip install -e ".[api,dev]"
+
+up: ## Bring the whole stack up (db, redis, api, worker, beat)
+	@test -f .env || (cp .env.example .env && echo "Created .env from .env.example - fill in POSTGRES_PASSWORD and API_KEY_PEPPER, then rerun." && exit 1)
+	$(COMPOSE) up --build -d
+	@echo "API on http://localhost:$${API_HOST_PORT:-8000}/docs"
+
+up-deps: ## Just Postgres and Redis, for running uvicorn on the host
+	$(COMPOSE) up -d db redis
+
+down: ## Stop the stack, keep the volumes
+	$(COMPOSE) down
+
+nuke: ## DESTRUCTIVE: stop the stack and delete the database volume
+	@echo "This deletes the Postgres volume. The Parquet corpus under data/ survives."
+	@read -p "Type 'yes' to confirm: " ok && [ "$$ok" = "yes" ] && $(COMPOSE) down -v || echo "aborted"
+
+logs: ## Tail every service
+	$(COMPOSE) logs -f --tail=100
+
+ps: ## Service status
+	$(COMPOSE) ps
+
+api-shell: ## Shell inside the api container
+	$(COMPOSE) run --rm --entrypoint bash api
+
+db-shell: ## psql inside the db container
+	$(COMPOSE) exec db psql -U $${POSTGRES_USER:-narrative} -d $${POSTGRES_DB:-narrative}
+
+# --- schema ----------------------------------------------------------------
+migrate: ## Apply every migration
+	$(BIN)/alembic upgrade head
+
+downgrade: ## Roll back one migration
+	$(BIN)/alembic downgrade -1
+
+revision: ## Autogenerate a migration: make revision M="add foo"
+	$(BIN)/alembic revision --autogenerate -m "$(M)"
+
+migrate-check: ## Prove the migration chain round-trips (downgrade base, upgrade head)
+	$(BIN)/alembic downgrade base
+	$(BIN)/alembic upgrade head
+
+# --- data ------------------------------------------------------------------
+load: ## Load the Phase 1 Parquet corpus into Postgres
+	$(BIN)/python -m app.etl.cli load --project $(P)
+
+reload: ## Force-reload a project's corpus
+	$(BIN)/python -m app.etl.cli reload --project $(P) --force
+
+verify: ## Reconcile manifest <-> Parquet <-> Postgres row counts
+	$(BIN)/python -m app.etl.cli verify --project $(P)
+
+seed: ## Build the curated demo project (no network, no model warm-up)
+	$(BIN)/python -m app.etl.cli seed
+
+# --- contract --------------------------------------------------------------
+openapi: ## Regenerate openapi.json from the code
+	$(BIN)/python -m app.openapi_export openapi.json
+
+openapi-check: ## Fail if openapi.json has drifted from the code
+	$(BIN)/python -m app.openapi_export --check openapi.json
+
+serve: ## Run the API on the host against `make up-deps`
+	$(BIN)/uvicorn app.main:app --reload --port $${API_HOST_PORT:-8000}

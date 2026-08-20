@@ -1,0 +1,148 @@
+# Local stack for Phase 4. Five services, one command.
+#
+# Phase 6 mirrors this onto Render (api/worker/beat), Neon (db) and Upstash
+# (redis). Nothing here is Compose-specific except the service discovery, which
+# is why every setting arrives through the environment: the same images run
+# there with a different .env and no code change.
+
+name: narrative-intelligence
+
+x-app-env: &app-env
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DEMO_MODE: ${DEMO_MODE:-0}
+  # Service names, not localhost. The only place a host appears is .env.example.
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-narrative}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:-narrative}
+  REDIS_URL: redis://redis:6379/0
+  API_KEY_PEPPER: ${API_KEY_PEPPER:?API_KEY_PEPPER must be set in .env}
+  BOOTSTRAP_ADMIN_KEY: ${BOOTSTRAP_ADMIN_KEY:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+  EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
+  MAX_GRAPH_NODES: ${MAX_GRAPH_NODES:-20000}
+  MEDIA_RETENTION_HOURS: ${MEDIA_RETENTION_HOURS:-24}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-claude-haiku-4-5-20251001}
+  DATA_DIR: /srv/data
+  MODELS_DIR: /srv/models
+  UPLOADS_DIR: /srv/uploads
+  REPORTS_DIR: /srv/reports
+
+x-app-volumes: &app-volumes
+  # The corpus and the checkpoints are mounted, never baked: they are gitignored
+  # build products, and a 4GB image that goes stale on the next `make data` is
+  # the wrong artifact to ship.
+  - ./data:/srv/data
+  - ./models:/srv/models:ro
+  - ./configs:/srv/configs:ro
+  - uploads:/srv/uploads
+  - reports:/srv/reports
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-narrative}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-narrative}
+      # Deterministic collation and UTC, so a sort order or a timestamp never
+      # depends on which machine the container came up on.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Exposed for psql and EXPLAIN ANALYZE work from the host. Bound to
+      # loopback so the dev database is not on the LAN.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-narrative} -d ${POSTGRES_DB:-narrative}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # appendonly so a restart does not lose queued jobs. The result backend is
+    # allowed to lose data; the broker is not.
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    command: ["api"]
+    environment:
+      <<: *app-env
+      API_WORKERS: ${API_WORKERS:-1}
+    volumes: *app-volumes
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    command: ["worker"]
+    environment:
+      <<: *app-env
+      CELERY_QUEUES: ${CELERY_QUEUES:-io,cpu,gpu,llm}
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
+    volumes: *app-volumes
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Not service_healthy: the worker does not need the API, it needs the
+      # schema, and the API applies it. started + the entrypoint's port wait is
+      # the honest dependency. A worker that boots before `alembic upgrade head`
+      # finishes simply finds no tasks yet.
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    command: ["beat"]
+    environment: *app-env
+    volumes: *app-volumes
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
+  reports:

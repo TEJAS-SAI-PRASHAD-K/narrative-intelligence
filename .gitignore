@@ -12,6 +12,11 @@ data/
 # never the blob.
 models/
 
+# Phase 4 build products: uploaded media (imagery of real people, purged on a
+# retention timer) and rendered reports. Neither belongs in version control.
+uploads/
+reports/
+
 # Secrets
 .env
 .env.local
