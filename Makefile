@@ -66,8 +66,19 @@ notebooks: ## Regenerate the notebook skeletons from their build scripts
 fixtures: ## Regenerate the committed test fixtures
 	$(BIN)/python scripts/make_fixtures.py
 
-test: ## Run the test suite (no live network calls)
+test: ## Run the test suite (no live network calls, no GPU)
 	$(BIN)/pytest
+
+test-api: ## Run the suite including the Postgres-backed API tests
+	@docker inspect ni-test-pg >/dev/null 2>&1 || \
+		docker run -d --rm --name ni-test-pg -e POSTGRES_USER=narrative \
+			-e POSTGRES_PASSWORD=test -e POSTGRES_DB=narrative_test -e TZ=UTC \
+			-p 127.0.0.1:55433:5432 pgvector/pgvector:pg16 >/dev/null
+	@until docker exec ni-test-pg pg_isready -U narrative >/dev/null 2>&1; do sleep 1; done
+	@docker exec ni-test-pg psql -qU narrative -d narrative_test \
+		-c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null
+	TEST_DATABASE_URL=postgresql+psycopg://narrative:test@127.0.0.1:55433/narrative_test \
+		$(BIN)/pytest
 
 lint: ## Lint
 	$(BIN)/ruff check ingest modeling tests scripts

@@ -10,4 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-ROUTERS: list[APIRouter] = []
+from app.routers import keys
+
+ROUTERS: list[APIRouter] = [
+    keys.router,
+]

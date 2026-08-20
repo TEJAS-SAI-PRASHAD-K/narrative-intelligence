@@ -13,6 +13,11 @@ from ingest.schema import Record, make_id
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
+# Phase 4 fixtures. Kept in their own module so the Phase 1/2 suite above stays
+# readable and so a light install (no fastapi, no sqlalchemy) still collects:
+# every import inside conftest_api is deferred into the fixture bodies.
+pytest_plugins = ["tests.conftest_api"]
+
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):

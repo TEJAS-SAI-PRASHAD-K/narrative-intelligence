@@ -45,6 +45,7 @@ api = [
     "celery[redis]>=5.4",
     "redis>=5.0",
     "python-multipart>=0.0.9",
+    "argon2-cffi>=23.1",     # api key hashing; falls back to pbkdf2 if absent
     "httpx>=0.27",
 ]
 # Report rendering. Split out because a CSV export needs none of it and the
