@@ -116,9 +116,10 @@ def migrated_db(api_env, allow_local_sockets) -> Iterator[str]:
     if not TEST_DATABASE_URL:
         pytest.skip("TEST_DATABASE_URL is unset")
 
-    from alembic import command
     from alembic.config import Config
     from sqlalchemy import create_engine, text
+
+    from alembic import command
 
     schema = f"test_{uuid.uuid4().hex[:12]}"
     sync_url = TEST_DATABASE_URL.replace("+asyncpg", "+psycopg")

@@ -75,10 +75,12 @@ def make_records(rows):
 def test_non_english_is_skipped_not_scored(isolated_settings):
     """An English toxicity model run on German text returns a number, and that
     number is noise. Null with a reason code is the honest output."""
-    records = make_records([
-        {"id": "m:1", "text": "this is a perfectly ordinary english sentence", "lang": "en"},
-        {"id": "m:2", "text": "der vertrag wurde ohne ausschreibung vergeben", "lang": "de"},
-    ])
+    records = make_records(
+        [
+            {"id": "m:1", "text": "this is a perfectly ordinary english sentence", "lang": "en"},
+            {"id": "m:2", "text": "der vertrag wurde ohne ausschreibung vergeben", "lang": "de"},
+        ]
+    )
     outcome = StubScorer(isolated_settings).score(records)
     assert "m:1" in outcome.values
     assert "m:2" not in outcome.values
@@ -107,10 +109,12 @@ def test_null_lang_from_parquet_does_not_crash_the_gate(isolated_settings):
     null string column read back from Parquet arrives as NaN, not None. Treating
     NaN as "some language" crashes; treating it as a language name would be
     worse."""
-    records = make_records([
-        {"id": "m:1", "text": "an english sentence with enough characters", "lang": np.nan},
-        {"id": "m:2", "text": "another english sentence with enough length", "lang": None},
-    ])
+    records = make_records(
+        [
+            {"id": "m:1", "text": "an english sentence with enough characters", "lang": np.nan},
+            {"id": "m:2", "text": "another english sentence with enough length", "lang": None},
+        ]
+    )
     outcome = StubScorer(isolated_settings).score(records)
     assert set(outcome.values) == {"m:1", "m:2"}
 
@@ -125,11 +129,13 @@ def test_null_text_from_parquet_is_empty_not_the_string_nan(isolated_settings):
 
 
 def test_empty_and_too_short_text_are_distinct_reasons(isolated_settings):
-    records = make_records([
-        {"id": "m:1", "text": "", "lang": "en"},
-        {"id": "m:2", "text": "ok", "lang": "en"},
-        {"id": "m:3", "text": None, "lang": "en"},
-    ])
+    records = make_records(
+        [
+            {"id": "m:1", "text": "", "lang": "en"},
+            {"id": "m:2", "text": "ok", "lang": "en"},
+            {"id": "m:3", "text": None, "lang": "en"},
+        ]
+    )
     outcome = StubScorer(isolated_settings).score(records)
     assert outcome.skipped["m:1"] == SkipReason.EMPTY_TEXT
     assert outcome.skipped["m:2"] == SkipReason.TEXT_TOO_SHORT
@@ -148,11 +154,13 @@ def test_unavailable_model_skips_rather_than_fabricating(isolated_settings):
 
 def test_every_record_is_either_scored_or_skipped(isolated_settings):
     """The two dicts must be exhaustive: a record in neither is a silent loss."""
-    records = make_records([
-        {"id": "m:1", "text": "a sentence long enough to score properly", "lang": "en"},
-        {"id": "m:2", "text": "", "lang": "en"},
-        {"id": "m:3", "text": "another perfectly fine english sentence", "lang": "fr"},
-    ])
+    records = make_records(
+        [
+            {"id": "m:1", "text": "a sentence long enough to score properly", "lang": "en"},
+            {"id": "m:2", "text": "", "lang": "en"},
+            {"id": "m:3", "text": "another perfectly fine english sentence", "lang": "fr"},
+        ]
+    )
     outcome = StubScorer(isolated_settings).score(records)
     covered = set(outcome.values) | set(outcome.skipped)
     assert covered == {"m:1", "m:2", "m:3"}
@@ -228,23 +236,25 @@ def corpus_for_anomaly(n_authors=8, posts=6, with_engagement=True):
     rows = []
     for a in range(n_authors):
         for p in range(posts):
-            rows.append({
-                "id": f"m:{a}-{p}",
-                "author_id": f"mastodon:user{a}",
-                "source": "mastodon",
-                "text": f"post {p} from author {a} about the local contract dispute",
-                "lang": "en",
-                "timestamp": BASE + timedelta(days=a, hours=p * 3),
-                "engagement": (
-                    {"likes": p * 2, "shares": None, "replies": None, "views": None}
-                    if with_engagement
-                    else {"likes": None, "shares": None, "replies": None, "views": None}
-                ),
-                "urls": [],
-                "hashtags": ["contract"],
-                "mentions": [],
-                "simhash": (a << 50) | p,
-            })
+            rows.append(
+                {
+                    "id": f"m:{a}-{p}",
+                    "author_id": f"mastodon:user{a}",
+                    "source": "mastodon",
+                    "text": f"post {p} from author {a} about the local contract dispute",
+                    "lang": "en",
+                    "timestamp": BASE + timedelta(days=a, hours=p * 3),
+                    "engagement": (
+                        {"likes": p * 2, "shares": None, "replies": None, "views": None}
+                        if with_engagement
+                        else {"likes": None, "shares": None, "replies": None, "views": None}
+                    ),
+                    "urls": [],
+                    "hashtags": ["contract"],
+                    "mentions": [],
+                    "simhash": (a << 50) | p,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -256,13 +266,17 @@ def test_anomaly_scores_are_ranks_in_the_unit_interval(isolated_settings):
 
 
 def test_anomaly_skips_authors_with_no_baseline(isolated_settings):
-    """"Unusual for this author" is undefined against a sample of one."""
+    """ "Unusual for this author" is undefined against a sample of one."""
     frame = corpus_for_anomaly(n_authors=3, posts=6)
-    thin = pd.DataFrame([{
-        **frame.iloc[0].to_dict(),
-        "id": "m:lonely",
-        "author_id": "mastodon:lonely",
-    }])
+    thin = pd.DataFrame(
+        [
+            {
+                **frame.iloc[0].to_dict(),
+                "id": "m:lonely",
+                "author_id": "mastodon:lonely",
+            }
+        ]
+    )
     outcome = AnomalyScorer(isolated_settings).score(pd.concat([frame, thin], ignore_index=True))
     assert outcome.skipped["m:lonely"] == SkipReason.NOT_ENOUGH_HISTORY
     assert "m:lonely" not in outcome.values
@@ -321,7 +335,7 @@ def test_min_posts_threshold_is_stated_not_magic():
 # the assembled record_scores frame
 # ---------------------------------------------------------------------------
 def test_aux_pass_emits_one_row_per_record_even_when_nothing_scored(isolated_settings):
-    """"Not in the corpus" and "in the corpus, not assessed" are different
+    """ "Not in the corpus" and "in the corpus, not assessed" are different
     facts, and the scored table must be able to express both."""
     from modeling.aux import run_aux_pass
 

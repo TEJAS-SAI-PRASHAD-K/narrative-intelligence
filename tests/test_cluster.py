@@ -52,18 +52,20 @@ def synthetic_corpus(n_clusters=3, per_cluster=20, dim=16, seed=0, jitter=0.08):
             record_id = f"mastodon:c{c}-p{i}"
             vectors.append(vector)
             ids.append(record_id)
-            rows.append({
-                "id": record_id,
-                "source": "mastodon" if i % 3 else "reddit",
-                "author_id": f"mastodon:author{c}-{i % 7}",
-                "text": f"cluster {c} post {i} about a distinct topic with its own words",
-                "timestamp": BASE + timedelta(days=c, minutes=i * 9),
-                "engagement": {"likes": i, "shares": None, "replies": None, "views": None},
-                "domains": [f"site{c}.example"],
-                "hashtags": [f"topic{c}"],
-                # Well-separated simhashes: nothing should collapse as a duplicate.
-                "simhash": ((c * 1000 + i) * 0x9E3779B97F4A7C15) & ((1 << 64) - 1),
-            })
+            rows.append(
+                {
+                    "id": record_id,
+                    "source": "mastodon" if i % 3 else "reddit",
+                    "author_id": f"mastodon:author{c}-{i % 7}",
+                    "text": f"cluster {c} post {i} about a distinct topic with its own words",
+                    "timestamp": BASE + timedelta(days=c, minutes=i * 9),
+                    "engagement": {"likes": i, "shares": None, "replies": None, "views": None},
+                    "domains": [f"site{c}.example"],
+                    "hashtags": [f"topic{c}"],
+                    # Well-separated simhashes: nothing should collapse as a duplicate.
+                    "simhash": ((c * 1000 + i) * 0x9E3779B97F4A7C15) & ((1 << 64) - 1),
+                }
+            )
     embeddings = EmbeddingResult(
         vectors=l2_normalize(np.array(vectors, dtype=np.float32)),
         record_ids=ids,
@@ -152,17 +154,19 @@ def test_near_duplicates_collapse_for_clustering_but_keep_their_members(isolated
         swarm_ids.append(record_id)
         nudge = np.random.default_rng(i).normal(scale=0.001, size=len(base_vector))
         swarm_vectors.append(base_vector + nudge)
-        rows.append({
-            "id": record_id,
-            "source": "mastodon",
-            "author_id": f"mastodon:bot{i}",
-            "text": "identical reposted claim",
-            "timestamp": BASE + timedelta(minutes=i),
-            "engagement": {"likes": 0, "shares": None, "replies": None, "views": None},
-            "domains": ["swarm.example"],
-            "hashtags": ["swarm"],
-            "simhash": 0xABCD_1234_5678_9000,  # identical -> one representative
-        })
+        rows.append(
+            {
+                "id": record_id,
+                "source": "mastodon",
+                "author_id": f"mastodon:bot{i}",
+                "text": "identical reposted claim",
+                "timestamp": BASE + timedelta(minutes=i),
+                "engagement": {"likes": 0, "shares": None, "replies": None, "views": None},
+                "domains": ["swarm.example"],
+                "hashtags": ["swarm"],
+                "simhash": 0xABCD_1234_5678_9000,  # identical -> one representative
+            }
+        )
     merged = EmbeddingResult(
         vectors=l2_normalize(
             np.vstack([embeddings.vectors, np.array(swarm_vectors, dtype=np.float32)])

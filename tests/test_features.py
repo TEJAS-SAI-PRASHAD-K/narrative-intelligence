@@ -92,8 +92,10 @@ def test_posts_per_day_handles_a_single_post():
 # content features
 # ---------------------------------------------------------------------------
 def test_type_token_ratio_falls_for_a_recycled_vocabulary():
-    varied = ["the council approved a new filtration contract today",
-              "residents raised concerns about water quality standards"]
+    varied = [
+        "the council approved a new filtration contract today",
+        "residents raised concerns about water quality standards",
+    ]
     template = ["buy now click here"] * 8
     assert F.type_token_ratio(varied) > F.type_token_ratio(template)
     assert F.type_token_ratio([]) == 0.0
@@ -122,34 +124,38 @@ def corpus(n_authors=4, posts=8, with_parents=True):
     rows = []
     for a in range(n_authors):
         for p in range(posts):
-            rows.append({
-                "id": f"mastodon:{a}-{p}",
-                "author_id": f"mastodon:user{a}",
-                "source": "mastodon",
-                "text": f"post {p} by author {a} about the filtration contract dispute",
-                "timestamp": BASE + timedelta(days=a, hours=p * 2),
-                "parent_id": f"mastodon:{a}-0" if with_parents and p else None,
-                "conversation_id": f"mastodon:{a}-0" if with_parents else None,
-                "urls": [f"https://ex.example/{p}"] if p % 2 else [],
-                "hashtags": ["contract"],
-                "mentions": [],
-                "simhash": ((a * 100 + p) * 0x9E3779B97F4A7C15) & ((1 << 64) - 1),
-            })
+            rows.append(
+                {
+                    "id": f"mastodon:{a}-{p}",
+                    "author_id": f"mastodon:user{a}",
+                    "source": "mastodon",
+                    "text": f"post {p} by author {a} about the filtration contract dispute",
+                    "timestamp": BASE + timedelta(days=a, hours=p * 2),
+                    "parent_id": f"mastodon:{a}-0" if with_parents and p else None,
+                    "conversation_id": f"mastodon:{a}-0" if with_parents else None,
+                    "urls": [f"https://ex.example/{p}"] if p % 2 else [],
+                    "hashtags": ["contract"],
+                    "mentions": [],
+                    "simhash": ((a * 100 + p) * 0x9E3779B97F4A7C15) & ((1 << 64) - 1),
+                }
+            )
     return pd.DataFrame(rows)
 
 
 def authors_frame(n=4, followers=True):
-    return pd.DataFrame([
-        {
-            "author_id": f"mastodon:user{a}",
-            "source": "mastodon",
-            "followers": 100 + a * 50 if followers else None,
-            "following": 80 + a * 10 if followers else None,
-            "created_at": BASE - timedelta(days=500),
-            "post_count": 8,
-        }
-        for a in range(n)
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "author_id": f"mastodon:user{a}",
+                "source": "mastodon",
+                "followers": 100 + a * 50 if followers else None,
+                "following": 80 + a * 10 if followers else None,
+                "created_at": BASE - timedelta(days=500),
+                "post_count": 8,
+            }
+            for a in range(n)
+        ]
+    )
 
 
 def test_universal_tier_needs_nothing_but_posts():
@@ -198,9 +204,7 @@ def test_intersection_refuses_when_no_tier_is_shared():
 
 
 def test_intersection_keeps_only_the_shared_tiers():
-    shared = F.intersection_features(
-        ["universal", "social_graph"], ["universal", "threading"]
-    )
+    shared = F.intersection_features(["universal", "social_graph"], ["universal", "threading"])
     assert shared == ["universal"]
 
 
@@ -248,29 +252,33 @@ def coordinated_corpus(n_amplifiers=6, n_organic=12):
     rows = []
     shared = 0xDEAD_BEEF_1234_0000
     for i in range(n_amplifiers):
-        rows.append({
-            "id": f"mastodon:amp-{i}",
-            "author_id": f"mastodon:amplifier{i}",
-            "source": "mastodon",
-            "text": "share this everywhere the contract was awarded without tender",
-            "timestamp": BASE + timedelta(minutes=i * 3),
-            "parent_id": None,
-            "urls": ["https://ex.example/contract"],
-            "hashtags": ["waterworks", "contract"],
-            "simhash": shared ^ (1 << i),  # within Hamming 3 of each other
-        })
+        rows.append(
+            {
+                "id": f"mastodon:amp-{i}",
+                "author_id": f"mastodon:amplifier{i}",
+                "source": "mastodon",
+                "text": "share this everywhere the contract was awarded without tender",
+                "timestamp": BASE + timedelta(minutes=i * 3),
+                "parent_id": None,
+                "urls": ["https://ex.example/contract"],
+                "hashtags": ["waterworks", "contract"],
+                "simhash": shared ^ (1 << i),  # within Hamming 3 of each other
+            }
+        )
     for i in range(n_organic):
-        rows.append({
-            "id": f"mastodon:org-{i}",
-            "author_id": f"mastodon:resident{i}",
-            "source": "mastodon",
-            "text": f"unrelated musing number {i} about the weather and the bus timetable",
-            "timestamp": BASE + timedelta(days=1 + i, minutes=i * 17),
-            "parent_id": None,
-            "urls": [],
-            "hashtags": [],
-            "simhash": ((i + 900) * 0x9E3779B97F4A7C15) & ((1 << 64) - 1),
-        })
+        rows.append(
+            {
+                "id": f"mastodon:org-{i}",
+                "author_id": f"mastodon:resident{i}",
+                "source": "mastodon",
+                "text": f"unrelated musing number {i} about the weather and the bus timetable",
+                "timestamp": BASE + timedelta(days=1 + i, minutes=i * 17),
+                "parent_id": None,
+                "urls": [],
+                "hashtags": [],
+                "simhash": ((i + 900) * 0x9E3779B97F4A7C15) & ((1 << 64) - 1),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -278,9 +286,7 @@ def test_coordination_links_the_planted_burst(isolated_settings):
     result = CoordinationDetector(isolated_settings).detect(
         coordinated_corpus(), run_null_model=False
     )
-    linked = {e["src_author_id"] for e in result.edges} | {
-        e["dst_author_id"] for e in result.edges
-    }
+    linked = {e["src_author_id"] for e in result.edges} | {e["dst_author_id"] for e in result.edges}
     assert all(f"mastodon:amplifier{i}" in linked for i in range(6))
     assert not any(a.startswith("mastodon:resident") for a in linked)
 
@@ -341,9 +347,7 @@ def test_coordination_scores_are_bounded_and_explainable(isolated_settings):
     assert result.scores
     assert all(0.0 <= v <= 1.0 for v in result.scores.values())
     # The amplifiers should score above anyone the graph barely touches.
-    amplifier_scores = [
-        v for k, v in result.scores.items() if k.startswith("mastodon:amplifier")
-    ]
+    amplifier_scores = [v for k, v in result.scores.items() if k.startswith("mastodon:amplifier")]
     assert amplifier_scores
     assert min(amplifier_scores) > 0.0
 
@@ -397,9 +401,7 @@ def test_domain_recalibration_refuses_a_tiny_label_set():
     from modeling.accounts.bot_clf import recalibrate_on_domain
 
     rng = np.random.default_rng(0)
-    calibrator, report = recalibrate_on_domain(
-        rng.random(20), (rng.random(20) > 0.7).astype(float)
-    )
+    calibrator, report = recalibrate_on_domain(rng.random(20), (rng.random(20) > 0.7).astype(float))
     assert calibrator is None
     assert report["applied"] is False
     assert "floor" in report["reason"]

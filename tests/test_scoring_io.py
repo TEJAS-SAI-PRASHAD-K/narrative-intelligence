@@ -207,9 +207,7 @@ def test_replace_mode_still_reports_unchanged_rows(store):
 def test_replace_mode_drops_rows_no_longer_produced(store):
     ids = ["reddit:a", "reddit:b"]
     store.write("record_scores", make_record_scores(ids), known_keys=set(ids))
-    store.write(
-        "record_scores", make_record_scores(["reddit:a"]), known_keys=set(ids), merge=False
-    )
+    store.write("record_scores", make_record_scores(["reddit:a"]), known_keys=set(ids), merge=False)
     assert set(store.read("record_scores")["record_id"]) == {"reddit:a"}
 
 

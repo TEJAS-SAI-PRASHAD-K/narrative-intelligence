@@ -49,9 +49,8 @@ def make_frame(n_groups: int = 30, per_group: int = 6, seed: int = 0) -> pd.Data
         for k in range(per_group):
             rows.append(
                 {
-                    "text": f"story {g} variant {k} " + " ".join(
-                        rng.choice(["alpha", "beta", "gamma", "delta"], size=5)
-                    ),
+                    "text": f"story {g} variant {k} "
+                    + " ".join(rng.choice(["alpha", "beta", "gamma", "delta"], size=5)),
                     "claim_id": f"claim-{g}",
                     "outlet": f"outlet-{g % 4}",
                     "label": label,
@@ -323,6 +322,6 @@ def test_no_module_outside_splits_imports_a_sklearn_splitter():
                 continue
             if "sklearn.model_selection" in stripped or SPLITTER_PATTERN.search(stripped):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{line_no}: {stripped}")
-    assert not offenders, (
-        "these modules bypass modeling/datasets/splits.py:\n  " + "\n  ".join(offenders)
+    assert not offenders, "these modules bypass modeling/datasets/splits.py:\n  " + "\n  ".join(
+        offenders
     )
