@@ -146,8 +146,19 @@ def migrated_db(api_env, allow_local_sockets) -> Iterator[str]:
 
 
 def _with_search_path(url: str, schema: str) -> str:
+    """Scope the connection to the throwaway schema, with public behind it.
+
+    ``public`` has to stay on the path: CREATE EXTENSION is a superuser
+    operation that docker/postgres-init runs once into ``public``, so operator
+    classes like ``gin_trgm_ops`` and the ``vector`` type live there. A
+    search_path of the test schema alone makes the migrations fail on an index
+    that works perfectly in production -- which is a test-harness bug that reads
+    exactly like a schema bug.
+
+    New objects still land in the test schema because it is first.
+    """
     joiner = "&" if "?" in url else "?"
-    return f"{url}{joiner}options=-csearch_path%3D{schema}"
+    return f"{url}{joiner}options=-csearch_path%3D{schema},public"
 
 
 @pytest.fixture

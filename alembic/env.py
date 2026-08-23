@@ -16,8 +16,9 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -76,9 +77,26 @@ def run_migrations_online() -> None:
     connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
+        # Pin the version table to the connection's own schema rather than
+        # letting it be resolved through search_path. Without this, a connection
+        # scoped to a throwaway schema with `public` behind it finds `public`'s
+        # alembic_version, concludes it is already at head, and creates nothing
+        # -- which looks exactly like a broken migration and is not.
+        current_schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
+
+        # Then end the implicit transaction that probe just opened.
+        #
+        # This one line is load-bearing and its absence is silent. SQLAlchemy 2.0
+        # begins a transaction on first execute; `context.begin_transaction()`
+        # sees one already in progress and degrades to a nested no-op, so alembic
+        # never commits and `connection.close()` rolls the entire upgrade back.
+        # Every migration logs "Running upgrade", exits 0, and creates nothing.
+        connection.rollback()
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            version_table_schema=current_schema,
             compare_type=True,
             compare_server_default=True,
             include_object=include_object,
@@ -89,6 +107,11 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+
+        # Belt and braces. Harmless if begin_transaction already committed, and
+        # the difference between a committed migration and a silently discarded
+        # one is not something to leave to a framework detail.
+        connection.commit()
 
 
 if context.is_offline_mode():

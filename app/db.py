@@ -74,6 +74,26 @@ def new_uuid() -> uuid.UUID:
     return uuid.uuid4()
 
 
+def _connect_args(url: str, *settings_options: str) -> dict[str, str]:
+    """Merge libpq ``options`` from the URL with the ones we set here.
+
+    SQLAlchemy folds a URL's query string into the driver's connect kwargs, and
+    an explicit ``connect_args={"options": ...}`` then *replaces* it wholesale
+    rather than merging. Anything that scopes a connection through the URL --
+    a search_path for a throwaway test schema, a pooler's session settings --
+    is silently dropped, and the connection quietly talks to the default schema
+    instead. It fails as "relation does not exist" against a database whose
+    migrations demonstrably ran, which is a genuinely bad afternoon.
+
+    Concatenating is the fix: libpq applies the flags left to right.
+    """
+    from urllib.parse import parse_qs, urlsplit
+
+    from_url = parse_qs(urlsplit(url).query).get("options", [])
+    merged = " ".join([*from_url, *settings_options]).strip()
+    return {"options": merged} if merged else {}
+
+
 # ---------------------------------------------------------------------------
 # async engine (request path)
 # ---------------------------------------------------------------------------
@@ -91,11 +111,13 @@ def get_engine() -> AsyncEngine:
         pool_recycle=1800,
         echo=False,
         future=True,
-        connect_args={
+        connect_args=_connect_args(
+            url,
             # A runaway dashboard query must not be able to hold a connection
             # open forever. This is the backstop; the real fix is an index.
-            "options": f"-c statement_timeout={settings.db_statement_timeout_ms} -c timezone=UTC",
-        },
+            f"-c statement_timeout={settings.db_statement_timeout_ms}",
+            "-c timezone=UTC",
+        ),
     )
     return engine
 
@@ -151,7 +173,7 @@ def get_sync_engine():
         # task's rows" bug. Connections are cheap here; correctness is not.
         poolclass=NullPool,
         future=True,
-        connect_args={"options": "-c timezone=UTC"},
+        connect_args=_connect_args(url, "-c timezone=UTC"),
     )
 
 
