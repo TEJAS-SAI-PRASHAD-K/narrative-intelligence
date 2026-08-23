@@ -109,8 +109,20 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     )
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency. One session per request, rolled back on failure."""
+async def get_session() -> AsyncIterator[AsyncSession | None]:
+    """FastAPI dependency. One session per request, rolled back on failure.
+
+    In DEMO_MODE this yields ``None`` and opens no connection. That is not a
+    shortcut -- it is the point of the mode: the contract build has to run with
+    no Postgres anywhere, so a frontend developer can `docker run` one container
+    and start work. Every router's demo branch returns before touching the
+    session, and the contract test asserts that by running the entire surface
+    with DATABASE_URL unset.
+    """
+    if get_api_settings().demo_mode:
+        yield None
+        return
+
     sessionmaker_ = get_sessionmaker()
     async with sessionmaker_() as session:
         try:

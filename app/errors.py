@@ -94,6 +94,23 @@ class ScorerUnavailable(ApiError):
     message = "The model required for this route is not available."
 
 
+class NotImplementedYet(ApiError):
+    """A route whose contract exists but whose real query has not landed yet.
+
+    501, not 500 or 404: the route is documented and its shape is final, the
+    implementation simply arrives at a later build step. Every occurrence is
+    deleted as its step lands, and a test asserts none survive into the tagged
+    release of a step that claims to have wired it.
+    """
+
+    status_code = 501
+    code = "not_implemented"
+    message = (
+        "This route's contract is published but its query is not wired yet. "
+        "Set DEMO_MODE=1 to develop against the fixture data."
+    )
+
+
 class DependencyUnavailable(ApiError):
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     code = "dependency_unavailable"

@@ -52,7 +52,7 @@ class Principal:
 
 async def get_principal(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: Annotated[AsyncSession | None, Depends(get_session)],
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
 ) -> Principal:
     """Resolve the X-API-Key header to a principal, or raise 401."""
@@ -302,18 +302,24 @@ async def filter_spec(
         str,
         Query(description="IANA zone for bucketing and labels only; filtering is always UTC."),
     ] = "UTC",
-    platform: Annotated[list[str] | None, Query()] = None,
-    narrative_id: Annotated[list[str] | None, Query()] = None,
-    cohort_id: Annotated[list[str] | None, Query()] = None,
-    author_group_id: Annotated[list[str] | None, Query()] = None,
-    sentiment: Annotated[list[str] | None, Query()] = None,
-    emotion: Annotated[list[str] | None, Query()] = None,
+    # The parameter names below are plural while the query-string names stay
+    # singular. That is not cosmetic: FastAPI resolves a dependency's parameters
+    # by *name*, so a `narrative_id` here would collide with the `{narrative_id}`
+    # path parameter on /narratives/{narrative_id}/posts and fail at import with
+    # "Path parameters cannot have default values". Aliasing keeps the wire
+    # contract exactly as specified while keeping the Python names distinct.
+    platforms: Annotated[list[str] | None, Query(alias="platform")] = None,
+    narrative_ids: Annotated[list[str] | None, Query(alias="narrative_id")] = None,
+    cohort_ids: Annotated[list[str] | None, Query(alias="cohort_id")] = None,
+    author_group_ids: Annotated[list[str] | None, Query(alias="author_group_id")] = None,
+    sentiments: Annotated[list[str] | None, Query(alias="sentiment")] = None,
+    emotions: Annotated[list[str] | None, Query(alias="emotion")] = None,
     min_toxicity: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     min_risk: Annotated[float | None, Query(ge=0.0, le=100.0)] = None,
     is_anomalous: Annotated[bool | None, Query()] = None,
     is_bot_like: Annotated[bool | None, Query()] = None,
-    content_type: Annotated[list[str] | None, Query()] = None,
-    lang: Annotated[list[str] | None, Query()] = None,
+    content_types: Annotated[list[str] | None, Query(alias="content_type")] = None,
+    langs: Annotated[list[str] | None, Query(alias="lang")] = None,
     q: Annotated[str | None, Query(description="Full-text query over post text.")] = None,
     include_shared: Annotated[
         bool, Query(description="False = the UI's 'Original data' chip: exclude reposts.")
@@ -338,18 +344,18 @@ async def filter_spec(
         date_from=_as_utc(date_from),
         date_to=_as_utc(date_to),
         tz=tz,
-        platform=tuple(platform or ()),
-        narrative_id=tuple(narrative_id or ()),
-        cohort_id=tuple(cohort_id or ()),
-        author_group_id=tuple(author_group_id or ()),
-        sentiment=tuple(sentiment or ()),
-        emotion=tuple(emotion or ()),
+        platform=tuple(platforms or ()),
+        narrative_id=tuple(narrative_ids or ()),
+        cohort_id=tuple(cohort_ids or ()),
+        author_group_id=tuple(author_group_ids or ()),
+        sentiment=tuple(sentiments or ()),
+        emotion=tuple(emotions or ()),
         min_toxicity=min_toxicity,
         min_risk=min_risk,
         is_anomalous=is_anomalous,
         is_bot_like=is_bot_like,
-        content_type=tuple(content_type or ()),
-        lang=tuple(lang or ()),
+        content_type=tuple(content_types or ()),
+        lang=tuple(langs or ()),
         q=q,
         include_shared=include_shared,
     )
