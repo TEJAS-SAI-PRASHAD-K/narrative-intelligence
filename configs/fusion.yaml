@@ -1,0 +1,99 @@
+# Fusion scoring: weights, thresholds and normalization.
+#
+# NOTE ON THE FILENAME. The Phase 4 spec called for `configs/scoring.yaml`, but
+# that file already exists and belongs to Phase 2: it configures which batch
+# scoring stages run, in what order and in what chunk sizes. Overwriting it
+# would break `modeling score --all`. This file holds the Phase 4 fusion weights
+# and nothing else, and `docs/scoring.md` records the divergence.
+#
+# Every number here changes a number the UI shows. Changing any of them means
+# bumping `version` below, which is written onto every row the run produces --
+# that is how a stale score is detectable rather than merely suspected.
+
+version: fusion-v1.0.0
+
+# ---------------------------------------------------------------------------
+# Normalization
+# ---------------------------------------------------------------------------
+# Two defensible choices, and mixing them makes scores incomparable, so pick one
+# and say why:
+#
+#   percentile  - rank within the project. "High" always means "high for this
+#                 case", which is what an analyst comparing narratives inside
+#                 one investigation actually wants. The cost is that a project
+#                 where nothing is coordinated still has a top decile.
+#   minmax      - against a fixed reference range. Comparable across projects,
+#                 but the reference range is a guess that ages badly, and a
+#                 corpus with one extreme outlier flattens everything else.
+#
+# `percentile` is the choice. The product is a within-case triage tool: the
+# question is "which of these narratives do I look at first", not "is this
+# narrative worse than one in a different investigation". The floor guards
+# against the degenerate case -- with fewer than `min_sample` scored members
+# there is no meaningful distribution, so the raw value is used and the
+# component records that it fell back.
+normalization:
+  method: percentile
+  min_sample: 20
+  fallback: raw
+
+# ---------------------------------------------------------------------------
+# Component weights
+# ---------------------------------------------------------------------------
+# They sum to 1.0. When a component cannot be computed its weight is
+# redistributed over the others in proportion -- never treated as zero, which
+# would systematically under-flag every narrative the deepfake module never saw.
+weights:
+  narrative_severity: 0.45
+  coordination: 0.35
+  authenticity: 0.20
+
+# Sub-weights inside each component. Same renormalization rule applies one level
+# down: a narrative with no Compass context still gets a severity score from the
+# signals that do exist.
+narrative_severity:
+  misinfo_likelihood_agg: 0.40
+  compass_risk: 0.25
+  toxicity: 0.20
+  negative_sentiment: 0.15
+
+coordination:
+  bot_like_ratio: 0.35
+  co_post_similarity_density: 0.25
+  temporal_burstiness: 0.25
+  cohort_concentration: 0.15
+
+authenticity:
+  deepfake_hits: 0.40
+  domain_risk_agg: 0.35
+  anonymous_author_ratio: 0.25
+
+# ---------------------------------------------------------------------------
+# Thresholds
+# ---------------------------------------------------------------------------
+# `priority` is derived from fusion_score by these bounds and is never assigned
+# by hand, so two narratives with the same score cannot carry different
+# priorities.
+priority:
+  high: 70.0
+  medium: 40.0
+
+# Where a continuous score becomes a boolean. Kept here rather than inline so
+# "what counts as bot-like" has one answer across the whole system.
+thresholds:
+  bot_like: 0.60
+  toxic: 0.60
+  anomalous: 0.70
+  deepfake: 0.50
+  # A burst is a bucket this many times the narrative's own mean volume.
+  burst_multiple: 3.0
+
+# Compass verification status -> a risk value in [0,1]. `insufficient_evidence`
+# is deliberately mid-scale, not zero: failing to source a claim is not evidence
+# that the claim is harmless.
+compass_risk_values:
+  debunked: 1.0
+  unverified: 0.6
+  insufficient_evidence: 0.5
+  partially_substantiated: 0.35
+  substantiated: 0.1

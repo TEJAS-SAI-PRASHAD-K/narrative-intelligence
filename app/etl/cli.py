@@ -218,6 +218,41 @@ def create_project(
         console.print(f"[green]created project {slug} ({row.id})[/green]")
 
 
+@app.command("load-scores")
+def load_scores(
+    project: str = typer.Option(..., "--project", "-p"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Load Phase 2/3's scored Parquet into Postgres.
+
+    Separate from `load` because the two have different prerequisites: the
+    corpus load needs only Phase 1's output, while this needs a scoring run to
+    have happened. Chaining them would make a missing scored/ directory look
+    like a corpus failure.
+    """
+    _setup(verbose)
+    from app.db import sync_session
+    from app.etl.scored_loader import load_all
+
+    with sync_session() as session:
+        report = load_all(session, project=project)
+
+    table = Table(title="phase 2/3 scores", header_style="bold")
+    table.add_column("table")
+    table.add_column("rows", justify="right")
+    for name, count in (
+        ("post_scores", report.post_scores),
+        ("authors scored", report.author_scores),
+        ("narratives", report.narratives),
+        ("narrative_posts", report.narrative_posts),
+        ("network_edges", report.network_edges),
+        ("media_checks", report.media_checks),
+        ("embeddings", report.embeddings),
+    ):
+        table.add_row(name, str(count), style=None if count else "yellow")
+    console.print(table)
+
+
 @app.command()
 def seed(
     slug: str = typer.Option("demo", "--slug", help="Project slug for the demo corpus."),
