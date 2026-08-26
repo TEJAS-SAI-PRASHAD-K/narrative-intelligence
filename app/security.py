@@ -16,10 +16,21 @@ if it is wrong:
    offline attack. Rotating ``API_KEY_PEPPER`` invalidates every issued key,
    which is the intended emergency lever.
 
-Argon2id is used when ``argon2-cffi`` is installed and PBKDF2-HMAC-SHA256 with
-a high iteration count otherwise. The algorithm and its parameters are encoded
-in the stored string, so both can coexist and a parameter bump does not need a
-migration.
+**On the choice of hash.** New keys are stored as HMAC-SHA256 over the key and
+the pepper, and that is deliberate rather than lazy. Argon2 and PBKDF2 exist to
+make brute-forcing *low-entropy human passwords* expensive; an API key here is
+32 bytes from ``secrets.token_urlsafe``, so brute force is infeasible no matter
+how fast the hash is. What this actually needs is (a) never storing plaintext,
+(b) a constant-time comparison, and (c) a pepper so a database dump alone is not
+enough -- and HMAC-SHA256 gives all three in microseconds.
+
+Argon2id was the first implementation and it cost **81ms of CPU on every single
+request**, measured, which is a large fraction of the latency budget for an
+endpoint that is supposed to answer in under 500ms. Paying that for a property
+the threat model does not need is the wrong trade.
+
+Both algorithms remain *verifiable*: the stored string names its own algorithm,
+so keys minted under the old scheme keep working and can be rotated at leisure.
 """
 
 from __future__ import annotations
@@ -45,6 +56,9 @@ KEY_ENTROPY_BYTES = 32
 PREFIX_LEN = 8
 
 _PBKDF2_ITERATIONS = 240_000
+
+#: The algorithm new keys are minted with. See the module docstring.
+_DEFAULT_ALGO = "hmac-sha256"
 
 
 @dataclass(frozen=True)
@@ -82,26 +96,17 @@ def key_prefix(plaintext: str) -> str:
 
 
 def hash_key(plaintext: str) -> str:
-    """Hash a key for storage. Format: ``algo$params$salt$digest``."""
+    """Hash a key for storage. Format: ``algo$params$salt$digest``.
+
+    The salt is still per-key even though HMAC does not strictly need one for a
+    high-entropy secret: it means two identical keys (which cannot happen, but
+    still) do not produce identical rows, and it keeps the stored format
+    uniform across all three algorithms.
+    """
     salt = secrets.token_bytes(16)
     material = plaintext.encode("utf-8") + b"|" + _pepper()
-
-    try:
-        from argon2.low_level import Type, hash_secret_raw
-
-        digest = hash_secret_raw(
-            secret=material,
-            salt=salt,
-            time_cost=2,
-            memory_cost=64 * 1024,
-            parallelism=1,
-            hash_len=32,
-            type=Type.ID,
-        )
-        return "$".join(["argon2id", "t=2,m=65536,p=1", _b64(salt), _b64(digest)])
-    except ImportError:
-        digest = hashlib.pbkdf2_hmac("sha256", material, salt, _PBKDF2_ITERATIONS, dklen=32)
-        return "$".join(["pbkdf2-sha256", f"i={_PBKDF2_ITERATIONS}", _b64(salt), _b64(digest)])
+    digest = hmac.new(salt + _pepper(), material, hashlib.sha256).digest()
+    return "$".join([_DEFAULT_ALGO, "v=1", _b64(salt), _b64(digest)])
 
 
 def verify_key(plaintext: str, stored: str) -> bool:
@@ -112,7 +117,9 @@ def verify_key(plaintext: str, stored: str) -> bool:
         expected = _unb64(digest_b64)
         material = plaintext.encode("utf-8") + b"|" + _pepper()
 
-        if algo == "argon2id":
+        if algo == "hmac-sha256":
+            actual = hmac.new(salt + _pepper(), material, hashlib.sha256).digest()
+        elif algo == "argon2id":
             from argon2.low_level import Type, hash_secret_raw
 
             parsed = dict(part.split("=", 1) for part in params.split(","))

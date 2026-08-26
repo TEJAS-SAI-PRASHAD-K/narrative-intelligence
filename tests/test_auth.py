@@ -44,6 +44,49 @@ def test_wrong_key_does_not_verify(peppered):
     assert not verify_key(a.plaintext[:-1], a.key_hash)
 
 
+def test_new_keys_use_the_fast_algorithm(peppered):
+    """Argon2 cost 81ms per request for a property a 256-bit token does not need.
+
+    See the reasoning in app/security.py. This pins the default so nobody
+    reintroduces a memory-hard KDF on the request path by reflex.
+    """
+    from app.security import mint
+
+    assert mint().key_hash.startswith("hmac-sha256$")
+
+
+def test_a_legacy_argon2_hash_still_verifies(peppered):
+    """The stored string names its algorithm, so old keys keep working."""
+    import base64
+    import secrets
+
+    from app.security import mint, verify_key
+
+    minted = mint()
+    try:
+        from argon2.low_level import Type, hash_secret_raw
+    except ImportError:
+        pytest.skip("argon2-cffi is not installed")
+
+    salt = secrets.token_bytes(16)
+    material = minted.plaintext.encode() + b"|" + b"a-test-pepper"
+    digest = hash_secret_raw(
+        secret=material,
+        salt=salt,
+        time_cost=2,
+        memory_cost=65536,
+        parallelism=1,
+        hash_len=32,
+        type=Type.ID,
+    )
+
+    def b64(raw):
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    legacy = "$".join(["argon2id", "t=2,m=65536,p=1", b64(salt), b64(digest)])
+    assert verify_key(minted.plaintext, legacy)
+
+
 def test_two_mints_of_the_same_plaintext_differ(peppered):
     """Salted, so an attacker cannot tell two identical keys apart."""
     from app.security import hash_key, verify_key

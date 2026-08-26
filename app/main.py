@@ -60,6 +60,13 @@ async def lifespan(app: FastAPI):
     """
     settings = get_api_settings()
     configure_logging(settings.log_level)
+
+    # Same reason as in app/tasks/celery_app.py: a router that imports one model
+    # module lazily would leave a foreign key unresolvable. One call, at
+    # startup, and no route can hit it.
+    from app.models import import_all_models
+
+    import_all_models()
     log.info(
         "starting api environment=%s demo_mode=%s embedding=%s/%d",
         settings.environment,

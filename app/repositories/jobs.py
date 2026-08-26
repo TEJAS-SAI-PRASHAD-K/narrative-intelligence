@@ -1,29 +1,52 @@
-"""Jobs queries.
-
-Placeholder until build step 6. Every function raises the same 501 so an unwired route
-fails with a documented, machine-readable code instead of an ImportError that
-reads like a crash. The contract for these routes is already published and
-served under DEMO_MODE; only the query is missing.
-"""
+"""Job queries."""
 
 from __future__ import annotations
 
-from typing import Any
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.errors import NotImplementedYet
+from app.deps import Page
+from app.errors import NotFound
+from app.repositories.filters import decode_cursor, encode_cursor, resolve_project_id
+from app.schemas.common import PageResponse
+from app.schemas.jobs import JobOut
+from app.services.jobs import to_job_out
 
 
-def _pending(name: str) -> NotImplementedYet:
-    return NotImplementedYet(
-        f"{name} is not wired to real data yet; it lands at build step 6. "
-        "Set DEMO_MODE=1 to develop against the fixture data.",
-        detail={"function": name, "lands_at": "build step 6"},
+async def list_jobs(
+    session: AsyncSession,
+    page: Page,
+    *,
+    project_id: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+) -> PageResponse[JobOut]:
+    from app.models.ops import Job
+
+    stmt = select(Job).order_by(Job.created_at.desc(), Job.id.desc())
+    if project_id:
+        stmt = stmt.where(Job.project_id == await resolve_project_id(session, project_id))
+    if kind:
+        stmt = stmt.where(Job.kind == kind)
+    if status:
+        stmt = stmt.where(Job.status == status)
+
+    offset = decode_cursor(page.cursor).get("o", 0)
+    rows = (await session.execute(stmt.offset(offset).limit(page.limit))).scalars().all()
+    return PageResponse[JobOut](
+        items=[to_job_out(row) for row in rows],
+        next_cursor=(
+            encode_cursor({"o": offset + page.limit}) if len(rows) == page.limit else None
+        ),
+        total=None,
+        filters_applied={"project_id": project_id, "kind": kind, "status": status},
     )
 
 
-async def list_jobs(*args: Any, **kwargs: Any):
-    raise _pending("jobs.list_jobs")
+async def get_job(session: AsyncSession, job_id: str) -> JobOut:
+    from app.models.ops import Job
 
-
-async def get_job(*args: Any, **kwargs: Any):
-    raise _pending("jobs.get_job")
+    row = await session.get(Job, job_id)
+    if row is None:
+        raise NotFound(f"No job with id {job_id}.", code="job_not_found")
+    return to_job_out(row)
