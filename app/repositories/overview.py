@@ -95,7 +95,10 @@ async def kpi_bundle(session: AsyncSession, spec: FilterSpec) -> KpiBundle:
     scored = sum(sentiment_rows.values())
     net = (
         round(
-            100 * (sentiment_rows.get("negative", 0) - sentiment_rows.get("positive", 0)) / scored,
+            # positive - negative, matching /overview/kpis/sentiment exactly. Both
+            # numbers appear on the same screen, and a sign disagreement between two
+            # figures a user reads together is worse than either being absent.
+            100 * (sentiment_rows.get("positive", 0) - sentiment_rows.get("negative", 0)) / scored,
             1,
         )
         if scored
@@ -385,4 +388,104 @@ async def high_risk_posts(
         ),
         total=None,
         filters_applied=spec.as_response_dict(),
+    )
+
+
+async def emotions_breakdown(session: AsyncSession, spec: FilterSpec):
+    """Emotion distribution over posts the emotion model actually scored.
+
+    Percentages are over `total_scored`, not over the matched posts. A post the
+    model skipped is counted in `unscored` rather than folded into `neutral`,
+    which would be the convenient lie: neutral is a prediction, not a default.
+    """
+    from app.models.corpus import PostScore
+    from app.schemas.overview import EmotionsBreakdown, EmotionShare
+
+    project_id = await resolve_project_id(session, spec.project_id)
+    ids = _filtered_post_ids(spec, project_id).subquery()
+
+    rows = dict(
+        (
+            await session.execute(
+                select(PostScore.emotion, func.count())
+                .where(PostScore.post_id.in_(select(ids.c.id)), PostScore.emotion.isnot(None))
+                .group_by(PostScore.emotion)
+            )
+        ).all()
+    )
+    matched = (await session.execute(select(func.count()).select_from(ids))).scalar() or 0
+
+    # Phase 2's vocabulary says `joy`; the UI spec says `happiness`. Translated
+    # here, once, rather than on the client where two clients would disagree.
+    counts: dict[str, int] = {}
+    for label, count in rows.items():
+        counts[("happiness" if label == "joy" else label)] = (
+            counts.get("happiness" if label == "joy" else label, 0) + count
+        )
+
+    scored = sum(counts.values())
+    order = ("fear", "anger", "disgust", "happiness", "surprise", "sadness", "neutral")
+    return EmotionsBreakdown(
+        items=[
+            EmotionShare(
+                emotion=name,
+                count=counts.get(name, 0),
+                pct=round(100 * counts.get(name, 0) / scored, 2) if scored else 0.0,
+            )
+            for name in order
+        ],
+        total_scored=scored,
+        unscored=max(matched - scored, 0),
+        definition=DEFINITIONS["emotions"],
+    )
+
+
+async def sentiment_breakdown(session: AsyncSession, spec: FilterSpec):
+    from app.models.corpus import PostScore
+    from app.schemas.overview import SentimentBreakdown, SentimentShare
+
+    project_id = await resolve_project_id(session, spec.project_id)
+    ids = _filtered_post_ids(spec, project_id).subquery()
+
+    rows = {
+        row.sentiment: row
+        for row in (
+            await session.execute(
+                select(
+                    PostScore.sentiment,
+                    func.count().label("count"),
+                    func.avg(PostScore.sentiment_score).label("mean_score"),
+                )
+                .where(PostScore.post_id.in_(select(ids.c.id)), PostScore.sentiment.isnot(None))
+                .group_by(PostScore.sentiment)
+            )
+        ).all()
+    }
+    matched = (await session.execute(select(func.count()).select_from(ids))).scalar() or 0
+
+    scored = sum(row.count for row in rows.values())
+    items = [
+        SentimentShare(
+            sentiment=label,
+            count=rows[label].count if label in rows else 0,
+            pct=round(100 * (rows[label].count if label in rows else 0) / scored, 2)
+            if scored
+            else 0.0,
+            mean_score=(
+                round(float(rows[label].mean_score), 3)
+                if label in rows and rows[label].mean_score is not None
+                else None
+            ),
+        )
+        for label in ("positive", "neutral", "negative")
+    ]
+    positive = next(i.pct for i in items if i.sentiment == "positive")
+    negative = next(i.pct for i in items if i.sentiment == "negative")
+
+    return SentimentBreakdown(
+        items=items,
+        total_scored=scored,
+        unscored=max(matched - scored, 0),
+        net_sentiment=round(positive - negative, 2),
+        definition=DEFINITIONS["sentiment"],
     )

@@ -115,11 +115,33 @@ def _scored_rows(scored_dir: Path, table: str) -> int | None:
         return None
 
 
+#: How long a capability probe stays fresh. Checkpoints do not appear and
+#: disappear second to second, and /readyz is polled by an orchestrator on a
+#: short interval: re-stat'ing the filesystem and reading Parquet footers on
+#: every probe made readiness a 550ms call, which is slow enough to trip a
+#: liveness timeout and restart a perfectly healthy container.
+PROBE_TTL_SECONDS = 30.0
+
+_last_probe_at: float = 0.0
+
+
 def probe(*, refresh: bool = False) -> list[Capability]:
-    """Report every capability. Never raises."""
-    if refresh:
+    """Report every capability. Never raises.
+
+    ``refresh=True`` respects the TTL rather than forcing a re-scan. A caller
+    that genuinely needs to see a checkpoint mounted seconds ago can clear the
+    cache directly; nothing in the request path needs that.
+    """
+    global _last_probe_at
+    import time
+
+    now = time.monotonic()
+    if refresh and now - _last_probe_at >= PROBE_TTL_SECONDS:
         _probe_cached.cache_clear()
-    return _probe_cached()
+        _last_probe_at = now
+    elif not _last_probe_at:
+        _last_probe_at = now
+    return list(_probe_cached())
 
 
 @lru_cache(maxsize=1)

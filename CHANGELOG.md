@@ -4,6 +4,126 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08-24
+
+Phase 4: the corpus and the models now sit behind a persistent, queryable, async
+backend. Five services under one `docker compose up`, 27 tables, 80 documented
+API operations, and a fusion score that returns its own explanation.
+
+### Added
+
+- **The API contract, tagged `v0.1-contract`.** 69 paths / 80 operations, every
+  one returning a schema-valid response under `DEMO_MODE=1` with no database and
+  no Redis. Phase 5 was unblocked from that tag; everything after it changes
+  values, not shapes. `openapi.json` is committed and `make openapi-check` fails
+  the build if the code drifts from it.
+- **Postgres 16 + pgvector schema**, 27 tables across the five pillars, in three
+  reviewed Alembic migrations. `alembic downgrade base && alembic upgrade head`
+  round-trips cleanly and a test asserts the models have not drifted from the
+  migrations.
+- **Parquet → Postgres ETL** (`app/etl/`). COPY into an unlogged staging table
+  then one `INSERT ... SELECT ... ON CONFLICT`, because COPY cannot do
+  ON CONFLICT and ORM inserts over this corpus would take hours. 4,188 posts,
+  2,021 authors and 374 domains load in seconds; rerunning inserts zero rows.
+- **Phase 2/3 scored-Parquet loader.** Those tables are a first-class input, not
+  a fallback: the API serves real model output with no GPU and no checkpoint
+  mounted. 4,188 post scores, 21 narratives, 1,959 coordination edges, 100 media
+  verdicts and 2,474 embeddings.
+- **Fusion scoring** (`app/scoring/`, `configs/fusion.yaml`). A plain documented
+  function, not a model, that returns the score alongside its three components,
+  their sub-signals, the applied weights and the config version.
+- **Celery on four queues** split by what the work contends for, so a
+  forty-minute deepfake job cannot starve fifteen-minute alert evaluation. One
+  unified `jobs` table, so the frontend has one polling shape for every async
+  operation.
+- **API-key auth** with three scopes, a server-side pepper, prefix-narrowed
+  constant-time verification and revocation tombstones.
+- `docs/api.md`, `docs/data-model.md`, `docs/scoring.md` — the last with a worked
+  example verified against the live API.
+
+### Changed
+
+- **API keys are hashed with HMAC-SHA256, not Argon2id.** Argon2 cost 81ms of CPU
+  on every single request, measured. Memory-hard KDFs exist to make brute-forcing
+  low-entropy human passwords expensive; an API key here is 32 bytes from
+  `secrets.token_urlsafe`, so brute force is infeasible whatever the hash costs.
+  What this actually needs is no plaintext at rest, a constant-time compare and a
+  pepper — HMAC gives all three in 0.003ms. The stored string names its own
+  algorithm, so keys minted under Argon2 keep verifying.
+- **`scoring_version` is a digest, not a joined version string.** Phase 2's
+  per-module map joins to 85 characters and would overflow again on the next
+  module. The readable map stays in `model_versions`.
+- Fusion weights live in `configs/fusion.yaml`, not `configs/scoring.yaml`: that
+  name is already Phase 2's batch-stage config and overwriting it would break
+  `modeling score --all`. Recorded in `docs/scoring.md`.
+
+### Fixed
+
+- **Alembic silently committed nothing.** Probing the connection before
+  `context.begin_transaction()` opens an implicit transaction, so Alembic's own
+  transaction degraded to a nested no-op and `close()` rolled the whole upgrade
+  back. Every migration logged "Running upgrade", exited 0, and created no
+  tables. One `rollback()` before `configure` fixes it.
+- **Engine `connect_args={"options": …}` silently replaced any options in the
+  URL** rather than merging, so anything scoping a connection through the URL was
+  dropped and the connection quietly used the wrong schema. It now concatenates.
+- **Net sentiment had opposite signs in two places on the same screen.**
+  `/overview/kpis` computed negative-minus-positive and
+  `/overview/kpis/sentiment` positive-minus-negative, so one corpus read +27.8
+  and -27.8 depending on where you looked. Both are now positive-minus-negative,
+  the definition text says so, and a test pins them together.
+- **The async Redis client was cached across event loops.** An asyncio
+  connection pool binds its connections to the loop that created them, so one
+  global cache handing the same pool to a second loop raises
+  `RuntimeError: Event loop is closed`. Under uvicorn there is one loop and it
+  never appears; anywhere else /readyz flapped between `ok` and `down` on
+  alternate probes, which would restart a healthy container. The cache is now
+  keyed by loop.
+- **`/readyz` re-read Parquet footers on every probe**, making a readiness check
+  a 550ms call — slow enough to trip an orchestrator timeout. Capability probes
+  now carry a 30-second TTL; checkpoints do not appear and disappear second to
+  second.
+- **The worker imported one model module in isolation** and got
+  `NoReferencedTableError` on a foreign key — an import-order bug that reads like
+  a schema bug. `import_all_models()` now runs once per entrypoint.
+
+### Discovered in the data
+
+Three column widths were wrong, and only loading the real corpus found them:
+
+- `posts.id` reaches 219 characters; news and GDELT derive `native_id` from the
+  article URL.
+- `posts.author_handle` reaches 744; on news rows Phase 1 stores the article
+  *byline* there. Now `TEXT` — there is no defensible number to pick.
+- `authors.handle` mirrors it, and overflowed only when the newest post for an
+  outlet happened to have a long byline, which made it non-deterministic.
+
+Two artifact shapes also differed from the spec notes:
+
+- **Phase 2's embedding cache is content-addressed** — `sha256(text)[:32] → row
+  index` — not an index of post ids. 4,126 unique texts cover 4,188 posts because
+  exact reposts share a vector, which is correct and which a positional zip would
+  have silently mangled.
+- **`Record` does not reject empty text or a null timestamp.** Phase 1's adapters
+  drop those before a `Record` is built; at the Parquet boundary there is no
+  adapter, so the loader applies the same rules with the same reason codes.
+
+### Known gaps
+
+- The inference tasks (`nlp.*`, `score.posts`, `score.authors`, `graph.*`,
+  `compass.*`, `media.deepfake`, `domain.enrich`, `alerts.evaluate`,
+  `reports.render`) are registered and routed but not implemented; they record a
+  failure on the job row rather than hanging, and their routes return `501` with
+  `code: not_implemented` outside demo mode. The data they would produce is
+  already served from Phase 2/3's committed outputs — what is missing is scoring
+  *new* posts without rerunning the Phase 2 pipeline.
+- 1,714 of 4,188 posts have no cached embedding, because Phase 2 hashes the
+  prepared text and its truncation policy needs the model's tokenizer to
+  reproduce. Guessing at it would map posts to the wrong vectors.
+- `docker compose` could not be exercised on this machine (the v2 plugin is not
+  installed). Every service was verified against containers started directly:
+  pgvector/pgvector:pg16, redis:7-alpine, a live Celery worker and uvicorn.
+
 ## [0.2.1] — 2026-08-15
 
 Real benchmark data arrived. The bot classifier is trained on it, a better

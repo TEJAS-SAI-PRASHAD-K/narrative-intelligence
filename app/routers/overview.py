@@ -166,7 +166,9 @@ async def kpis_emotions(
 ) -> EmotionsBreakdown:
     if mock.demo_mode():
         return mock.overview_emotions_breakdown(filters)
-    raise NotImplementedYet(detail={"route": "/overview/kpis/emotions", "lands_at": "build step 9"})
+    from app.repositories.overview import emotions_breakdown
+
+    return await emotions_breakdown(session, filters)
 
 
 @router.get("/kpis/sentiment", response_model=SentimentBreakdown, summary="Sentiment KPI drilldown")
@@ -177,6 +179,6 @@ async def kpis_sentiment(
 ) -> SentimentBreakdown:
     if mock.demo_mode():
         return mock.overview_sentiment_breakdown(filters)
-    raise NotImplementedYet(
-        detail={"route": "/overview/kpis/sentiment", "lands_at": "build step 9"}
-    )
+    from app.repositories.overview import sentiment_breakdown
+
+    return await sentiment_breakdown(session, filters)

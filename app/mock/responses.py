@@ -493,9 +493,11 @@ DEFINITIONS = {
         "resolution is out of scope."
     ),
     "sentiment": (
-        "Share of scored posts classified negative, minus the share classified "
-        "positive, in [-100, 100]. Posts the sentiment model skipped are excluded "
-        "from both the numerator and the denominator."
+        "Net sentiment: the share of scored posts classified positive minus the "
+        "share classified negative, in [-100, 100]. Positive means the corpus "
+        "leans positive. Posts the sentiment model skipped are excluded from both "
+        "the numerator and the denominator, so this is a share of what was "
+        "measured rather than of what was collected."
     ),
     "emotions": (
         "The most frequent dominant emotion among scored posts. Each post "
@@ -533,7 +535,10 @@ def overview_kpis(spec: FilterSpec):
     engagement = sum(v for p in posts for v in (p.likes, p.shares, p.replies) if v is not None)
     negative = sum(1 for p in scored if p.scores["sentiment"] == "negative")
     positive = sum(1 for p in scored if p.scores["sentiment"] == "positive")
-    net = round(100 * (negative - positive) / len(scored), 1) if scored else None
+    # positive - negative, matching the breakdown endpoint exactly. These two
+    # numbers appear on the same screen; opposite sign conventions between them
+    # is the kind of disagreement the shared definitions exist to prevent.
+    net = round(100 * (positive - negative) / len(scored), 1) if scored else None
 
     emotion_counts: dict[str, int] = {}
     for post in posts:

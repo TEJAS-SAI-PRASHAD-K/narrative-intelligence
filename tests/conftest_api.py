@@ -89,7 +89,7 @@ def _clear_caches() -> None:
     """
     from app.config import get_api_settings
     from app.db import get_engine, get_sessionmaker, get_sync_engine, get_sync_sessionmaker
-    from app.redis_client import get_redis, get_sync_redis
+    from app.redis_client import get_sync_redis, reset_async_clients
     from nlp.availability import _probe_cached
 
     for cached in (
@@ -98,11 +98,11 @@ def _clear_caches() -> None:
         get_sessionmaker,
         get_sync_engine,
         get_sync_sessionmaker,
-        get_redis,
         get_sync_redis,
         _probe_cached,
     ):
         cached.cache_clear()
+    reset_async_clients()
 
 
 @pytest.fixture
