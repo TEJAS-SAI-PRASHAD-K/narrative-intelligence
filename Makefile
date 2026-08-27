@@ -95,7 +95,11 @@ clean-data: ## DESTRUCTIVE: delete the entire local corpus
 	@read -p "Type 'yes' to confirm: " ok && [ "$$ok" = "yes" ] && rm -rf data || echo "aborted"
 
 # --- Phase 4: backend, persistence & API ------------------------------------
-COMPOSE ?= docker compose
+# Compose v2 ships either as a `docker compose` subcommand or as a standalone
+# `docker-compose` binary depending on how Docker was installed. Detect rather
+# than assume: `make up` failing with "unknown command" on a machine that has a
+# perfectly good Compose is a bad first experience.
+COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
 setup-api: ## Install the Phase 4 backend dependencies into the venv
 	$(BIN)/pip install -e ".[api,dev]"

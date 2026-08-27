@@ -1,0 +1,56 @@
+# The build context. Without this file it is 4.9GB, which is slow, fills the
+# builder's disk, and -- the part that actually matters -- bakes `.env` into an
+# image layer where it survives every later `rm` and travels with the image.
+
+# ---------------------------------------------------------------------------
+# Secrets. Never in an image. `COPY . .` would otherwise put the live .env into
+# a layer, and deleting it in a later RUN does not remove it from the layer.
+# Configuration reaches the containers through the environment, never the build.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+kaggle.json
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Build products that are mounted as volumes at runtime, not baked in. Both are
+# gitignored for the same reason: they go stale the moment `make data` or a
+# training run produces new ones, and a 3GB image that is wrong is worse than a
+# 300MB image plus a mount.
+# ---------------------------------------------------------------------------
+data/
+models/
+uploads/
+reports/
+artifacts/
+
+# Local Python environment. The image builds its own; copying the host's would
+# be both huge and wrong (macOS wheels in a linux image).
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# History and tooling that no runtime needs.
+.git/
+.github/
+.gitignore
+.dockerignore
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# OS and editor noise.
+.DS_Store
+.idea/
+.vscode/
