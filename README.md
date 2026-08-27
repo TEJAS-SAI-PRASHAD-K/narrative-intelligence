@@ -570,3 +570,130 @@ manifest hash — so a rerun that disagrees can be diagnosed rather than argued 
 | `convokit` / `Mastodon.py` import errors | run `pip install -e ".[sources]"` |
 | GDELT returns `RateLimitError` for every topic | you are in its penalty window; wait several minutes |
 | `fetch-all` exits 1 | a source *errored* (skips exit 0); the failing source is named in the summary |
+### Running it
+
+Three ways, easiest first. **`make help` lists every target.**
+
+#### 1. Demo mode — no database, no Docker, no API key
+
+Serves the whole API from fixtures. This is what the Phase 5 dashboard was built
+against.
+
+```bash
+DEMO_MODE=1 .venv/bin/uvicorn app.main:app --reload --port 8000
+```
+
+Open <http://localhost:8000/docs>. Stop with `Ctrl-C`.
+
+#### 2. Datastores in Docker, API on the host
+
+The fastest edit-reload loop, and the one everything in this phase was verified
+through.
+
+```bash
+make up-deps        # Postgres + Redis
+make migrate        # apply the schema
+make serve          # run the API (--reload); Ctrl-C to stop
+make down           # stop the containers, keep the data
+```
+
+#### 3. All five services in Docker
+
+```bash
+make up             # build if needed, start api + worker + beat + db + redis
+make ps             # status
+make logs           # tail everything; Ctrl-C stops tailing, not the stack
+make down           # stop, keep the data
+```
+
+Migrations run automatically when the `api` container starts. Rebuild after a
+code change with `docker compose up -d --build api worker beat` (option 2 picks
+changes up live).
+
+### Loading data
+
+```bash
+.venv/bin/python -m app.cli bootstrap-key                       # mint an API key, shown once
+.venv/bin/python -m app.etl.cli create-project --slug election-2026 --name "Election 2026"
+make load   P=election-2026                                     # Phase 1 Parquet -> Postgres
+.venv/bin/python -m app.etl.cli load-scores --project election-2026   # Phase 2/3 scores
+make verify P=election-2026                                     # reconcile; non-zero on loss
+```
+
+Or do all of it at once:
+
+```bash
+make seed P=election-2026
+```
+
+`make seed` runs the corpus load, the scored-table load, cohort assignment, the
+graph build, community detection, fusion scoring, domain risk and two alert
+rules — in dependency order, with no network and no model warm-up. If the corpus
+already belongs to another project it stops and tells you which, rather than
+building an empty project that looks finished.
+
+### Running the pipeline by hand
+
+Every stage is a Celery task. With a worker running they are enqueued through
+the API; without one, call them directly:
+
+```bash
+.venv/bin/python -c "from app.tasks.nlp import embed;            print(embed.run(job_id=None, project_id='election-2026'))"
+.venv/bin/python -c "from app.tasks.nlp import cluster;          print(cluster.run(job_id=None, project_id='election-2026'))"
+.venv/bin/python -c "from app.tasks.scoring import score_posts;  print(score_posts.run(job_id=None, project_id='election-2026'))"
+.venv/bin/python -c "from app.tasks.scoring import score_authors;print(score_authors.run(job_id=None, project_id='election-2026'))"
+.venv/bin/python -c "from app.tasks.graph import build_edges;    print(build_edges.run(job_id=None, project_id='election-2026'))"
+.venv/bin/python -c "from app.tasks.scoring import score_fusion; print(score_fusion.run(job_id=None, project_id='election-2026'))"
+.venv/bin/python -c "from app.tasks.compass import generate;     print(generate.run(job_id=None, project_id='election-2026'))"
+```
+
+A worker, for the routes that return `202`:
+
+```bash
+.venv/bin/celery -A app.tasks.celery_app.celery worker --loglevel=info --queues=io,cpu,gpu,llm
+```
+
+### Inspecting and maintaining
+
+```bash
+make db-shell                                  # psql inside the db container
+make api-shell                                 # bash inside the api container
+.venv/bin/python -m app.cli capabilities       # which models are loadable, and why not
+.venv/bin/python -m app.cli config             # resolved settings, secrets redacted
+make test                                      # 512 pass / 27 skip without Postgres
+make lint
+make openapi-check                             # fails if openapi.json drifted
+make migrate-check                             # downgrade to base and back
+make nuke                                      # DESTRUCTIVE: drops the database volume
+```
+
+### Two things that will bite you
+
+**On macOS, set `OMP_NUM_THREADS=1`** before running anything that loads a
+model. torch and xgboost each bundle an OpenMP runtime and the two conflict:
+inference dies mid-batch with no traceback and no exit message. The Makefile
+exports it, and `.env.example` sets it for anything run outside `make`.
+
+**After a reboot, start your container runtime first.** Every `docker` and
+`make up*` command fails until it is running, usually with a confusing socket
+error rather than an obvious one.
+
+### Known gaps in this phase
+
+- **Compass Context needs `ANTHROPIC_API_KEY`.** Without one it refuses
+  cleanly: every narrative gets a row with `insufficient_evidence`, an empty
+  context and no citations. That is the designed behaviour, not a bug — there is
+  no heuristic fallback, because a keyword-assembled fact-check would be worse
+  than none.
+- **No deepfake checkpoint is mounted**, so `/media/check` records the upload,
+  purges it on schedule, and returns `inconclusive` with an explanation saying
+  no model ran. It never returns `likely_authentic` for a file it did not
+  analyse.
+- **Retrieval for Compass reads only the in-corpus reputable outlets.** A live
+  web-search retriever is the obvious extension and is deliberately absent: it
+  needs a search key, a fetch budget and a source policy, and half-building it
+  would mean generating over whatever a search engine returned.
+- **`nlp.cluster` has not been run against the real corpus.** Phase 2/3's
+  committed narratives are loaded instead, which is why the narrative feed is
+  populated. The task is implemented and preserves analyst-edited titles; it has
+  been exercised only on fixtures.

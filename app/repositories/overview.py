@@ -489,3 +489,284 @@ async def sentiment_breakdown(session: AsyncSession, spec: FilterSpec):
         net_sentiment=round(positive - negative, 2),
         definition=DEFINITIONS["sentiment"],
     )
+
+
+async def posts_breakdown(session: AsyncSession, spec: FilterSpec):
+    """The Posts KPI drilldown, with the domain and channel hierarchies."""
+    from app.models.corpus import Post, PostScore
+    from app.schemas.overview import HierarchyNode, PostsBreakdown
+
+    project_id = await resolve_project_id(session, spec.project_id)
+    ids = _filtered_post_ids(spec, project_id).subquery()
+    scoped = Post.id.in_(select(ids.c.id))
+
+    counts = (
+        await session.execute(
+            select(
+                func.count(Post.id),
+                func.count(Post.id).filter(Post.parent_id.is_(None)),
+                # An "anonymous" post is one whose author the platform removed.
+                # Phase 1 marks those with a __deleted__ sentinel rather than
+                # dropping the row: the text is still evidence.
+                func.count(Post.id).filter(
+                    Post.author_handle.is_(None) | Post.author_id.like("%__deleted__")
+                ),
+            ).where(scoped)
+        )
+    ).one()
+    total, original, anonymous = counts
+
+    flags = (
+        await session.execute(
+            select(
+                func.count().filter(PostScore.is_anomalous.is_(True)),
+                func.count().filter(PostScore.is_toxic.is_(True)),
+            ).where(PostScore.post_id.in_(select(ids.c.id)))
+        )
+    ).one()
+    anomalous, toxic = flags
+
+    domain_rows = (
+        await session.execute(
+            select(func.unnest(Post.domains).label("domain"), func.count())
+            .where(scoped)
+            .group_by(text("domain"))
+            .order_by(func.count().desc())
+            .limit(12)
+        )
+    ).all()
+    channel_rows = (
+        await session.execute(
+            select(Post.source, Post.source_detail, func.count())
+            .where(scoped)
+            .group_by(Post.source, Post.source_detail)
+            .order_by(func.count().desc())
+        )
+    ).all()
+
+    by_channel: dict[str, list] = {}
+    for source, detail, count in channel_rows:
+        by_channel.setdefault(source, []).append((detail, count))
+
+    denominator = total or 1
+    return PostsBreakdown(
+        total=Metric(
+            value=total, label="Total posts", definition=DEFINITIONS["posts"], sample_size=total
+        ),
+        original=Metric(
+            value=original,
+            label="Original posts",
+            definition=DEFINITIONS["posts"] + " Excludes replies and comments.",
+            sample_size=total,
+        ),
+        local_shared=Metric(
+            value=total - original,
+            label="Shared / replies",
+            definition="Posts with a parent: replies, comments and quote-reposts.",
+            sample_size=total,
+        ),
+        anonymous=Metric(
+            value=anonymous,
+            label="Anonymous authors",
+            definition=(
+                "Posts whose author the platform removed. The text is retained as "
+                "evidence; the account is unusable for coordination analysis."
+            ),
+            sample_size=total,
+        ),
+        anomalous=Metric(
+            value=anomalous,
+            label="Anomalous",
+            definition="Posts above the anomaly threshold. Unscored posts are excluded.",
+            nullable_fields=["anomaly"],
+            sample_size=total,
+        ),
+        toxic=Metric(
+            value=toxic,
+            label="Toxic",
+            definition="Posts above the toxicity threshold. Unscored posts are excluded.",
+            nullable_fields=["toxicity"],
+            sample_size=total,
+        ),
+        by_domain=[
+            HierarchyNode(
+                key=row.domain,
+                label=row.domain,
+                value=row[1],
+                pct=round(100 * row[1] / denominator, 2),
+            )
+            for row in domain_rows
+        ],
+        by_channel=[
+            HierarchyNode(
+                key=source,
+                label=source,
+                value=sum(count for _, count in children),
+                pct=round(100 * sum(count for _, count in children) / denominator, 2),
+                children=[
+                    HierarchyNode(
+                        key=detail or "unknown",
+                        label=detail or "unknown",
+                        value=count,
+                        pct=round(100 * count / denominator, 2),
+                    )
+                    for detail, count in sorted(children, key=lambda item: -item[1])[:8]
+                ],
+            )
+            for source, children in sorted(
+                by_channel.items(), key=lambda kv: -sum(c for _, c in kv[1])
+            )
+        ],
+    )
+
+
+async def engagements_breakdown(session: AsyncSession, spec: FilterSpec):
+    """The Engagements KPI drilldown.
+
+    Views are reported separately from the total, never folded into it: they
+    measure exposure rather than engagement, and a corpus with YouTube in it
+    would otherwise look two orders of magnitude more engaged than the same
+    corpus without.
+    """
+    from app.models.corpus import Post, PostScore
+    from app.schemas.overview import EngagementsBreakdown
+
+    project_id = await resolve_project_id(session, spec.project_id)
+    ids = _filtered_post_ids(spec, project_id).subquery()
+    scoped = Post.id.in_(select(ids.c.id))
+
+    row = (
+        await session.execute(
+            select(
+                func.sum(Post.likes),
+                func.sum(Post.shares),
+                func.sum(Post.replies),
+                func.sum(Post.views),
+                func.count(Post.id),
+                func.count(Post.views),
+            ).where(scoped)
+        )
+    ).one()
+    likes, shares, replies, views, posts, view_sample = row
+
+    high_risk = (
+        await session.execute(
+            select(func.sum(func.coalesce(Post.likes, 0) + func.coalesce(Post.shares, 0)))
+            .select_from(Post)
+            .join(PostScore, PostScore.post_id == Post.id)
+            .where(scoped, PostScore.misinfo_likelihood > 0.7)
+        )
+    ).scalar()
+
+    def metric(value, label, definition, **kwargs):
+        return Metric(value=int(value or 0), label=label, definition=definition, **kwargs)
+
+    return EngagementsBreakdown(
+        total=metric(
+            (likes or 0) + (shares or 0) + (replies or 0),
+            "Total engagements",
+            DEFINITIONS["engagements"],
+            nullable_fields=["views"],
+            sample_size=posts,
+        ),
+        on_high_risk=metric(
+            high_risk,
+            "On high-risk posts",
+            "Likes + shares on posts scoring above 0.7 misinformation likelihood.",
+            sample_size=posts,
+        ),
+        likes=metric(
+            likes, "Likes", "Sum of likes. Platforms that expose none contribute nothing."
+        ),
+        global_shares=metric(shares, "Shares", "Sum of shares, reposts and retweets."),
+        reactions=metric(replies, "Replies", "Sum of replies and comments."),
+        views=metric(
+            views,
+            "Views",
+            "Sum of views, reported separately because views measure exposure, not "
+            "engagement. Only YouTube exposes this in the current corpus.",
+            nullable_fields=["views"],
+            sample_size=view_sample,
+        ),
+    )
+
+
+async def authors_breakdown(session: AsyncSession, spec: FilterSpec):
+    """The Authors KPI drilldown, with the top cohorts."""
+    from app.models.actors import Author, AuthorCohort, AuthorGroupMember, Cohort
+    from app.models.corpus import Post
+    from app.schemas.overview import AuthorsBreakdown, HierarchyNode
+
+    project_id = await resolve_project_id(session, spec.project_id)
+    ids = _filtered_post_ids(spec, project_id).subquery()
+    author_ids = select(Post.author_id).where(Post.id.in_(select(ids.c.id))).distinct().subquery()
+    scoped = Author.author_id.in_(select(author_ids.c.author_id))
+
+    row = (
+        await session.execute(
+            select(
+                func.count(Author.author_id),
+                func.count(Author.author_id).filter(Author.bot_score > 0.6),
+                func.count(Author.bot_score),
+            ).where(Author.project_id == project_id, scoped)
+        )
+    ).one()
+    total, bot_like, scorable = row
+
+    watchlisted = (
+        await session.execute(
+            select(func.count(func.distinct(AuthorGroupMember.author_id))).where(
+                AuthorGroupMember.author_id.in_(select(author_ids.c.author_id))
+            )
+        )
+    ).scalar()
+
+    cohort_rows = (
+        await session.execute(
+            select(Cohort.id, Cohort.name, func.count(func.distinct(AuthorCohort.author_id)))
+            .join(AuthorCohort, AuthorCohort.cohort_id == Cohort.id)
+            .where(
+                Cohort.project_id == project_id,
+                AuthorCohort.author_id.in_(select(author_ids.c.author_id)),
+            )
+            .group_by(Cohort.id, Cohort.name)
+            .order_by(func.count(func.distinct(AuthorCohort.author_id)).desc())
+        )
+    ).all()
+
+    denominator = total or 1
+    return AuthorsBreakdown(
+        total=Metric(
+            value=total,
+            label="Total authors",
+            definition=DEFINITIONS["authors"],
+            sample_size=total,
+        ),
+        bot_like=Metric(
+            value=bot_like,
+            label="Bot-like authors",
+            definition=(
+                "Authors scoring above 0.6 from the account classifier, out of the "
+                f"{scorable} the classifier could score. News outlets are not accounts "
+                "and are excluded rather than counted as human."
+            ),
+            nullable_fields=["bot_score"],
+            sample_size=scorable,
+        ),
+        author_groups=Metric(
+            value=watchlisted,
+            label="Watchlisted authors",
+            definition="Authors on an analyst-curated watchlist. Asserted, not inferred.",
+            sample_size=total,
+        ),
+        top_cohorts=[
+            HierarchyNode(
+                key=str(row[0]),
+                label=row[1],
+                value=row[2],
+                pct=round(100 * row[2] / denominator, 2),
+            )
+            for row in cohort_rows[:6]
+        ],
+        total_cohort_count=len(cohort_rows),
+    )

@@ -219,19 +219,34 @@ def load_author_scores(session: Session, scored_dir: Path, project_id: uuid.UUID
         for row in rows
     ]
 
+    # COALESCE on every score, and it is load-bearing. Phase 2's author_scores
+    # covers a subset of the corpus and carries NULL for the rest; a plain
+    # assignment would blank a score that `score.authors` had just computed with
+    # a live model. Importing the committed scores must add to what is known,
+    # never erase it.
+    #
+    # The non-score columns (community, dominant sentiment) are assigned
+    # directly: those come only from Phase 2, so there is nothing to preserve.
     sql = """
     UPDATE authors SET
-        bot_score = :bot_score,
-        coordination_score = :coordination_score,
-        anomalous_score = :anomalous_score,
-        toxicity_score = :toxicity_score,
-        dominant_sentiment = :dominant_sentiment,
-        dominant_emotion = :dominant_emotion,
-        community_id = :community_id,
-        community_size = :community_size,
-        skip_reasons = :skip_reasons,
-        score_components = cast(:score_components AS jsonb),
-        scoring_version = :scoring_version
+        bot_score = COALESCE(:bot_score, authors.bot_score),
+        coordination_score = COALESCE(:coordination_score, authors.coordination_score),
+        anomalous_score = COALESCE(:anomalous_score, authors.anomalous_score),
+        toxicity_score = COALESCE(:toxicity_score, authors.toxicity_score),
+        dominant_sentiment = COALESCE(:dominant_sentiment, authors.dominant_sentiment),
+        dominant_emotion = COALESCE(:dominant_emotion, authors.dominant_emotion),
+        community_id = COALESCE(:community_id, authors.community_id),
+        community_size = COALESCE(:community_size, authors.community_size),
+        -- An empty skip_reasons from phase 2 does not clear a reason a live
+        -- run recorded; a non-empty one replaces it.
+        skip_reasons = CASE
+            WHEN cardinality(cast(:skip_reasons AS varchar[])) > 0
+            THEN cast(:skip_reasons AS varchar[])
+            ELSE authors.skip_reasons END,
+        score_components = COALESCE(
+            cast(:score_components AS jsonb), authors.score_components
+        ),
+        scoring_version = COALESCE(:scoring_version, authors.scoring_version)
     WHERE author_id = :author_id AND project_id = :project_id
     """
     _bulk_upsert(session, sql, payload)

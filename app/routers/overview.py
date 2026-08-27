@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.deps import Filters, Pagination, RequireRead, rate_limit
-from app.errors import NotImplementedYet
 from app.mock import responses as mock
 from app.schemas.common import PageResponse
 from app.schemas.overview import (
@@ -129,7 +128,9 @@ async def kpis_posts(
 ) -> PostsBreakdown:
     if mock.demo_mode():
         return mock.overview_posts_breakdown(filters)
-    raise NotImplementedYet(detail={"route": "/overview/kpis/posts", "lands_at": "build step 5"})
+    from app.repositories.overview import posts_breakdown
+
+    return await posts_breakdown(session, filters)
 
 
 @router.get(
@@ -142,9 +143,9 @@ async def kpis_engagements(
 ) -> EngagementsBreakdown:
     if mock.demo_mode():
         return mock.overview_engagements_breakdown(filters)
-    raise NotImplementedYet(
-        detail={"route": "/overview/kpis/engagements", "lands_at": "build step 5"}
-    )
+    from app.repositories.overview import engagements_breakdown
+
+    return await engagements_breakdown(session, filters)
 
 
 @router.get("/kpis/authors", response_model=AuthorsBreakdown, summary="Authors KPI drilldown")
@@ -155,7 +156,9 @@ async def kpis_authors(
 ) -> AuthorsBreakdown:
     if mock.demo_mode():
         return mock.overview_authors_breakdown(filters)
-    raise NotImplementedYet(detail={"route": "/overview/kpis/authors", "lands_at": "build step 9"})
+    from app.repositories.overview import authors_breakdown
+
+    return await authors_breakdown(session, filters)
 
 
 @router.get("/kpis/emotions", response_model=EmotionsBreakdown, summary="Emotions KPI drilldown")

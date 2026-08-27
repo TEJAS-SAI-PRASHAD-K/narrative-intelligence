@@ -216,4 +216,15 @@ def advisory_lock(session: Session, key: str) -> Iterator[bool]:
         yield acquired
     finally:
         if acquired:
-            session.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_id})
+            try:
+                session.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_id})
+            except Exception as unlock_error:
+                # If the body failed, the transaction is already aborted and
+                # this unlock raises InFailedSqlTransaction -- which would then
+                # replace the original exception and hide what actually went
+                # wrong. Swallow it and let the real error propagate.
+                #
+                # Not leaking the lock: it is session-scoped, and the session is
+                # closed by the caller's context manager immediately after this,
+                # which releases it.
+                log.debug("could not release advisory lock %s: %s", key, unlock_error)

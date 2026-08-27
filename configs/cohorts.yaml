@@ -1,0 +1,103 @@
+# The cohort taxonomy.
+#
+# A cohort is a *model-derived* audience segment, and membership is
+# multi-label: an account is routinely "Right Wing" and "Crypto Fan" and "Micro
+# Influencer" at once. Nothing here is exclusive.
+#
+# Two kinds of rule, and the difference matters:
+#
+#   metric   - computed from account facts (followers, posting rate, account
+#              age). Deterministic, cheap, and defensible. These are the ones
+#              this file leans on.
+#   keyword  - term frequency in the author's own posts. Cheap and *weak*: a
+#              journalist writing about cryptocurrency looks identical to a
+#              crypto promoter. Confidence is capped low for these and the API
+#              reports `assigned_by: model` so an analyst can override.
+#
+# An analyst's manual assignment is never overwritten by a model run --
+# author_cohorts.assigned_by is what makes that enforceable.
+
+version: cohorts-v1.0.0
+
+# Below this the assignment is not recorded at all. A cohort membership at 0.2
+# confidence is noise that makes the cohort bar chart meaningless.
+min_confidence: 0.35
+
+cohorts:
+  # --- influence tier: purely metric, so confidence is high ---------------
+  - name: Nano Account
+    category: influence_tier
+    description: Under 1,000 followers. The bulk of any corpus.
+    rule: {type: metric, field: followers, max: 1000}
+    confidence: 0.95
+
+  - name: Micro Influencer
+    category: influence_tier
+    description: 1,000-50,000 followers.
+    rule: {type: metric, field: followers, min: 1000, max: 50000}
+    confidence: 0.95
+
+  - name: Macro Influencer
+    category: influence_tier
+    description: Over 50,000 followers.
+    rule: {type: metric, field: followers, min: 50000}
+    confidence: 0.95
+
+  # --- behavioural: metric, and the ones that actually matter for this ----
+  - name: High Volume Poster
+    category: interest
+    description: >-
+      Above 20 posts in the corpus window. Volume alone is not suspicious --
+      newsrooms and hobbyists both post a lot -- but it is a precondition for
+      most coordination patterns.
+    rule: {type: metric, field: post_count, min: 20}
+    confidence: 0.9
+
+  - name: New Account
+    category: interest
+    description: >-
+      Registered within 90 days of its first post in the corpus. The cheapest
+      prior that separates a loud human from a three-day-old account posting
+      four hundred times.
+    rule: {type: metric, field: account_age_days, max: 90}
+    confidence: 0.85
+
+  - name: Outlet
+    category: interest
+    description: >-
+      A news or GDELT "author", which is a publication rather than a person.
+      Carved out explicitly so account-level bot scoring is visibly skipped
+      rather than silently meaningless.
+    rule: {type: metric, field: source, equals: [news, gdelt]}
+    confidence: 1.0
+
+  # --- topical: keyword, so confidence is deliberately capped ------------
+  - name: Election Watchers
+    category: interest
+    description: Posts concentrate on electoral process and administration.
+    rule:
+      type: keyword
+      terms: [ballot, election, voter, polling, precinct, tabulator, certify]
+      min_hits: 3
+    confidence: 0.6
+
+  - name: Crypto Fan
+    category: interest
+    description: Posts concentrate on cryptocurrency.
+    rule:
+      type: keyword
+      terms: [crypto, bitcoin, ethereum, blockchain, defi, altcoin]
+      min_hits: 3
+    confidence: 0.6
+
+  - name: Health Sceptic
+    category: interest
+    description: >-
+      Posts concentrate on vaccine and public-health scepticism. Naming this
+      "sceptic" rather than "anti-vax" is deliberate: the rule matches topic,
+      not stance, and the label should not assert more than the rule can show.
+    rule:
+      type: keyword
+      terms: [vaccine, mrna, ivermectin, big pharma, immunity, cdc]
+      min_hits: 3
+    confidence: 0.55

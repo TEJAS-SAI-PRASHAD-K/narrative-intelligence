@@ -101,6 +101,14 @@ clean-data: ## DESTRUCTIVE: delete the entire local corpus
 # perfectly good Compose is a bad first experience.
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
+# On macOS, torch and xgboost each ship their own OpenMP runtime and the two
+# fight: the process dies mid-inference with no traceback and no exit message.
+# Phase 2 documents the import-order half of the fix (xgboost before torch, in
+# modeling/__init__.py); this is the other half. It serialises OpenMP, which
+# costs throughput on a CPU inference worker and buys not segfaulting.
+# Harmless on Linux, where there is only one runtime.
+export OMP_NUM_THREADS ?= 1
+
 setup-api: ## Install the Phase 4 backend dependencies into the venv
 	$(BIN)/pip install -e ".[api,dev]"
 
@@ -156,7 +164,7 @@ verify: ## Reconcile manifest <-> Parquet <-> Postgres row counts
 	$(BIN)/python -m app.etl.cli verify --project $(P)
 
 seed: ## Build the curated demo project (no network, no model warm-up)
-	$(BIN)/python -m app.etl.cli seed
+	$(BIN)/python -m app.etl.cli seed --slug $(or $(P),demo)
 
 # --- contract --------------------------------------------------------------
 openapi: ## Regenerate openapi.json from the code
