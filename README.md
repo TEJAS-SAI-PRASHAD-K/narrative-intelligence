@@ -479,22 +479,53 @@ changed the code:
   recall is 0.608 — 39% of genuine accounts get flagged at the chosen threshold.
 - **The misinformation fine-tune does not clear TF-IDF + logistic regression** on the demo
   fixture (macro-F1 0.908 vs 0.927, intervals overlapping). Reported in
-  `artifacts/eval/misinfo/v0.1.0/report.md` rather than tuned away. **Still on the demo
-  checkpoint** — real training on 26,777 rows needs a GPU. When it runs, if the transformer
-  still fails to clear TF-IDF, it should not ship: it costs orders of magnitude more
+  `artifacts/eval/misinfo/v0.1.0/report.md` rather than tuned away. **A real run on the
+  full 26,777 rows did happen** — `models/misinfo/v0.1.0/registry.json` records macro-F1
+  **0.8062 [0.7956, 0.8161]** over 7,085 test rows, dated 2026-08-19 — but **its weights
+  are no longer on disk**, only the config, tokenizer and calibrator, so the number cannot
+  be reproduced or re-derived from what is here. The committed eval artifacts under
+  `artifacts/eval/misinfo/v0.1.0/` are still the 55-row demo run, and the full-scale
+  TF-IDF comparison was never made. Retraining is the only way to close this, and
+  `notebooks/colab_finetune.ipynb` does it; the bar stands unchanged — if the transformer
+  fails to clear TF-IDF it should not ship, because it costs orders of magnitude more
   inference for no measured gain.
 - **Coordination modularity does not exceed the time-shuffled null on this corpus**
   (0.912 observed vs 0.979 ± 0.000 shuffled). Any graph has communities; on this data the
   communities found are **not** evidence of coordination, and the report says so. The
   detector does recover a planted coordinated burst on the demo fixture, so the mechanism
   works — the corpus simply does not contain the phenomenon at a detectable level.
-- **Stance is unblocked but untrained.** The corpus supplied as SemEval-2016 is actually
-  **FNC-1**, which is the better fit: its four labels map one-to-one onto the contract,
-  where SemEval has no `unrelated` class and could never predict one. 75,385 pairs over
-  2,587 bodies. The loader ships; the 75k-pair fine-tune is GPU work.
-- **Deepfake remains untrained.** FaceForensics++ is 17 GB behind a signed agreement, and
-  the DFDC copy on disk is pre-extracted crops with no `metadata.json` — so a fake cannot
-  be tied to its source video and the split cannot be made honest. Documented, not faked.
+- **Stance has a training path and a zero-shot baseline; the real fine-tune is GPU work.**
+  The corpus supplied as SemEval-2016 is actually **FNC-1**, which is the better fit: its
+  four labels map one-to-one onto the contract, where SemEval has no `unrelated` class and
+  could never predict one. 75,385 pairs over 2,587 bodies, all on disk. The fine-tune
+  starts from `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` rather than a bare encoder —
+  stance *is* premise/hypothesis entailment, so an NLI+FEVER checkpoint starts already
+  knowing the relation. The same checkpoint also runs zero-shot as the baseline, which is
+  the only honest answer to "did fine-tuning buy anything". Run it with
+  `notebooks/colab_finetune.ipynb`: measured at ~2 pairs/sec on 8 GB Apple Silicon over
+  MPS, the 50k-pair fine-tune is ~20 h locally versus well under an hour on a T4.
+- **Deepfake is evaluated, with a pre-existing detector and no training.** FaceForensics++
+  is still 17 GB behind a signed agreement, and the DFDC copy on disk still cannot support
+  honest *training* — the dropped `original` field means a fake cannot be tied to the real
+  clip it came from, and DFDC swaps faces between actors in shared sessions, so a trained
+  model could memorise a face and be scored on it from the other side of the split. But it
+  can support honest *testing*: nothing is fitted, so there is no boundary to leak across,
+  and that is exactly the cross-dataset check this module was always meant to be. Mounting
+  `dima806/deepfake_vs_real_image_detection` and scoring 381 videos at video grain gives
+  **macro-F1 0.564 [0.485, 0.638], ROC-AUC 0.665 [0.567, 0.756]** — beating the
+  majority-class baseline (0.442) by +0.12. Weak, as cross-dataset transfer always is, but
+  measured. Two things make it readable rather than misleading, and both are in the card:
+  **read ROC-AUC, not PR-AUC** (at an 80% positive rate a random ranker already scores
+  PR-AUC ≈ 0.80 — a rejected candidate detector scored PR-AUC 0.825 on a ROC-AUC of
+  0.512, i.e. nothing at all), and **`deepfake_prob` is uncalibrated with an operating
+  point of 0.99, not 0.5**, because its Platt fit inverted the ranking and was rejected.
+- **A calibrator can silently invert a model, and Brier does not catch it.** Found while
+  evaluating the above: the Platt fit mapped higher raw scores to *lower* probabilities,
+  turning a test ROC-AUC of 0.665 into 0.335 — while Brier *improved* (0.182 → 0.151),
+  because predicting near the base rate always does. `modeling/eval/calibrate.py` now
+  checks that a calibration preserves ranking and rejects it if not, falling back to raw
+  scores with a loud note. `bot` uses the same calibrator and was exposed to the same
+  failure.
 
 ## Limitations
 

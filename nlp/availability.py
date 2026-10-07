@@ -71,11 +71,45 @@ def _checkpoint_dir(models_dir: Path, module: str, version: str) -> Path:
 
 
 def _has_weights(path: Path) -> bool:
-    """A directory with no weight file in it is a failed download, not a model."""
+    """A directory with no weight file in it is a failed download, not a model.
+
+    ``*.json`` is deliberately **not** a weight pattern. Every checkpoint this
+    project writes leaves metadata behind -- ``config.json``,
+    ``tokenizer.json``, ``calibrator.json``, ``registry.json`` -- and counting
+    those as weights makes a directory whose tensors were deleted or never
+    synced report ``ready``. It then fails at the first request instead of at
+    the probe, which is the whole failure mode this function exists to catch.
+    The real weight files are: HF ``*.safetensors``/``*.bin``, torch
+    ``*.pt``/``*.pth``, the bot estimator's ``*.pkl``, and ``*.joblib``/
+    ``*.ubj`` for the sklearn and xgboost serializations.
+    """
     if not path.is_dir():
         return False
-    patterns = ("*.safetensors", "*.bin", "*.pt", "*.pth", "*.json", "*.joblib", "*.pkl", "*.ubj")
+    patterns = ("*.safetensors", "*.bin", "*.pt", "*.pth", "*.joblib", "*.pkl", "*.ubj")
     return any(next(path.rglob(pattern), None) is not None for pattern in patterns)
+
+
+def _is_demo_checkpoint(path: Path) -> bool:
+    """True when this checkpoint was trained on the committed fixtures.
+
+    ``modeling.registry.register`` stamps ``is_demo`` into ``registry.json``,
+    and a fixture-trained checkpoint has real weight files -- so without this
+    check the probe cannot tell it from a real one and reports ``ready``. It
+    would then serve a model fitted on ~50 shape-faithful, value-meaningless
+    rows, which is the "confident garbage" the registry's own docstring refuses
+    to degrade into. Unreadable or absent metadata is treated as not-demo: the
+    older checkpoints predate the field, and refusing them would be a
+    regression.
+    """
+    import json
+
+    registry_file = path / "registry.json"
+    if not registry_file.is_file():
+        return False
+    try:
+        return bool(json.loads(registry_file.read_text(encoding="utf-8")).get("is_demo", False))
+    except (json.JSONDecodeError, OSError):
+        return False
 
 
 def _embedding_cache_rows(embeddings_dir: Path) -> int | None:
@@ -169,7 +203,7 @@ def _probe_cached() -> tuple[Capability, ...]:
         # 1. A mounted checkpoint is the ready state.
         if module_key:
             ckpt = _checkpoint_dir(settings.models_dir, module_key, version)
-            if _has_weights(ckpt):
+            if _has_weights(ckpt) and not _is_demo_checkpoint(ckpt):
                 out.append(
                     Capability(
                         name=name,

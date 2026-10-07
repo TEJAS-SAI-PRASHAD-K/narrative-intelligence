@@ -1,0 +1,160 @@
+{
+  "module": "stance",
+  "version": "v0.2.0",
+  "generated_at": "2026-10-07T03:34:18.607599+00:00",
+  "run": {
+    "seed": 20260813,
+    "device": "mps",
+    "input_manifest_hash": "b6ba18d6285f05da",
+    "languages": [
+      "en"
+    ],
+    "library_versions": {
+      "python": "3.13.7",
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "numpy": "2.5.2",
+      "scipy": "1.18.0",
+      "pandas": "3.0.5",
+      "pyarrow": "25.0.1",
+      "scikit-learn": "1.9.0",
+      "xgboost": "3.4.0",
+      "shap": "0.52.0",
+      "torch": "2.13.0",
+      "transformers": "5.15.0",
+      "sentence-transformers": "5.7.0",
+      "timm": "1.0.28",
+      "networkx": "3.6.1",
+      "anthropic": "0.121.0"
+    }
+  },
+  "metrics": {
+    "module": "stance",
+    "split": "FNC-1's own competition test set (bodies disjoint from train); train/val grouped by body_id; sizes = 50/10/24; seed=20260813",
+    "n_test": 24,
+    "is_demo": true,
+    "positive_rate": 0.25,
+    "macro_f1": {
+      "value": 0.1,
+      "ci_low": 0.0385,
+      "ci_high": 0.1471,
+      "n_bootstrap": 1000
+    },
+    "roc_auc": null,
+    "pr_auc": null,
+    "brier": null,
+    "per_class": {
+      "support": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 6
+      },
+      "deny": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 6
+      },
+      "discuss": {
+        "precision": 0.25,
+        "recall": 1.0,
+        "f1": 0.4,
+        "support": 6
+      },
+      "unrelated": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 6
+      }
+    },
+    "confusion": [
+      [
+        0,
+        0,
+        6,
+        0
+      ],
+      [
+        0,
+        0,
+        6,
+        0
+      ],
+      [
+        0,
+        0,
+        6,
+        0
+      ],
+      [
+        0,
+        0,
+        6,
+        0
+      ]
+    ]
+  },
+  "baselines": {
+    "main_macro_f1": {
+      "value": 0.1,
+      "ci_low": 0.0385,
+      "ci_high": 0.1471,
+      "n_bootstrap": 1000
+    },
+    "verdicts": {
+      "majority class": {
+        "baseline_macro_f1": {
+          "value": 0.1,
+          "ci_low": 0.0385,
+          "ci_high": 0.1471,
+          "n_bootstrap": 1000
+        },
+        "delta": 0.0,
+        "verdict": "not separable at this test size"
+      },
+      "tf-idf + logreg": {
+        "baseline_macro_f1": {
+          "value": 0.1,
+          "ci_low": 0.0385,
+          "ci_high": 0.1471,
+          "n_bootstrap": 1000
+        },
+        "delta": 0.0,
+        "verdict": "not separable at this test size"
+      },
+      "zero-shot NLI (same base model)": {
+        "baseline_macro_f1": {
+          "value": 0.219,
+          "ci_low": 0.0977,
+          "ci_high": 0.3229,
+          "n_bootstrap": 1000
+        },
+        "delta": -0.119,
+        "verdict": "not separable at this test size"
+      }
+    },
+    "clears_every_baseline": false
+  },
+  "calibration": null,
+  "dataset": {
+    "fnc1": {
+      "dataset": "fnc1",
+      "rows": 84,
+      "groups": 18,
+      "group_col": "body_id",
+      "is_demo": true,
+      "dropped": {},
+      "label_balance": {
+        "unrelated": 0.595,
+        "discuss": 0.202,
+        "support": 0.119,
+        "deny": 0.083
+      },
+      "domains": [
+        "competition_test",
+        "train"
+      ]
+    }
+  }
+}

@@ -84,7 +84,21 @@ thresholds:
   bot_like: 0.60
   toxic: 0.60
   anomalous: 0.70
-  deepfake: 0.50
+  # 0.99, not 0.50, and that is not a typo.
+  #
+  # `deepfake_prob` comes from a pre-existing detector used with no
+  # fine-tuning, and its Platt calibration was REJECTED for inverting the
+  # ranking (see modeling/eval/calibrate.py), so this column is a raw softmax
+  # rather than a probability. Raw softmax from that detector sits above 0.5
+  # for almost every video -- at 0.50 this threshold flags ~100% of media and
+  # carries no information.
+  #
+  # 0.99 is the operating point measured on a held-apart half of DFDC at a
+  # 0.85 precision target: precision 0.850, recall 0.773. It is recorded in
+  # models/deepfake/<version>/model.json and in the eval report, and it must be
+  # re-derived whenever the mounted detector changes. Treat it as belonging to
+  # that specific checkpoint, not as a general-purpose cut-off.
+  deepfake: 0.99
   # A burst is a bucket this many times the narrative's own mean volume.
   burst_multiple: 3.0
 

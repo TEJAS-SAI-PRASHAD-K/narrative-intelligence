@@ -129,6 +129,47 @@ class Calibrator:
 
         self.method = method
         self.fitted = True
+
+        # --- reject a calibration that reverses the ranking ---------------
+        #
+        # Platt is a logistic fit with a free sign. On a weak, imbalanced
+        # signal it can settle on a NEGATIVE slope, and the calibrator then
+        # maps a higher raw score to a lower probability -- silently inverting
+        # the model. Brier does not catch it: predicting near the base rate
+        # improves Brier even while the ranking is destroyed, which is exactly
+        # how this slipped through (deepfake: Brier 0.182 -> 0.151 "improved",
+        # while test ROC-AUC went 0.665 -> 0.335 = 1 - 0.665).
+        #
+        # Isotonic is non-decreasing by construction, so in practice this only
+        # ever fires for Platt. Checked on a grid rather than by reading the
+        # coefficient so it holds for any future method.
+        if not self._is_monotonic(scores):
+            log.error(
+                "%s calibration INVERTED the score ranking and has been rejected; "
+                "serving raw scores instead. A negative-slope fit means the raw signal "
+                "was too weak for this validation split to orient it.",
+                method,
+            )
+            self._model = None
+            self.method = "none"
+            inversion_note = (
+                f"{method} calibration was REJECTED: it mapped higher raw scores to "
+                "lower probabilities, inverting the model. Raw scores are served "
+                "uncalibrated instead. This is a signal-strength problem, not a "
+                "calibration one -- the fit had too little to orient itself by."
+            )
+            note = (note + "; " if note else "") + inversion_note
+            return CalibrationResult(
+                method="none",
+                brier_before=brier_before,
+                brier_after=brier_before,
+                reliability_before=reliability_before,
+                reliability_after=reliability_before,
+                n_calibration=len(scores),
+                degraded=True,
+                note=note,
+            )
+
         calibrated = self.transform(scores)
         brier_after = _safe_brier(labels, calibrated)
         degraded = brier_after > brier_before
@@ -153,6 +194,23 @@ class Calibrator:
             degraded=degraded,
             note=note,
         )
+
+    def _is_monotonic(self, scores: np.ndarray, *, slack: float = 1e-9) -> bool:
+        """Does the fitted map preserve order over the observed score range?
+
+        A calibrator is only allowed to rescale a model's confidence, never to
+        reorder its predictions. Evaluated on a grid across the fitted range,
+        with numerical slack, so it holds for isotonic and Platt alike.
+        """
+        finite = scores[np.isfinite(scores)]
+        if finite.size < 2:
+            return True
+        low, high = float(np.min(finite)), float(np.max(finite))
+        if high <= low:
+            return True
+        grid = np.linspace(low, high, 64)
+        mapped = self.transform(grid)
+        return bool(np.all(np.diff(mapped) >= -slack))
 
     def transform(self, scores: np.ndarray) -> np.ndarray:
         """Map raw scores to calibrated probabilities in [0, 1]."""

@@ -271,10 +271,25 @@ def get_deepfake_detector():
         return None
 
 
+def _deepfake_model_name(scorer: Any) -> str:
+    """Name the mounted detector: the hub id when there is one, else the backbone."""
+    hf_model = getattr(scorer, "hf_model", None)
+    if hf_model:
+        return str(hf_model)
+    backbone = getattr(scorer, "backbone", None)
+    return f"{backbone}-deepfake" if backbone else "deepfake"
+
+
 class _DeepfakeAdapter:
     def __init__(self, inner: Any, version: str) -> None:
         self._inner = inner
-        self.info = ModelInfo(name="xception-deepfake", version=version)
+        # Report what is actually mounted. The name was hardcoded to
+        # "xception-deepfake", which is the FaceForensics++ training path's
+        # backbone -- but the mounted checkpoint may be a pre-existing HF
+        # detector (a ViT, currently), and /readyz publishes this name. A
+        # ModelInfo that names a different architecture than the one answering
+        # requests is worse than no name.
+        self.info = ModelInfo(name=_deepfake_model_name(inner), version=version)
 
     def analyze(self, path: str, **kwargs: Any) -> dict[str, Any]:
         from pathlib import Path

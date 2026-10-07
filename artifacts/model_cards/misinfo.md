@@ -7,18 +7,63 @@
 
 ## Status
 
-**Not trained on real benchmark data in this repository.** LIAR, FakeNewsNet and
-CoAID are all manual downloads and none is present. What has been executed and
-verified end to end is the full path — load → group-split → baselines →
-fine-tune → calibrate → report → error analysis → checkpoint registry — on the
-committed demo fixtures.
+**A real run happened. Its weights are gone, and the artifacts here are still
+the demo run.** All three statements are true at once, which is why this section
+is longer than it should be.
 
-Everything in the Metrics section below is stamped **DEMO FIXTURE** and is *not
-a result*. Reproduce with real benchmarks on disk before citing any number:
+**The benchmarks are on disk now** — `data/benchmarks/` holds liar,
+fakenewsnet and coaid — so the blocker this card was originally written about is
+resolved.
+
+**A full-scale fine-tune was run on 2026-08-19.** `models/misinfo/v0.1.0/registry.json`
+records it, and it is not a demo run (`is_demo: false`):
+
+| metric | value | 95% CI |
+|---|---|---|
+| macro F1 | **0.8062** | [0.7956, 0.8161] |
+| PR-AUC | 0.7967 | — |
+| ROC-AUC | 0.9020 | — |
+| Brier | 0.1131 | — |
+
+Split: `grouped by group_id (30148 groups; train/val/test = 26777/3596/7085; seed=20260813)` · n_test 7085 · positive rate 0.2991
+
+| class | precision | recall | F1 | support |
+|---|---|---|---|---|
+| not-misinformation | 0.882 | 0.889 | 0.885 | 4966 |
+| misinformation-like | 0.734 | 0.720 | 0.727 | 2119 |
+
+**But the checkpoint's weights are no longer on disk.** `models/misinfo/v0.1.0/`
+holds `config.json`, `tokenizer.json`, `calibrator.json`, `training.json` and
+`registry.json` — and no `model.safetensors`. So:
+
+- The table above **cannot be reproduced or re-derived** from anything in this
+  repository. It is a recorded summary, not verifiable evidence.
+- `nlp/availability.py` correctly reports `misinfo` as **degraded**, serving
+  precomputed Parquet rather than scoring new text. (It used to report `ready`,
+  because the weight-file check counted any `*.json`; that is fixed, and
+  `tests/test_calibration_guards.py` pins it down.)
+- **The full-scale TF-IDF comparison was never made**, so the headline finding
+  below — that the fine-tune does not clear TF-IDF — still rests entirely on the
+  55-row demo fixture and is not established either way at scale.
+
+**Everything in the Metrics section below is the DEMO FIXTURE run** (n_test 55,
+2026-08-13) and is *not a result*. The eval artifacts under
+`artifacts/eval/misinfo/v0.1.0/` are that same demo run.
+
+**To close this properly, retrain.** It is a pretrained-encoder fine-tune, not a
+model built from scratch, and `notebooks/colab_finetune.ipynb` runs it on a
+Colab T4 in well under an hour (~10 h on 8 GB Apple Silicon over MPS, measured
+at ~2 pairs/sec). `configs/models.yaml` lists stronger bases than the
+`roberta-base` that produced 0.806 — `microsoft/deberta-v3-base`, and
+`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` whose FEVER pretraining is fact
+verification, the closest task-adjacent signal available for this label.
+
+**The bar is unchanged:** select on validation, and if the transformer does not
+clear full-scale TF-IDF + logistic regression, it should not ship — it costs
+orders of magnitude more inference for no measured gain.
 
 ```bash
-python scripts/download_benchmarks.py --only liar
-python -m modeling.cli train misinfo
+python -m modeling.cli train misinfo    # or notebooks/colab_finetune.ipynb
 ```
 
 ## Intended use

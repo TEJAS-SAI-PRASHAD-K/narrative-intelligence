@@ -75,15 +75,46 @@ misinfo:
   decision_threshold: 0.5
 
 stance:
-  version: v0.0.0-untrained
-  base_model: roberta-base
+  version: v0.2.0
+  # An NLI+FEVER-tuned encoder, not a bare one. (claim, post) stance is
+  # structurally premise/hypothesis entailment, so this checkpoint starts the
+  # fine-tune already knowing the relation; roberta-base starts from nothing.
+  # The same checkpoint is also run zero-shot as a baseline, which is how we
+  # find out whether the fine-tune bought anything.
+  base_model: MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli
+  fallback_model: microsoft/deberta-v3-base
   labels: [support, deny, discuss, unrelated]
   max_length: 256
   batch_size: 16
   learning_rate: 2.0e-5
   epochs: 3
-  # Lower priority than misinfo. Until a checkpoint exists, the contract's
-  # `stance` and `stance_conf` columns are written as null, deliberately.
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  # Recompute activations in the backward pass instead of storing them.
+  # Measured on an 8 GiB machine: DeBERTa-v3-base at batch 8 / seq 256 peaks at
+  # 5.0 GiB with this on and OOMs without it. Costs ~30% throughput.
+  gradient_checkpointing: true
+  # Trained on FNC-1, whose four classes map one-to-one onto the contract.
+  # Severely imbalanced -- unrelated 73%, disagree 1.7% -- so the loss is class
+  # weighted and macro-F1 is the headline. Accuracy is banned from the report.
+  #
+  # NOT CALIBRATED, and deliberately so: modeling/eval/calibrate.py is binary,
+  # stance is 4-class, and nothing in configs/fusion.yaml multiplies
+  # `stance_conf`. An uncalibrated confidence that is documented as such is
+  # honest; a calibrator bolted onto the wrong arity is not. Read `stance_conf`
+  # the way the README's table says to read `toxicity`.
+  calibration: none
+  # Zero-shot NLI mapping, used for the baseline and when no checkpoint exists.
+  # The NLI head has no `unrelated` class -- `unrelated` is a *retrieval*
+  # judgement, not an entailment one -- so it is assigned by thresholding the
+  # entailment/contradiction mass rather than predicted. That is a documented
+  # approximation and the reason the zero-shot run is a baseline, not a model.
+  zero_shot:
+    enabled: true
+    entailment_label: entailment
+    contradiction_label: contradiction
+    neutral_label: neutral
+    unrelated_below: 0.40
 
 summarize:
   version: v0.1.0
@@ -139,11 +170,56 @@ coordination:
 
 # --- Module C: media --------------------------------------------------------
 deepfake:
-  version: v0.0.0-untrained
+  version: v0.2.0-pretrained
+  # A pre-existing detector, used with NO fine-tuning.
+  #
+  # Why: FaceForensics++ is 17 GB behind a signed agreement, and the DFDC copy
+  # on disk is pre-extracted crops whose `original` field was dropped, so a
+  # fake cannot be tied to the real clip it came from. That bars *training* on
+  # it (identity leakage: DFDC swaps faces between actors recorded in the same
+  # sessions, so a model could memorise a face and be scored on that same face
+  # from the other side of the split). It does not bar *testing* -- a set used
+  # purely for testing has no internal boundary to leak across. See the long
+  # note in modeling/datasets/dfdc.py.
+  #
+  # So the module's own stated role -- "a cross-dataset generalisation check
+  # against a model trained on FaceForensics++" -- is satisfiable today by
+  # mounting someone else's trained detector and scoring DFDC with it. Zero
+  # training, and leakage-free by construction.
+  #
+  # A plain ViT, loadable with AutoModelForImageClassification and no
+  # trust_remote_code.
+  #
+  # CHOSEN BY MEASUREMENT, not by download count. Both no-remote-code
+  # candidates were scored on DFDC at video grain; only this one has signal:
+  #
+  #   dima806/deepfake_vs_real_image_detection        ROC-AUC 0.667
+  #   prithivMLmods/Deep-Fake-Detector-v2-Model       ROC-AUC 0.512 [0.447, 0.584]
+  #
+  # The second one's interval straddles 0.5, i.e. no signal at all on DFDC's
+  # face swaps -- its PR-AUC of 0.825 is just the 80% positive base rate, which
+  # is exactly why PR-AUC must not be read without ROC-AUC on a set this
+  # imbalanced. Numbers in artifacts/eval/deepfake/.
+  #
+  # The FF++-trained alternative below is the better domain match -- it is
+  # trained on the face-swap manipulations this module actually targets, rather
+  # than on AI-generated images -- but it ships custom_code, meaning weights
+  # *and code* execute from the Hub at load time. That is a supply-chain
+  # decision, so it is left to a human rather than defaulted on.
+  hf_model: dima806/deepfake_vs_real_image_detection
+  alternatives:
+    # No signal on DFDC. Kept here as the record of a tested and rejected option.
+    - prithivMLmods/Deep-Fake-Detector-v2-Model
+    # Requires trust_remote_code=True. Read the note above first.
+    - KoreaPeter/ms-eff-gcvit-deepfake-b0-ff-plus-plus
+  # Kept for the FaceForensics++ training path, which is still the better model
+  # if anyone obtains the data.
   backbone: xception41
   pretrained: true
   unfreeze_last_blocks: 1
-  image_size: 299
+  # 224 for the ViT above. The FrameExtractor resizes crops to this, so it must
+  # match the mounted model or every face is scored at the wrong scale.
+  image_size: 224
   frames_per_video: 16
   # mean of the top-k frame scores: more robust than a plain mean, because a
   # manipulation that only affects part of a clip is averaged away otherwise.
@@ -154,6 +230,14 @@ deepfake:
   epochs: 5
   methods: [Deepfakes, Face2Face, FaceSwap, NeuralTextures]
   compression: c23
+  # The raw softmax is unusable as a decision value here: the pretrained
+  # detector calls almost every DFDC video manipulated at 0.5, which scores
+  # exactly the majority-class baseline. So DFDC is split in half by video --
+  # one half fits an isotonic calibrator and the operating point, the other is
+  # reported. Same discipline as `bot`: a false "manipulated" is costlier than
+  # a miss, so the point comes off the PR curve at a precision target, not 0.5.
+  calibration: isotonic
+  precision_target: 0.85
 
 # --- Module D: auxiliary passes --------------------------------------------
 # Pretrained and off-the-shelf on purpose. Fine-tuning these is not justified

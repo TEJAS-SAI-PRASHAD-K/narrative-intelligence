@@ -118,9 +118,9 @@ class FNC1(BenchmarkDataset):
 
         Both corpora answer the same question, so they share the slot: whichever
         one a user obtained ends up in the same directory, and
-        ``train_stance_classifier`` picks whichever actually parses. Keeping two
-        near-identical directory names would just invite putting the files in
-        the wrong one.
+        ``modeling.training._train_stance`` picks whichever actually parses.
+        Keeping two near-identical directory names would just invite putting the
+        files in the wrong one.
         """
         return get_settings().benchmarks_dir / "stance"
 

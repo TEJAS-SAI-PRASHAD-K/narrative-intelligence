@@ -1,15 +1,87 @@
 # Model card — deepfake detector
 
-**Module:** `modeling/media/deepfake_clf.py` · **Version:** `v0.0.0-untrained`
+**Module:** `modeling/media/deepfake_clf.py` · **Version:** `v0.2.0-pretrained`
 **Output:** `media_scores.deepfake_prob`, `.manipulation_type`, `.explanation`
 
 ---
 
-## Status: not trained. DFDC is present as a test set only.
+## Status: evaluated, with a pre-existing detector and no training
 
-FaceForensics++ requires a signed agreement and the fine-tune requires a GPU;
-neither is available in this environment. What ships is the complete pipeline,
-the split discipline, the aggregation policy and the honest null path.
+**Nothing was fine-tuned.** A pretrained detector —
+`dima806/deepfake_vs_real_image_detection`, a ViT image classifier — is mounted
+as-is and scored on DFDC. That is a deliberate substitution for the FF++
+fine-tune this environment cannot run: FaceForensics++ is 17 GB behind a signed
+agreement, and the DFDC copy on disk cannot support honest *training* (see
+below). It can support honest *testing*, and a pretrained detector needs nothing
+else.
+
+### The measured result
+
+| metric | value | 95% CI |
+|---|---|---|
+| macro F1 | **0.5640** | [0.4852, 0.6381] |
+| ROC-AUC | **0.6652** | [0.5673, 0.7561] |
+| PR-AUC | 0.8850 | [0.8259, 0.9321] |
+| Brier | 0.2025 | — |
+
+| class | precision | recall | F1 | support |
+|---|---|---|---|---|
+| authentic | 0.297 | 0.475 | 0.365 | 40 |
+| manipulated | 0.835 | 0.702 | 0.763 | 151 |
+
+Split: 191 held-out videos at video grain, positive rate
+0.7906. It **beats** the majority-class baseline
+(0.4415) by +0.1225.
+
+**Read ROC-AUC, not PR-AUC, on this set.** At an 80% positive rate a random
+ranker already scores PR-AUC ≈ 0.80, so the 0.885 above is close to
+uninformative on its own. ROC-AUC 0.665 with a lower bound of
+0.567 is what establishes that there is signal at all. This matters
+concretely: a rejected candidate detector
+(`prithivMLmods/Deep-Fake-Detector-v2-Model`) scored PR-AUC **0.825** — which
+looks respectable — on a ROC-AUC of **0.512 [0.447, 0.584]**, i.e. no signal
+whatsoever. It was discarded on that basis.
+
+### `deepfake_prob` is UNCALIBRATED, and the threshold is 0.99
+
+The Platt fit on the calibration half **inverted the ranking** — it mapped
+higher raw scores to lower probabilities — and was rejected by the guard in
+`modeling/eval/calibrate.py`. Brier had *improved* (0.182 → 0.151) while test
+ROC-AUC went 0.665 → 0.335, which is exactly why a Brier check alone is not
+sufficient and the guard tests ranking directly.
+
+So this column is a **raw softmax**, not a probability. Two consequences:
+
+1. **The operating point is 0.99**, not 0.5, measured on the held-apart half at
+   a 0.85 precision target (precision 0.850, recall 0.773 there).
+   `configs/fusion.yaml` has been set to match, and the value belongs to *this
+   checkpoint* — re-derive it whenever the mounted detector changes.
+2. **`deepfake_prob` must not be multiplied into anything** as if it were a
+   probability. It is a ranking signal, to be read the way the README's score
+   table says to read `toxicity`.
+
+### How the threshold avoids being fitted on the test set
+
+Nothing is trained, but a threshold and a calibration curve are both *fitted*,
+and fitting them on the rows then reported is tuning on test however little else
+is learned. So DFDC is split in half by `source_video`: one half fits the
+calibrator and picks the operating point, the other half is what the table above
+reports. Grouping is by video for the usual reason — frames of one clip on both
+sides is *the* cause of implausible deepfake numbers.
+
+### What this number is, and is not
+
+It is **cross-dataset transfer**, which is the hardest regime in this field: a
+detector trained by someone else, on someone else's data, applied to DFDC with
+no adaptation. A modest number is the expected result. It is also a
+**domain mismatch** — this detector targets AI-generated imagery while DFDC is
+face swaps — so the FF++-trained alternative named in `configs/models.yaml`
+should do better. It is not mounted by default because it ships `custom_code`,
+meaning weights *and code* execute from the Hub at load time; that is a
+supply-chain decision left to a human.
+
+**An FF++ fine-tune remains the better model** and the plan below still stands.
+This is a floor, established without the data.
 
 **DFDC is on disk in a repackaged form**: 3,745 pre-extracted face crops over
 381 source videos (305 fake, 76 real), as `fake/` and `real/` directories of

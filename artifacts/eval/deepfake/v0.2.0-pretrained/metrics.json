@@ -1,0 +1,168 @@
+{
+  "module": "deepfake",
+  "version": "v0.2.0-pretrained",
+  "generated_at": "2026-10-07T04:15:04.150980+00:00",
+  "run": {
+    "seed": 20260813,
+    "device": "mps",
+    "input_manifest_hash": "b6ba18d6285f05da",
+    "languages": [
+      "en"
+    ],
+    "library_versions": {
+      "python": "3.13.7",
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "numpy": "2.5.2",
+      "scipy": "1.18.0",
+      "pandas": "3.0.5",
+      "pyarrow": "25.0.1",
+      "scikit-learn": "1.9.0",
+      "xgboost": "3.4.0",
+      "shap": "0.52.0",
+      "torch": "2.13.0",
+      "transformers": "5.15.0",
+      "sentence-transformers": "5.7.0",
+      "timm": "1.0.28",
+      "networkx": "3.6.1",
+      "anthropic": "0.121.0"
+    }
+  },
+  "metrics": {
+    "module": "deepfake",
+    "split": "DFDC as a pure test set at video grain, split in half by source_video: 189 videos fit the calibrator and the operating point, 191 held-out videos are reported (from 3745 face crops; seed=20260813). Nothing was trained.",
+    "n_test": 191,
+    "is_demo": false,
+    "positive_rate": 0.7906,
+    "macro_f1": {
+      "value": 0.564,
+      "ci_low": 0.4852,
+      "ci_high": 0.6381,
+      "n_bootstrap": 1000
+    },
+    "roc_auc": {
+      "value": 0.6652,
+      "ci_low": 0.5673,
+      "ci_high": 0.7561,
+      "n_bootstrap": 1000
+    },
+    "pr_auc": {
+      "value": 0.885,
+      "ci_low": 0.8259,
+      "ci_high": 0.9321,
+      "n_bootstrap": 1000
+    },
+    "brier": 0.2025,
+    "per_class": {
+      "authentic": {
+        "precision": 0.2969,
+        "recall": 0.475,
+        "f1": 0.3654,
+        "support": 40
+      },
+      "manipulated": {
+        "precision": 0.8346,
+        "recall": 0.702,
+        "f1": 0.7626,
+        "support": 151
+      }
+    },
+    "confusion": [
+      [
+        19,
+        21
+      ],
+      [
+        45,
+        106
+      ]
+    ]
+  },
+  "baselines": {
+    "main_macro_f1": {
+      "value": 0.564,
+      "ci_low": 0.4852,
+      "ci_high": 0.6381,
+      "n_bootstrap": 1000
+    },
+    "verdicts": {
+      "majority class": {
+        "baseline_macro_f1": {
+          "value": 0.4415,
+          "ci_low": 0.423,
+          "ci_high": 0.4574,
+          "n_bootstrap": 1000
+        },
+        "delta": 0.1225,
+        "verdict": "beats"
+      }
+    },
+    "clears_every_baseline": true
+  },
+  "calibration": {
+    "method": "none",
+    "n_calibration": 189,
+    "brier_before": 0.1823,
+    "brier_after": 0.1823,
+    "improvement": 0.0,
+    "degraded": true,
+    "note": "fell back to Platt: 189 validation rows is below the 200-row floor for isotonic regression; platt calibration was REJECTED: it mapped higher raw scores to lower probabilities, inverting the model. Raw scores are served uncalibrated instead. This is a signal-strength problem, not a calibration one -- the fit had too little to orient itself by.",
+    "reliability_before": {
+      "predicted": [
+        0.4149,
+        0.6066,
+        0.8675,
+        0.9892
+      ],
+      "observed": [
+        1.0,
+        1.0,
+        1.0,
+        0.8087
+      ],
+      "counts": [
+        1,
+        1,
+        4,
+        183
+      ]
+    },
+    "reliability_after": {
+      "predicted": [
+        0.4149,
+        0.6066,
+        0.8675,
+        0.9892
+      ],
+      "observed": [
+        1.0,
+        1.0,
+        1.0,
+        0.8087
+      ],
+      "counts": [
+        1,
+        1,
+        4,
+        183
+      ]
+    }
+  },
+  "dataset": {
+    "dfdc": {
+      "dataset": "dfdc",
+      "rows": 3745,
+      "groups": 381,
+      "group_col": "source_video",
+      "is_demo": false,
+      "dropped": {},
+      "label_balance": {
+        "1": 0.797,
+        "0": 0.203
+      },
+      "domains": [
+        "crops_fake",
+        "crops_real"
+      ]
+    }
+  }
+}

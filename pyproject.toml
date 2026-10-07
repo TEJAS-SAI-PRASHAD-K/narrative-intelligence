@@ -63,6 +63,9 @@ modeling = [
     "sentence-transformers>=3.0",
     "transformers>=4.40",
     "torch>=2.2",
+    # DeBERTa-v3's tokenizer is sentencepiece-backed. Without this the stance
+    # and misinfo base models fail to load with a message that blames the hub.
+    "sentencepiece>=0.2",
     "networkx>=3.3",
     "matplotlib>=3.8",
 ]
