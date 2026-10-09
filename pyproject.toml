@@ -22,6 +22,11 @@ dependencies = [
     "pandas>=2.2",
     "tenacity>=8.3",
     "tldextract>=5.1",
+    # Two backends, and 1.0 REMOVED the Modest one (`selectolax.parser`).
+    # The range stays wide on purpose and `normalize.html_parser_class()`
+    # resolves lexbor first, falling back to Modest; what it does NOT do any
+    # more is swallow the ImportError. A floor bump would have hidden the real
+    # defect, which was that losing a core dependency was silent.
     "selectolax>=0.3.21",
     "langdetect>=1.0.9",
     "orjson>=3.10",

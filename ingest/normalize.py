@@ -97,6 +97,64 @@ def _get_extractor():
 # --- text -----------------------------------------------------------------
 
 
+# --- html parser backend --------------------------------------------------
+
+#: Resolved once per process. ``False`` means "not yet looked up"; ``None``
+#: means "looked up and unusable", which puts the regex fallbacks in play.
+_html_parser_cls: Any = False
+
+
+def html_parser_class() -> Any:
+    """The selectolax parser class, or ``None`` if the library is unusable.
+
+    selectolax ships two backends and which one you get depends on the version:
+
+    * ``selectolax.lexbor.LexborHTMLParser`` -- current, HTML5-conformant.
+    * ``selectolax.parser.HTMLParser`` -- the Modest backend, **removed in
+      selectolax 1.0**. Importing it on 1.0+ raises ``ImportError`` with a
+      message telling you to switch to lexbor.
+
+    Both call sites below used to import the Modest backend inside a bare
+    ``except Exception`` and fall back to a regex. So the day the installed
+    selectolax crossed 1.0, this project silently stopped parsing HTML and
+    started regexing it -- no error, no log line, no test failure that said
+    *why*. The regex cannot do what :func:`extract_html_links` documents as its
+    whole purpose, so every Mastodon hashtag and mention anchor has been
+    entering ``urls`` and ``domains`` and polluting the Domain Risk pillar.
+
+    The lesson is in the structure, not the version pin: an optional
+    accelerator may be swapped for a fallback silently, but a **core
+    dependency** disappearing must be loud. Hence the one-time warning. If this
+    ever logs, the numbers downstream are different from the documented ones.
+    """
+    global _html_parser_cls
+    if _html_parser_cls is not False:
+        return _html_parser_cls
+    try:
+        from selectolax.lexbor import LexborHTMLParser
+
+        _html_parser_cls = LexborHTMLParser
+        return _html_parser_cls
+    except ImportError:
+        pass
+    try:
+        from selectolax.parser import HTMLParser
+
+        _html_parser_cls = HTMLParser
+    except ImportError:
+        # Not pragma'd: this path is covered by a test, because it is the path
+        # that quietly changed the corpus last time.
+        log.warning(
+            "selectolax is unusable: neither the lexbor nor the Modest backend could be "
+            "imported. Falling back to REGEX html handling, which cannot exclude hashtag "
+            "and mention anchors from outbound links -- `urls` and `domains` will include "
+            'internal navigation links. Fix with `pip install -e ".[sources]"` or '
+            "`pip install -U selectolax`."
+        )
+        _html_parser_cls = None
+    return _html_parser_cls
+
+
 def strip_html(s: str | None) -> str:
     """HTML -> plaintext. Handles Mastodon status markup and RSS-escaped entities.
 
@@ -109,13 +167,11 @@ def strip_html(s: str | None) -> str:
     # Convert block boundaries to newlines *before* tag stripping.
     s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)
     s = re.sub(r"(?i)</\s*(p|div|li|tr|h[1-6]|blockquote)\s*>", "\n", s)
-    text = None
-    try:
-        from selectolax.parser import HTMLParser
-
-        text = HTMLParser(s).text(separator="")
-    except Exception:  # pragma: no cover - selectolax is a core dep, this is belt-and-braces
+    parser = html_parser_class()
+    if parser is None:
         text = re.sub(r"<[^>]+>", "", s)
+    else:
+        text = parser(s).text(separator="")
     # RSS commonly double-escapes; unescape twice at most, never in a loop.
     text = unescape(text)
     if "&" in text and re.search(r"&(?:amp|lt|gt|quot|#\d+);", text):
@@ -134,12 +190,13 @@ def extract_html_links(html: str | None) -> list[str]:
     """
     if not html or "<a" not in html.lower():
         return []
-    try:
-        from selectolax.parser import HTMLParser
-
-        nodes = HTMLParser(html).css("a")
-    except Exception:  # pragma: no cover - fall back to attribute regex
+    parser = html_parser_class()
+    if parser is None:
+        # Degraded: this returns hashtag and mention anchors too, because a
+        # regex cannot see the class and rel attributes that identify them.
+        # html_parser_class() has already warned.
         return re.findall(r"""(?i)<a[^>]+href=["'](https?://[^"']+)["']""", html)
+    nodes = parser(html).css("a")
     out: list[str] = []
     for node in nodes:
         href = node.attributes.get("href") or ""
