@@ -18,9 +18,10 @@ from tests.conftest_api import requires_postgres
 @pytest.fixture
 def seeded(migrated_db):
     """A small corpus with deliberately uneven scoring coverage."""
-    from app.db import sync_session
     from app.models.core import Project
     from app.models.corpus import Post, PostScore
+
+    from app.db import sync_session
 
     project_id = uuid.uuid4()
     base = datetime(2026, 5, 1, tzinfo=timezone.utc)

@@ -134,8 +134,9 @@ def test_discovery_skips_an_unparseable_partition_directory(tmp_path):
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def project(migrated_db):
-    from app.db import sync_session
     from app.models.core import Project
+
+    from app.db import sync_session
 
     project_id = uuid.uuid4()
     with sync_session() as session:
@@ -159,8 +160,9 @@ def _load(project_id, files, tmp_path, source="reddit"):
 
 @requires_postgres
 def test_a_clean_load_accounts_for_every_row(project, tmp_path):
-    from app.db import sync_session
     from app.models.corpus import Post
+
+    from app.db import sync_session
 
     root = tmp_path / "normalized"
     path = _write_partition(
@@ -187,8 +189,9 @@ def test_rerunning_the_loader_changes_zero_rows(project, tmp_path):
     Not just "the count is the same" -- the second run must report zero
     insertions, so a loader that deleted and reinserted would still fail here.
     """
-    from app.db import sync_session
     from app.models.corpus import Post
+
+    from app.db import sync_session
 
     root = tmp_path / "normalized"
     path = _write_partition(
@@ -218,8 +221,9 @@ def test_rerunning_the_loader_changes_zero_rows(project, tmp_path):
 @requires_postgres
 def test_null_engagement_is_never_coalesced_to_zero(project, tmp_path):
     """The single easiest place to silently corrupt this corpus."""
-    from app.db import sync_session
     from app.models.corpus import Post
+
+    from app.db import sync_session
 
     root = tmp_path / "normalized"
     path = _write_partition(
@@ -246,9 +250,10 @@ def test_null_engagement_is_never_coalesced_to_zero(project, tmp_path):
 
 @requires_postgres
 def test_an_unsigned_simhash_survives_the_load(project, tmp_path):
+    from app.models.corpus import Post
+
     from app.db import sync_session
     from app.etl.simhash import from_signed
-    from app.models.corpus import Post
 
     root = tmp_path / "normalized"
     unsigned = 2**64 - 3
@@ -266,8 +271,9 @@ def test_an_unsigned_simhash_survives_the_load(project, tmp_path):
 @requires_postgres
 def test_invalid_rows_are_rejected_by_reason_code_and_written_to_disk(project, tmp_path):
     """Silent data loss is the failure mode that ruins this project."""
-    from app.db import sync_session
     from app.models.corpus import Post
+
+    from app.db import sync_session
 
     root = tmp_path / "normalized"
     rows = [
@@ -311,8 +317,9 @@ def test_duplicate_ids_within_one_batch_collapse_without_error(project, tmp_path
     "cannot affect row a second time" -- so the loader de-duplicates first. An
     RSS feed re-fetched on consecutive days produces exactly this.
     """
-    from app.db import sync_session
     from app.models.corpus import Post
+
+    from app.db import sync_session
 
     root = tmp_path / "normalized"
     article = _row(
@@ -359,10 +366,11 @@ def test_accounting_failure_is_loud(project, tmp_path):
 
 @requires_postgres
 def test_author_and_domain_rollups_derive_from_posts(project, tmp_path):
-    from app.db import sync_session
-    from app.etl.derive import derive_authors, derive_domains
     from app.models.actors import Author
     from app.models.domains import Domain
+
+    from app.db import sync_session
+    from app.etl.derive import derive_authors, derive_domains
 
     root = tmp_path / "normalized"
     rows = [
@@ -423,10 +431,11 @@ def test_rederiving_does_not_blank_scores_or_requeue_enrichment(project, tmp_pat
     scores and send every already-enriched domain back to the rate-limited
     WHOIS queue on each ingest.
     """
-    from app.db import sync_session, utcnow
-    from app.etl.derive import derive_authors, derive_domains
     from app.models.actors import Author
     from app.models.domains import Domain
+
+    from app.db import sync_session, utcnow
+    from app.etl.derive import derive_authors, derive_domains
 
     root = tmp_path / "normalized"
     path = _write_partition(root, "reddit", "2026-05-01", [_row(id="reddit:1", native_id="1")])
