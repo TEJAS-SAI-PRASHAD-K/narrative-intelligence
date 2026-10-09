@@ -519,6 +519,60 @@ class TestYouTubeMapping:
             youtube._client()
 
 
+class TestYouTubeDiscoveryScoping:
+    """What search.list is actually asked for. 100 units a call, so it matters."""
+
+    class _FakeSearch:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def list(self, **params):
+            self.calls.append(params)
+            return self
+
+        def execute(self):
+            return {"items": [{"id": {"videoId": "vid1"}}]}
+
+    class _FakeClient:
+        def __init__(self, search):
+            self._search = search
+
+        def search(self):
+            return self._search
+
+    def _discover(self, youtube, config):
+        search = self._FakeSearch()
+        youtube.options = {"queries": ["वोट चोरी दावा फैक्ट चेक"]}
+        youtube._discover(self._FakeClient(search), config)
+        assert len(search.calls) == 1
+        return search.calls[0]
+
+    def test_region_code_is_sent_when_configured(self, youtube):
+        params = self._discover(youtube, {"region_code": "IN"})
+        assert params["regionCode"] == "IN"
+        # Unset relevanceLanguage must be ABSENT, not None: the API client
+        # serializes an explicit None into the query string.
+        assert "relevanceLanguage" not in params
+
+    def test_absent_region_code_leaves_the_search_global(self, youtube):
+        params = self._discover(youtube, {})
+        assert "regionCode" not in params
+
+    def test_relevance_language_is_sent_only_when_set(self, youtube):
+        params = self._discover(youtube, {"region_code": "IN", "relevance_language": "hi"})
+        assert params["relevanceLanguage"] == "hi"
+
+    def test_an_empty_relevance_language_is_treated_as_unset(self, youtube):
+        """`relevance_language:` with no value parses as None, which is the default."""
+        params = self._discover(youtube, {"region_code": "IN", "relevance_language": None})
+        assert "relevanceLanguage" not in params
+
+    def test_the_query_itself_still_reaches_the_api_unmangled(self, youtube):
+        """Devanagari must survive to the wire; a mangled query returns nothing."""
+        params = self._discover(youtube, {"region_code": "IN"})
+        assert params["q"] == "वोट चोरी दावा फैक्ट चेक"
+
+
 # --- reddit / kaggle ------------------------------------------------------
 
 
