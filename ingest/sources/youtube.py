@@ -148,18 +148,33 @@ class YouTubeSource(BaseSource):
                 self.log.warning("%s", exc)
                 break
             self.log.info("search.list %r (100 units)", query)
-            response = (
-                client.search()
-                .list(
-                    q=query,
-                    part="id",
-                    type="video",
-                    maxResults=int(config.get("results_per_search", 25)),
-                    order=config.get("order", "relevance"),
-                    publishedAfter=published_after,
-                )
-                .execute()
-            )
+            # regionCode localizes the result set to one country's YouTube.
+            # It is free -- search.list costs 100 units with or without it --
+            # and without it an Indian-language query still returns whatever
+            # the global relevance ranking prefers. ISO 3166-1 alpha-2 here,
+            # NOT the FIPS code GDELT wants; the two happen to agree on "IN",
+            # which is exactly why the difference is easy to miss.
+            #
+            # relevanceLanguage is deliberately optional and unset by default:
+            # it takes a single code, and half the queries in topics.yaml are
+            # Hindi strings while half are English, so one global value would
+            # be wrong for one of the two groups. The query's own language is
+            # the stronger signal and it is already in the query.
+            params: dict[str, Any] = {
+                "q": query,
+                "part": "id",
+                "type": "video",
+                "maxResults": int(config.get("results_per_search", 25)),
+                "order": config.get("order", "relevance"),
+                "publishedAfter": published_after,
+            }
+            region = config.get("region_code")
+            if region:
+                params["regionCode"] = region
+            relevance_language = config.get("relevance_language")
+            if relevance_language:
+                params["relevanceLanguage"] = relevance_language
+            response = client.search().list(**params).execute()
             for item in response.get("items", []):
                 video_id = (item.get("id") or {}).get("videoId")
                 if video_id:

@@ -223,10 +223,28 @@ youtube:
   #   commentThreads.list=   1 unit   (comments; cheap)
   discovery:
     # Queries come from configs/topics.yaml youtube_queries.
-    max_searches_per_run: 4
+    #
+    # Raised 4 -> 12 so one run covers the whole case: four topics times three
+    # queries each. The arithmetic, because it is the binding constraint:
+    #   12 searches x 100 units = 1,200 units, against a 10,000/day quota.
+    # The tighter limit is YOUTUBE_MAX_SEARCHES_PER_DAY (default 20), which
+    # allows one full run plus most of a second per UTC day -- comfortable for
+    # a daily collector, not enough for interactive re-running. Hydration and
+    # comments cost 1 unit each and are not the thing to economise on.
+    max_searches_per_run: 12
     results_per_search: 25
     order: relevance
     published_within_days: 30
+    # ISO 3166-1 alpha-2 (NOT the FIPS code GDELT's `countries` wants; they
+    # agree on IN, which is what makes the distinction easy to miss). Free --
+    # search.list is 100 units either way -- and without it an Indian-language
+    # query is still ranked against the global result set.
+    region_code: IN
+    # ISO 639-1, single value only, and UNSET ON PURPOSE. topics.yaml mixes
+    # English and Hindi query strings, so any one value here is wrong for half
+    # of them. The query's own language already carries the signal. Set it only
+    # if the query list is ever split per language.
+    relevance_language:
   hydration:
     videos_per_batch: 50        # videos.list accepts 50 ids per unit
   comments:
