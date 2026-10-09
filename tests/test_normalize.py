@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import sys
+
 import pytest
 
 from ingest.normalize import (
@@ -14,6 +17,7 @@ from ingest.normalize import (
     extract_mentions,
     extract_urls,
     hamming,
+    html_parser_class,
     is_deleted_text,
     is_shortlink,
     resolve_domain,
@@ -150,6 +154,75 @@ class TestHtmlLinks:
     def test_no_anchors(self):
         assert extract_html_links("<p>plain</p>") == []
         assert extract_html_links(None) == []
+
+
+class TestHtmlParserBackend:
+    """The backend resolution itself, because its silent failure cost real data.
+
+    Both call sites used to import selectolax's Modest backend inside a bare
+    ``except Exception``. selectolax 1.0 removed that backend, so the import
+    began raising ImportError and the project silently switched to regex
+    handling -- no error, no log, and hashtag and mention anchors flowing into
+    ``urls`` and ``domains`` for an unknown length of time.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """The resolved class is cached per process; don't leak it between tests."""
+        from ingest import normalize
+
+        saved = normalize._html_parser_cls
+        normalize._html_parser_cls = False
+        yield
+        normalize._html_parser_cls = saved
+
+    def test_a_real_parser_is_available_in_this_environment(self):
+        """Guards the install. If this fails, every HTML number is degraded."""
+        assert html_parser_class() is not None
+
+    def test_lexbor_is_preferred(self):
+        assert html_parser_class().__name__ == "LexborHTMLParser"
+
+    def test_resolution_is_cached_not_repeated_per_record(self):
+        assert html_parser_class() is html_parser_class()
+
+    def _break_both_backends(self, monkeypatch):
+        # A None entry in sys.modules makes `import x` raise ImportError.
+        monkeypatch.setitem(sys.modules, "selectolax.lexbor", None)
+        monkeypatch.setitem(sys.modules, "selectolax.parser", None)
+
+    def test_losing_the_parser_warns_rather_than_degrading_in_silence(
+        self, monkeypatch, caplog
+    ):
+        self._break_both_backends(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger="ingest.normalize"):
+            assert html_parser_class() is None
+        assert "selectolax is unusable" in caplog.text
+        # The message has to say what it costs, not just that it happened.
+        assert "urls" in caplog.text and "domains" in caplog.text
+
+    def test_the_warning_fires_once_not_once_per_record(self, monkeypatch, caplog):
+        self._break_both_backends(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger="ingest.normalize"):
+            for _ in range(50):
+                html_parser_class()
+        assert caplog.text.count("selectolax is unusable") == 1
+
+    def test_the_regex_fallback_still_returns_something_usable(self, monkeypatch):
+        """Degraded, not broken: a wrong domain list beats a crashed run."""
+        self._break_both_backends(monkeypatch)
+        html = (
+            '<p><a href="https://mastodon.social/tags/election" class="mention hashtag" '
+            'rel="tag">#election</a> <a href="https://news.example/story">source</a></p>'
+        )
+        links = extract_html_links(html)
+        assert "https://news.example/story" in links
+        # And this is precisely the pollution the fallback cannot avoid. Asserted
+        # so the cost of the degraded path is recorded rather than assumed.
+        assert "https://mastodon.social/tags/election" in links
+        # strip_html degrades gracefully: the block boundary survives because
+        # it is turned into a newline before the parser is reached at all.
+        assert strip_html("<p>a</p><p>b</p>") == "a\nb\n"
 
 
 class TestEntities:
