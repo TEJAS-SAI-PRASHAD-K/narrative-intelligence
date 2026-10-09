@@ -1,21 +1,35 @@
 # ---------------------------------------------------------------------------
+# EVERY BUILD-PRODUCT PATTERN BELOW IS ANCHORED WITH A LEADING SLASH, AND THAT
+# IS NOT STYLE. An unanchored `models/` matches at ANY depth, so it silently
+# ignored `app/models/` -- the SQLAlchemy ORM package holding all 27 tables --
+# and that package was never committed. The API could not import, and 24
+# contract tests plus the migration and ETL suites errored on a clean clone.
+# `data/`, `uploads/`, `reports/` and `build/` had the same reach:
+# `modeling/models/`, `modeling/data/` and `app/reports/` were all unreachable
+# by git. Patterns that must match at any depth (__pycache__, *.egg-info,
+# .pytest_cache, .ruff_cache) are deliberately left unanchored below.
+#
+# tests/test_repo_layout.py asserts the source packages stay trackable.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # NO RAW DATA IN GIT. EVER.
 # Reproducibility comes from configs/ + `make data`, not from committed bytes.
 # data/manifest.json is intentionally ignored too: it is a build product that
 # changes on every run, and a tracked copy would make `git status` dirty after
 # every fetch. See README "Known limitations".
 # ---------------------------------------------------------------------------
-data/
+/data/
 
 # Model weights. Checkpoints live on the HF Hub or Drive and are resolved by
 # name+version through modeling/registry.py. The repo commits the pointer,
 # never the blob.
-models/
+/models/
 
 # Phase 4 build products: uploaded media (imagery of real people, purged on a
 # retention timer) and rendered reports. Neither belongs in version control.
-uploads/
-reports/
+/uploads/
+/reports/
 
 # Secrets
 .env
@@ -27,8 +41,8 @@ kaggle.json
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
-dist/
+/build/
+/dist/
 .venv/
 venv/
 .pytest_cache/
