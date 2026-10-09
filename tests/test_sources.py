@@ -698,6 +698,97 @@ class TestGdeltQueryConstruction:
             # Never a parenthesized single term: that is the rejected form.
             assert "(sourcelang:English)" not in query
 
+    def test_country_takes_the_same_arity_treatment_as_language(self):
+        from ingest.sources.gdelt import _country_filter
+
+        # Same gdeltdoc rendering rule, same trap: a one-element list becomes
+        # "(sourcecountry:IN)" and GDELT refuses the parentheses.
+        assert _country_filter(["IN"]) == "IN"
+        assert _country_filter("IN") == "IN"
+        assert _country_filter(["IN", "PK"]) == ["IN", "PK"]
+        assert _country_filter([]) is None
+        assert _country_filter(None) is None
+
+    def test_country_scoping_reaches_the_emitted_query(self):
+        gdeltdoc = pytest.importorskip("gdeltdoc")
+        from ingest.sources.gdelt import _country_filter, _language_filter
+
+        query = gdeltdoc.Filters(
+            keyword=["voter roll claim"],
+            start_date="2026-10-01",
+            end_date="2026-10-08",
+            num_records=10,
+            language=_language_filter(["English", "Hindi"]),
+            country=_country_filter(["IN"]),
+        ).query_string
+        assert "sourcecountry:IN" in query
+        assert "(sourcecountry:IN)" not in query
+
+    def test_an_absent_country_leaves_the_query_global(self):
+        """A missing `countries` key must not silently become a filter.
+
+        The config default is the global corpus, so a typo in the key name
+        degrades to "too much data" rather than to "zero rows", which is the
+        failure direction that gets noticed.
+        """
+        gdeltdoc = pytest.importorskip("gdeltdoc")
+        from ingest.sources.gdelt import _country_filter
+
+        query = gdeltdoc.Filters(
+            keyword=["voter roll claim"],
+            start_date="2026-10-01",
+            end_date="2026-10-08",
+            num_records=10,
+            country=_country_filter({}.get("countries")),
+        ).query_string
+        assert "sourcecountry" not in query
+
+    def test_a_bad_country_code_warns_instead_of_silently_emptying_the_corpus(self, caplog):
+        """gdeltdoc validates nothing here, and GDELT answers junk with zero rows.
+
+        An empty corpus that looks like a quiet news week is the failure mode
+        this project cannot afford, so the two typos anyone actually makes --
+        the 3-letter ISO code and the country's name -- have to be loud.
+        """
+        import logging
+
+        from ingest.sources.gdelt import _country_filter
+
+        for bad in ("IND", "India", "in"):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="ingest.gdelt"):
+                # Still passed through: the adapter's job is to warn, not to
+                # overrule a config it cannot fully validate.
+                assert _country_filter([bad]) == bad
+            assert "not a 2-letter FIPS code" in caplog.text, bad
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="ingest.gdelt"):
+            assert _country_filter(["IN"]) == "IN"
+        assert caplog.text == ""
+
+    def test_indian_language_names_resolve_to_iso_codes(self):
+        """GDELT reports language *names*; an unmapped name means a null `lang`."""
+        from ingest.sources.gdelt import _language_code
+
+        for name, code in [
+            ("Hindi", "hi"),
+            ("Bengali", "bn"),
+            ("Tamil", "ta"),
+            ("Telugu", "te"),
+            ("Marathi", "mr"),
+            ("Gujarati", "gu"),
+            ("Kannada", "kn"),
+            ("Malayalam", "ml"),
+            ("Punjabi", "pa"),
+            ("Urdu", "ur"),
+            ("Assamese", "as"),
+            ("Nepali", "ne"),
+        ]:
+            assert _language_code(name) == code, name
+        # GDELT spells Odia both ways depending on the feed.
+        assert _language_code("Oriya") == _language_code("Odia") == "or"
+
 
 class TestGdeltArchiveReading:
     """GKG fields are enormous and GDELT drops are occasionally malformed."""

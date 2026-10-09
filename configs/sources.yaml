@@ -67,7 +67,21 @@ gdelt:
     # gdeltdoc package; keyword/domain/language-filtered article search.
     max_records_per_query: 250
     # DOC 2.0 caps a single query window; we chunk by day inside the adapter.
-    languages: [English]
+    #
+    # Hindi is requested alongside English. GDELT indexes Indian-language
+    # coverage via machine translation, so a Hindi hit is GDELT's translation
+    # of the article, not the Hindi surface form -- which is fine for topic
+    # and tone, and useless as Hindi training text. The Hindi text that Phase 2
+    # can actually learn from comes from the RSS feeds, not from here.
+    languages: [English, Hindi]
+    # FIPS 2-letter codes, OR-joined. `IN` is India in both FIPS and ISO, but
+    # see _country_filter(): the standard is FIPS, so do not add codes by
+    # reaching for the ISO one.
+    #
+    # Empty or absent = no country filter = a global corpus. Set it, or the
+    # Indian topics return mostly US coverage, because that is how GDELT's
+    # crawl is weighted.
+    countries: [IN]
   raw_files:
     # The 15-minute CSV drops. gkg carries themes/tone/entities; mentions
     # carries propagation velocity (same event, re-covered over time).
