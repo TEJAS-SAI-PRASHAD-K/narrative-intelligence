@@ -189,8 +189,9 @@ def write_key(migrated_db) -> str:
 
 
 def _mint(name: str, scopes: list[str]) -> str:
-    from app.db import sync_session
     from app.models.ops import ApiKey
+
+    from app.db import sync_session
     from app.security import mint
 
     minted = mint()

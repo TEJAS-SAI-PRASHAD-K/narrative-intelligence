@@ -14,10 +14,10 @@ from tests.conftest_api import requires_postgres
 
 @requires_postgres
 def test_upgrade_head_creates_the_whole_schema(migrated_db):
+    from app.models import import_all_models
     from sqlalchemy import inspect
 
     from app.db import Base, get_sync_engine
-    from app.models import import_all_models
 
     import_all_models()
     tables = set(inspect(get_sync_engine()).get_table_names(schema=migrated_db))
@@ -34,9 +34,9 @@ def test_models_and_migrations_do_not_drift(migrated_db):
     """
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
+    from app.models import import_all_models
 
     from app.db import Base, get_sync_engine
-    from app.models import import_all_models
 
     import_all_models()
     with get_sync_engine().connect() as connection:
@@ -134,12 +134,12 @@ def test_reject_accounting_is_enforced_by_the_database(migrated_db):
     """
     import uuid
 
+    from app.models.core import Project
+    from app.models.ops import IngestRun
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
 
     from app.db import sync_session
-    from app.models.core import Project
-    from app.models.ops import IngestRun
 
     project_id = uuid.uuid4()
     with sync_session() as session:
@@ -181,9 +181,10 @@ def test_engagement_nulls_survive_a_round_trip(migrated_db):
     import uuid
     from datetime import datetime, timezone
 
-    from app.db import sync_session
     from app.models.core import Project
     from app.models.corpus import Post
+
+    from app.db import sync_session
 
     project_id = uuid.uuid4()
     with sync_session() as session:
@@ -225,10 +226,11 @@ def test_an_unsigned_simhash_round_trips_through_a_signed_bigint(migrated_db):
     import uuid
     from datetime import datetime, timezone
 
-    from app.db import sync_session
-    from app.etl.simhash import from_signed, to_signed
     from app.models.core import Project
     from app.models.corpus import Post
+
+    from app.db import sync_session
+    from app.etl.simhash import from_signed, to_signed
 
     project_id = uuid.uuid4()
     # A value above 2**63 - the half of the uint64 range a naive cast breaks on.
