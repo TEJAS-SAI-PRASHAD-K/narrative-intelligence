@@ -80,30 +80,114 @@ gdelt:
 
 news_rss:
   # RSS/Atom is the reliable path and needs no credentials.
-  # Verified live 2026-08-13. Two feeds from the original list were removed
-  # because they are dead, not because they were unwanted:
-  #   feeds.reuters.com  -> NXDOMAIN (Reuters retired public RSS)
-  #   apnews.com/index.rss -> 200 but zero entries
-  # The adapter warns and continues on both, so a feed dying does not break a
-  # run; this list is just kept honest.
+  #
+  # EVERY URL BELOW WAS PROBED LIVE ON 2026-10-09 and returned HTTP 200 with a
+  # non-empty, date-parseable entry list. Entry counts at probe time are in the
+  # trailing comments. A feed that dies later degrades to a warning, not a
+  # failure -- the adapter logs "returned no entries" and carries on -- so this
+  # list only has to be honest, not immortal.
+  #
+  # The previous list (BBC World, NYT, Guardian, NPR, Al Jazeera, FactCheck.org,
+  # Snopes, Full Fact) was removed wholesale. Nothing was wrong with those
+  # feeds; they are simply the wrong country for this case.
+  #
+  # Ordered by role, because the roles are not interchangeable:
+  #   1. Fact-checkers publish a CLAIM AND A VERDICT. They are the only source
+  #      here that carries supervision, and they are the reason this case is
+  #      tractable at all. Treat them as the label source.
+  #   2. Mainstream outlets supply the surrounding coverage a claim spreads
+  #      against. No verdicts, high volume.
+  # Phase 2 must not train on a feature that separates these two groups -- the
+  # domain alone predicts the label perfectly, which is leakage, not signal.
   feeds:
-    - https://feeds.bbci.co.uk/news/world/rss.xml
-    - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
-    - https://www.theguardian.com/world/rss
-    - https://feeds.npr.org/1004/rss.xml
-    - https://www.aljazeera.com/xml/rss/all.xml
-    - https://www.factcheck.org/feed/
-    - https://www.snopes.com/feed/
-    - https://fullfact.org/feed/all/
+    # --- fact-checkers, English -------------------------------------------
+    # Note the path: boomlive.in/rss/ returns 200 with ZERO entries, which is
+    # exactly the failure mode that looks like success in a log. The working
+    # feed is under /fact-check/.
+    - https://www.boomlive.in/fact-check/feed          # 60 entries
+    - https://www.altnews.in/feed/                     # 10
+    - https://factly.in/feed/                          # 10
+    - https://newschecker.in/feed/                     # 10
+    # The Quint's WebQoof desk. The obvious /news/webqoof/stories.rss is a 404;
+    # this collections endpoint is the one that serves.
+    - https://www.thequint.com/api/v1/collections/webqoof.rss   # 40
+    - https://digiteye.in/feed/                        # 6, low volume
+
+    # --- fact-checkers, Hindi ---------------------------------------------
+    - https://www.altnews.in/hindi/feed/               # 10
+    - https://www.vishvasnews.com/feed/                # 10, Hindi-dominant
+    - https://www.factcrescendo.com/feed/              # 10, Hindi-dominant
+
+    # --- Indian mainstream, English ---------------------------------------
+    - https://www.thehindu.com/news/national/feeder/default.rss   # 60
+    - https://timesofindia.indiatimes.com/rssfeedstopstories.cms  # 43
+    - https://feeds.feedburner.com/ndtvnews-top-stories           # 20
+    - https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml  # 100
+    - https://feeds.feedburner.com/ScrollinArticles    # 100; scroll.in/feed is empty
+    - https://maktoobmedia.com/feed/                   # 50
+
+    # --- Indian mainstream, Hindi -----------------------------------------
+    - https://feeds.bbci.co.uk/hindi/rss.xml           # 34
+    - https://www.amarujala.com/rss/india-news.xml     # 40
+    - https://www.bhaskar.com/rss-v1--category-1061.xml  # 52
+
+  # Probed and REJECTED on 2026-10-09. Recorded so the next person does not
+  # spend an afternoon rediscovering them, and so "why is Indian Express
+  # missing" has an answer that is not "nobody thought of it".
+  #
+  #   indianexpress.com/feed/            403 on every path tried; blocks our UA
+  #   thewire.in/rss, /feed              200, zero entries
+  #   theprint.in/rss, /feed/rss         200, zero entries
+  #   logicallyfacts.com/rss.xml         ConnectionError; unreachable from here
+  #   boomlive.in/rss/, /rss.xml         200 zero entries / 404 -- see above
+  #   indiatoday.in/rss/1206614          serves the general Big Story feed, not
+  #                                      the fact-check desk, and was 21 days
+  #                                      stale. India Today's fact-check RSS
+  #                                      does not appear to be exposed.
+  #   pib.gov.in RssMain.aspx            general PIB releases, not the PIB Fact
+  #                                      Check unit, and no parseable dates
+  #   news18.com/rss/india.xml           served 200 entries when probed, then
+  #                                      failed DNS on one pipeline run and
+  #                                      returned zero entries on the next.
+  #                                      Two failures in three attempts is not
+  #                                      a feed a reproducible corpus can list.
+  #   jagran / aajtak / navbharattimes / zeenews(hi) / lokmat / dinamalar /
+  #   eenadu / anandabazar / mathrubhumi     403, 404 or empty
+  #
+  # Also verified live and working, but OUT OF SCOPE while the case is
+  # English+Hindi. Uncomment with the matching topics.yaml change, not alone:
+  #   https://feeds.bbci.co.uk/tamil/rss.xml      # 25
+  #   https://feeds.bbci.co.uk/telugu/rss.xml     # 14
+  #   https://feeds.bbci.co.uk/marathi/rss.xml    # 29
+  #   https://feeds.bbci.co.uk/gujarati/rss.xml   # 18
+  #   https://feeds.bbci.co.uk/punjabi/rss.xml    # 25
+  #   https://feeds.bbci.co.uk/bengali/rss.xml    # 14
+  #   https://feeds.bbci.co.uk/urdu/rss.xml       # 21
+
   # Full-text extraction with trafilatura, for feeds that publish full content
   # publicly. Concurrency capped, robots.txt honoured, descriptive UA sent.
   fulltext:
     enabled: true
     # Stop trying a host after this many consecutive extraction failures.
-    # Paywalled outlets (e.g. nytimes.com) 403 every single article, and
-    # hammering them is both rude and pointless.
+    # Paywalled outlets 403 every single article, and hammering them is both
+    # rude and pointless.
     max_consecutive_failures_per_domain: 3
-    max_articles: 60
+    # Raised from 60. The feed list roughly doubled, and the fact-checkers'
+    # article bodies are where the claim, the verdict and the evidence live --
+    # a title-plus-summary record from a fact-checker is nearly worthless for
+    # supervision, so the budget has to reach past the mainstream feeds.
+    #
+    # Measured on a 548-record run, 2026-10-09: most Indian fact-checkers put
+    # the full article in the RSS payload itself, so trafilatura never has to
+    # run for them. Median chars per record, by domain:
+    #   altnews.in 7112   vishvasnews.com 4702   indiatimes.com 3952
+    #   factly.in 3761    digiteye.in 3696       factcrescendo.com 3204
+    #   newschecker.in 2820   boomlive.in 2217   scroll.in 1453
+    # versus the mainstream outlets at 156-292 chars (headline + blurb only,
+    # and all of them either disallow extraction in robots.txt or time out).
+    # So the supervision signal arrives essentially for free and the extraction
+    # budget mostly buys depth on the general-coverage feeds.
+    max_articles: 120
     max_concurrency: 2
     request_delay_seconds: 1.0
   newsapi:
@@ -112,6 +196,11 @@ news_rss:
     enabled: true
     page_size: 100
     max_pages: 1
+    # NewsAPI's `language` parameter has no Hindi: the supported set is
+    # ar/de/en/es/fr/he/it/nl/no/pt/ru/sv/ud/zh. So this path is English-only
+    # by the provider's limit, not by our choice, and the Hindi side of the
+    # case depends entirely on the RSS feeds above.
+    language: en
 
 youtube:
   # Quota is the binding constraint: 10,000 units/UTC day.

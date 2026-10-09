@@ -118,7 +118,10 @@ class NewsRssSource(BaseSource):
                             "q": query,
                             "pageSize": page_size,
                             "page": page,
-                            "language": "en",
+                            # Config-driven, but NewsAPI has no Hindi in its
+                            # supported set, so this is English in practice.
+                            # See the note in configs/sources.yaml.
+                            "language": config.get("language", "en"),
                             "sortBy": "publishedAt",
                         },
                         headers={"X-Api-Key": self.settings.newsapi_key},
