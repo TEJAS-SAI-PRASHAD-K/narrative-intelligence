@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 import zipfile
 from collections.abc import Iterator
@@ -37,6 +38,9 @@ from ingest.config import sources_config, topics_config
 from ingest.normalize import build_text_fields, resolve_domain
 from ingest.schema import DropReason, EngagementMetrics, Record, make_id
 from ingest.sources.base import BaseSource, SourceUnavailable
+
+#: Module logger, for the pure helpers below that have no `self.log`.
+log = logging.getLogger("ingest.gdelt")
 
 LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
@@ -106,7 +110,6 @@ LANGUAGE_CODES = {
     "chinese": "zh",
     "japanese": "ja",
     "korean": "ko",
-    "hindi": "hi",
     "turkish": "tr",
     "polish": "pl",
     "swedish": "sv",
@@ -119,6 +122,28 @@ LANGUAGE_CODES = {
     "vietnamese": "vi",
     "thai": "th",
     "ukrainian": "uk",
+    # --- languages of India ----------------------------------------------
+    # GDELT translates and tags a long tail of Indian-language coverage, and
+    # an untranslated name here means `lang` silently falls back to whatever
+    # langdetect makes of the text -- which for a URL-slug-derived title is
+    # usually nothing. All of these are present in GDELT's own language list.
+    # Listed in full rather than just the two the current case uses, because
+    # the cost is a dict entry and the failure is a null column.
+    "hindi": "hi",
+    "bengali": "bn",
+    "tamil": "ta",
+    "telugu": "te",
+    "marathi": "mr",
+    "gujarati": "gu",
+    "kannada": "kn",
+    "malayalam": "ml",
+    "punjabi": "pa",
+    "urdu": "ur",
+    "oriya": "or",
+    "odia": "or",
+    "assamese": "as",
+    "nepali": "ne",
+    "sinhala": "si",
 }
 
 _PAGE_TITLE_RE = re.compile(r"<PAGE_TITLE>(.*?)</PAGE_TITLE>", re.IGNORECASE | re.DOTALL)
@@ -186,12 +211,26 @@ class GdeltSource(BaseSource):
             if self.checkpoint.is_done(cursor_key) and not self.options.get("force"):
                 self.log.info("skipping %s: already fetched today", cursor_key)
                 continue
+            # Country scoping is what makes this an Indian corpus rather than
+            # a global one that happens to mention India. Without it, a phrase
+            # like "election fraud claim" returns overwhelmingly US coverage,
+            # because that is what GDELT's crawl is weighted toward.
+            #
+            # It is a *publisher* filter, not a subject filter: `sourcecountry`
+            # is where the outlet is, not what the article is about. So this
+            # buys Indian outlets writing about anything, and loses Indian
+            # stories covered only from abroad. That trade is the right way
+            # round for this project -- the domestic information environment is
+            # the object of study -- but it is a real bias and the README says so.
             filters = Filters(
                 keyword=list(query),
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
                 num_records=max_records,
-                language=_language_filter(config.get("languages", ["English"])),
+                language=_language_filter(
+                    topic.get("gdelt_languages") or config.get("languages", ["English"])
+                ),
+                country=_country_filter(config.get("countries")),
             )
             bucket.acquire()
             try:
@@ -451,24 +490,65 @@ class GdeltSource(BaseSource):
 # --- module helpers -------------------------------------------------------
 
 
-def _language_filter(languages: Any) -> str | list[str] | None:
-    """Normalize the language filter into a form gdeltdoc emits validly.
+def _or_filter(values: Any) -> str | list[str] | None:
+    """Normalize any multi-valued DOC filter into a form gdeltdoc emits validly.
 
     gdeltdoc renders a *list* as a parenthesized OR group. With one element
     that becomes ``(sourcelang:English)`` -- parentheses around a single term --
     and GDELT rejects it outright: "Parentheses may only be used around OR'd
     statements." A bare string renders as ``sourcelang:English``, which is
-    accepted, and two or more languages render as a genuine OR group, which is
+    accepted, and two or more values render as a genuine OR group, which is
     also accepted. Verified against the live API; the docs do not mention it.
+
+    This applies to every filter gdeltdoc builds with ``_filter_to_string``,
+    not just language, which is why ``country`` goes through the same funnel.
     """
-    if not languages:
-        return None
-    if isinstance(languages, str):
-        return languages
-    values = [str(v) for v in languages if str(v).strip()]
     if not values:
         return None
-    return values[0] if len(values) == 1 else values
+    if isinstance(values, str):
+        return values
+    items = [str(v) for v in values if str(v).strip()]
+    if not items:
+        return None
+    return items[0] if len(items) == 1 else items
+
+
+def _language_filter(languages: Any) -> str | list[str] | None:
+    """Language filter. See :func:`_or_filter` for why the arity matters."""
+    return _or_filter(languages)
+
+
+def _country_filter(countries: Any) -> str | list[str] | None:
+    """Country filter, as FIPS 2-letter codes (India is ``IN``).
+
+    NOT ISO 3166: gdeltdoc documents ``sourcecountry`` as FIPS 10-4, where a
+    handful of codes diverge from the ISO ones people reach for by reflex.
+    ``IN`` happens to agree in both standards, so this project is not exposed
+    to the difference -- but anything added here must be checked against FIPS,
+    not against the ISO code.
+
+    gdeltdoc performs **no validation** on this field: ``country="India"`` and
+    ``country="IND"`` are both accepted, emitted into the query, and answered
+    by GDELT with zero rows. That is the worst available failure mode -- an
+    empty corpus that looks like a quiet news week -- so the shape is checked
+    here and a bad code is logged loudly rather than silently returning
+    nothing. The check is deliberately a shape check and not a FIPS table:
+    owning a copy of FIPS 10-4 to catch a typo is not a trade worth making,
+    and the two mistakes anyone actually makes are the 3-letter ISO code and
+    the country's name.
+    """
+    normalized = _or_filter(countries)
+    if normalized is None:
+        return None
+    for code in [normalized] if isinstance(normalized, str) else normalized:
+        if not re.fullmatch(r"[A-Z]{2}", code):
+            log.warning(
+                "gdelt country %r is not a 2-letter FIPS code. GDELT will accept the "
+                "query and return zero rows rather than erroring. India is 'IN', not "
+                "'IND' and not 'India'.",
+                code,
+            )
+    return normalized
 
 
 def _parse_lastupdate(text: str) -> list[str]:
