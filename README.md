@@ -238,6 +238,27 @@ Rate limiting: GDELT documents one query per five seconds but enforces it with a
 *stateful penalty window* — once tripped, even 35-second spacing keeps getting refused for
 a while. The adapter paces at one query per ten seconds with a single cool-off retry.
 
+**Measured 2026-10-09: the penalty window can exceed forty minutes, and the adapter's
+thirty-second cool-off is nowhere near enough.** Six queries over roughly eighty minutes,
+spaced at 75 s, 7 min, 25 min and 40 min, were *all* refused. Verified as a genuine
+`HTTP 429` carrying GDELT's own text (*"Please limit requests to one every 5 seconds…"*)
+by issuing the raw DOC request directly — `gdeltdoc` raises `RateLimitError` only on a
+literal 429, so this is not a misclassified outage or a malformed query. Notably the
+*first* query of the session was already refused, before this project had made any, so the
+window is per-IP and outlives the process that tripped it.
+
+Three consequences worth planning around:
+
+- **A short-interval scheduler will never recover.** A cron firing GDELT every fifteen
+  minutes from one IP can sit permanently inside the penalty window. Treat GDELT as a
+  once-or-twice-daily job, not a polling source — and note that the 15-minute raw drops
+  tempt you in exactly the wrong direction.
+- **`make data` degrades rather than failing**, which is correct but quiet: each topic
+  logs `doc_query_failed` and the run reports `ok`. A GDELT-shaped hole in the corpus
+  looks like a slow news week unless you read the flags.
+- **Developing against GDELT from a shared or NAT'd IP is unreliable** regardless of your
+  own politeness, because the budget is not yours alone.
+
 `mentions` rows are written as a **side Parquet artifact**, not as `Record`s: a mention
 row has no text of its own, and inventing one would corrupt the corpus. Phase 2 joins them
 on `GLOBALEVENTID`.
