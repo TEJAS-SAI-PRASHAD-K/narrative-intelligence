@@ -1,7 +1,20 @@
 # Narrative Intelligence Platform — Phases 1–2: Ingestion, Modeling & Scoring
 
 A reproducible, schema-normalized, multi-platform corpus for research on coordinated
-misinformation narratives.
+misinformation narratives **in India**, in English and Hindi.
+
+The case is defined entirely in `configs/topics.yaml` and `configs/sources.yaml`: four
+domains that Indian fact-checking organisations debunk daily — communal and religious
+claims, electoral-process and voter-roll claims, health claims, and financial scams and
+synthetic media. India is the subject rather than an example because the country has an
+unusually dense public fact-checking ecosystem publishing structured verdicts under open
+RSS in both languages, which is the only accessible source of *labelled* misinformation at
+the scale this project needs. Corpus and labels come from the same country and the same
+window.
+
+This replaced an earlier US health/election case. Nothing was wrong with it; it could not
+support the project's stated subject. Swapping the case back, or to a third country, is
+still a config edit and `make data`.
 
 **Phase 1** is ingestion: a partitioned Parquet corpus in which every record — Reddit
 comment, Mastodon toot, news article, YouTube comment — obeys one schema, plus the tooling
@@ -191,6 +204,35 @@ Three things learned by running it, which contradict the documentation:
 3. **`lastupdate.txt` lists files that 404.** GKG has been intermittently unavailable
    while `export`/`mentions` return 200. Downloads are checked for status, emptiness and
    the zip magic number, and a bad drop is skipped rather than failing the run.
+4. **`gdeltdoc` does not validate `country` at all.** `country="India"` and
+   `country="IND"` are both accepted, emitted into the query, and answered by GDELT with
+   zero rows — an empty corpus that reads as a quiet news week. `_country_filter` now
+   shape-checks the code and warns loudly while still passing the value through. It is a
+   shape check, not a vendored FIPS 10-4 table: the two mistakes anyone actually makes are
+   the 3-letter ISO code and the plain country name, and both are caught.
+
+India scoping, as of this phase:
+
+- `gdelt.doc_api.countries: [IN]` — **FIPS 2-letter**, not ISO 3166. They agree on `IN`,
+  which is exactly what makes the distinction easy to miss; YouTube's `regionCode` on the
+  same corpus *is* ISO. Without the filter, the Indian topics return mostly US coverage,
+  because that is how GDELT's crawl is weighted.
+- It filters on the **publisher's** country, not the subject. So it buys Indian outlets
+  writing about anything and loses Indian stories covered only from abroad. That trade is
+  the right way round for studying a domestic information environment and the wrong way
+  round for almost anything else.
+- `languages: [English, Hindi]`. A Hindi hit here is **GDELT's machine translation** of
+  the article, not the Hindi surface form — fine for topic and tone, useless as Hindi
+  training text. The Hindi text Phase 2 can learn from comes from the RSS feeds.
+- `LANGUAGE_CODES` now maps the fourteen languages of India that GDELT reports by name
+  (both spellings of Odia included). GDELT emits names, so an unmapped name is not a wrong
+  `lang`, it is a null one — and a GKG row whose title is reconstructed from a URL slug
+  gives langdetect nothing to fall back on.
+
+**The live country filter is unverified.** GDELT's stateful penalty window refused every
+attempt across ~30 minutes of spacing during this work, so the query form is pinned
+offline by tests and the end-to-end check is still owed. Stated plainly rather than
+implied by its absence.
 
 Rate limiting: GDELT documents one query per five seconds but enforces it with a
 *stateful penalty window* — once tripped, even 35-second spacing keeps getting refused for
@@ -201,6 +243,17 @@ row has no text of its own, and inventing one would corrupt the corpus. Phase 2 
 on `GLOBALEVENTID`.
 
 ### News (RSS + optional NewsAPI)
+
+Eighteen Indian feeds in two roles, and the roles are not interchangeable:
+
+| role | feeds | what it is for |
+|---|---|---|
+| **fact-checkers** | BOOM, Alt News (en + hi), Factly, Newschecker, Quint WebQoof, Fact Crescendo, Vishvas News, DigitEye | a claim **and a verdict** — the only supervision in the corpus |
+| **mainstream** | The Hindu, TOI, NDTV, Hindustan Times, Scroll, Maktoob, BBC Hindi, Amar Ujala, Dainik Bhaskar | the coverage a claim spreads against; no verdicts, high volume |
+
+> **Leakage warning for Phase 2.** The domain alone predicts the fact-check label
+> perfectly. Any model that is allowed to see `source_detail`, `author_id` or the outlet
+> URL will score beautifully and have learned nothing. Train on text.
 
 - **Gives you:** headline, summary, publication time, outlet domain, and full text where
   the outlet publishes it openly.
@@ -218,8 +271,26 @@ on `GLOBALEVENTID`.
 - **Syndicated wire copy is kept, not deduplicated.** One AP story appears verbatim across
   dozens of outlets, and republication breadth is itself a spread signal. `simhash` is what
   lets Phase 2 collapse them when it wants to.
-- Two feeds from the original list are gone and were removed: `feeds.reuters.com` no longer
-  resolves, and `apnews.com/index.rss` returns zero entries.
+- **Every feed was probed live on 2026-10-09** and then exercised through the real adapter.
+  A 548-record run gave 16 domains and `en`/`hi`/`te`/`id` = 454/90/3/1, so the Hindi half
+  of the case demonstrably arrives rather than merely being configured. Rejected
+  candidates are listed *in the config with their reasons* — Indian Express 403s our
+  User-Agent, The Wire and The Print serve empty feeds, India Today's fact-check desk has
+  no exposed RSS, news18 failed two attempts in three — so "why is Indian Express missing"
+  has an answer that is not "nobody thought of it".
+- **Most Indian fact-checkers ship the full article inside the RSS payload**, so
+  `trafilatura` never has to run for them. Measured median characters per record: Alt News
+  7112, Vishvas News 4702, Factly 3761, DigitEye 3696, Fact Crescendo 3204, Newschecker
+  2820, BOOM 2217 — against 156–292 for the mainstream outlets, which all either disallow
+  extraction in `robots.txt` or time out. The supervision signal arrives essentially free;
+  the extraction budget mostly buys depth on the general-coverage feeds.
+- **`boomlive.in/rss/` returns HTTP 200 with zero entries.** The working feed is under
+  `/fact-check/`. That is the failure mode that reads as success in a log, which is why
+  entry counts are recorded next to every URL in the config.
+- Seven BBC Indic-language feeds (Tamil, Telugu, Marathi, Gujarati, Punjabi, Bengali,
+  Urdu) are **verified working and deliberately commented out**, because the case is
+  English + Hindi. Widening the language scope means editing `topics.yaml` too, not just
+  uncommenting them.
 
 ### YouTube
 
@@ -241,6 +312,16 @@ on `GLOBALEVENTID`.
 - **Cannot tell you:** who watched. And nothing at all about videos with comments
   disabled — which correlates with exactly the political content of interest, so comment
   coverage is non-random. Counted as `comments_unavailable`.
+- India scoping: `region_code: IN` localizes the result set, and costs nothing —
+  `search.list` is 100 units with or without it. This is **ISO 3166-1 alpha-2**, unlike
+  GDELT's FIPS code on the same corpus. `relevance_language` is supported but unset on
+  purpose: it takes a single code, and `topics.yaml` deliberately mixes English and Hindi
+  query strings, so any one global value would be wrong for half of them. The query's own
+  language is the stronger signal and it is already in the query.
+- `max_searches_per_run` is 12, so one run covers four topics × three queries = 1,200
+  units of a 10,000/day quota. The binding limit is `YOUTUBE_MAX_SEARCHES_PER_DAY`
+  (default 20): one full run plus most of a second per UTC day. Enough for a daily
+  collector, not enough to re-run interactively.
 
 ---
 
@@ -288,6 +369,18 @@ Changing the case under study — a different election, outbreak or conflict —
 require editing `configs/topics.yaml` and rerunning `make data`, and nothing else. If you
 find yourself editing an adapter to add a source, the config is wrong.
 
+The India retarget is the test of that claim, and it mostly held: the case, the feeds, the
+queries and the hashtags are all config. Three code changes were needed, and each one
+added a *capability* the config could not express rather than a hardcoded value —
+`country` on GDELT, `regionCode` on YouTube, and script-aware language detection.
+
+One trap worth knowing before editing: `topics.yaml`'s `languages:` key is **declarative
+and read by nothing**. The three real enforcement points are
+`sources.yaml → gdelt.doc_api.languages` (which articles are fetched),
+`sources.yaml → youtube.discovery.*` (region and relevance), and
+`modeling/config.py → Settings.languages` (which records are **scored**). They gate
+different things on purpose; the third is still `("en",)`.
+
 ---
 
 ## Testing
@@ -304,16 +397,75 @@ them.
 
 ---
 
+## What retargeting to India taught us
+
+Three things that were not in the plan, found by running it.
+
+- **langdetect cannot abstain on romanized Hindi, so it lies instead.** Hindi typed in
+  Latin letters — "yeh video bilkul fake hai" — is the dominant register of Indian social
+  media and langdetect has no class for it. It does not return `None` and it does not
+  return `en`; it returns the nearest of its 55 trained languages with confidence. On ten
+  hand-written sentences: **Swahili ×5, Estonian ×2, Somali ×2, Turkish ×1, English ×0.**
+
+  The `en` count being zero is what makes this harmful rather than merely wrong. A record
+  labelled `sw` is not a near miss — `modeling/config.py` gates scoring on
+  `lang in languages`, so the record is silently skipped, and the YouTube, Reddit and
+  Mastodon adapters would have quietly dropped most of what they collected. Fixed with a
+  function-word lexicon checked *before* langdetect runs, because afterwards langdetect has
+  already committed.
+
+- **The lexicon's threshold is set by English, not by Hindi.** Every setting from one
+  marker upward gave zero false positives on 454 real English *news* records, which made
+  the choice look free. Short informal English is the real adversary: "jo biden said
+  that", "the ki is a japanese concept", "se habla espanol here" each land exactly one
+  marker. Two markers is the loosest setting that rejects all three, and a test pins that
+  specific reason so nobody loosens it back for a recall number.
+
+- **On long-form news, none of this matters — and that is the useful part.** Re-running
+  detection over all 548 ingested records changed **zero** labels: articles are long, and
+  langdetect had already got all 90 Devanagari records right. The script and romanized
+  checks are additive, and the no-op on today's corpus is the evidence for that rather
+  than an argument for it. They exist for the short text the platform adapters will
+  produce, which this corpus does not yet contain.
+
+---
+
 ## Known limitations
 
-- **English-scoped by construction.** GDELT/NewsAPI queries, the RSS list and the seed
-  hashtags are all English. Any claim from this corpus is a claim about English-language
-  content.
+- **English and Hindi only, and the two are not equally served.** Hindi arrives from the
+  RSS feeds (fact-checkers and three mainstream outlets) and nowhere else: NewsAPI's
+  supported language set has no Hindi, and GDELT's Hindi is machine translation rather
+  than Hindi text. The measured split on a 548-record run was 454 English / 90 Hindi. Any
+  claim from this corpus is a claim about English and Hindi web content, weighted heavily
+  toward English.
+- **Ingesting Hindi and scoring Hindi are different things, and only the first is done.**
+  `modeling/config.py` still sets `languages = ("en",)`, so Hindi records are collected,
+  normalized and stored, then **skipped by the Phase 2 scoring pass with a reason code**.
+  Widening it needs a multilingual checkpoint, not a config edit. Until then the Hindi
+  corpus is real data with no scores attached, and the dashboard will show it as such.
+- **Romanized Hindi is now labelled, but its recall is unmeasured.** See *Findings* below:
+  langdetect assigns romanized Hindi a confident *non-English* language (Swahili,
+  Estonian, Somali, Turkish — never English), which routes it out of the analysis
+  entirely. A function-word lexicon catches it before langdetect runs, with zero false
+  positives on 454 real English records. Its *recall* is not a measured number — the
+  positive set is hand-written by whoever chose the lexicon — and it covers Hindi/Urdu
+  only. Romanized Tamil, Telugu and Malayalam score zero against it by construction.
 - **Not a sample of anything.** Mastodon is hashtag- and instance-scoped, YouTube is
   discovery-query-scoped, GDELT covers only monitored outlets, and the feed list was
   hand-picked. The corpus cannot support prevalence or reach claims about any population.
-- **No X/Twitter, Telegram, Facebook, WhatsApp or TikTok.** A large share of the
-  phenomenon under study plausibly lives on platforms this project cannot access.
+- **Fact-checker coverage is a selection, not a census.** What Indian fact-checkers choose
+  to debunk is driven by their own editorial priorities, their funding, and what is
+  already viral. Narratives they ignore are invisible here, and nothing in this corpus can
+  distinguish "not debunked" from "not false".
+- **The news corpus is urban, English-weighted and nationally-focused.** Every feed is a
+  national outlet or a national fact-checker. Regional-language and district-level
+  reporting — where a great deal of Indian misinformation circulates — is absent, partly
+  by scope and partly because most regional dailies' RSS endpoints are dead or blocked
+  (recorded in `configs/sources.yaml`).
+- **No X/Twitter, Telegram, Facebook, WhatsApp, ShareChat or Instagram.** For an Indian
+  case this is the single largest gap, not a minor one: WhatsApp forwards are the
+  canonical Indian misinformation vector and nothing here can see them. Treat the corpus
+  as *public web discourse about* Indian misinformation, not as the misinformation itself.
 - **Reddit is historical.** No live Reddit path exists here.
 - **Deleted content is absent**, so the corpus under-represents whatever moderators
   removed — plausibly correlated with the content of interest.
@@ -537,9 +689,16 @@ Everything in Phase 1's limitations still holds. Phase 2 adds:
   drop.** The transfer gap is currently **unmeasured**; closing it needs a person to
   hand-label 100 corpus records (`sample-for-labelling misinfo`), and that single table is
   worth more than any hyperparameter sweep.
-- **English-only, by decision.** Non-English text is skipped with a reason code, never
-  scored by an English model. 316 records have no language tag at all and are admitted
-  under a stated assumption.
+- **English-only scoring, over an English-and-Hindi corpus.** This was a clean decision
+  when the corpus was English; since the India retarget it is a **gap**, and the honest
+  framing has changed with it. Non-English text is skipped with a reason code and never
+  scored by an English model — correct behaviour — but that now silently excludes the
+  Hindi records (90 of 548 on the first run, and a far larger share once Indian-language
+  social sources come online). The scored tables therefore cover a *subset* of the corpus,
+  and any volume comparison between a Hindi and an English narrative is invalid until a
+  multilingual checkpoint lands. Records with no language tag at all are admitted under a
+  stated assumption; `score_unknown_language` controls it and the assumption is recorded
+  per row.
 - **The toxicity model carries a known demographic bias.** Jigsaw-trained classifiers
   over-flag African-American English and identity terms in non-pejorative use. `toxicity`
   must never be read as "this account is abusive" and nothing should be ranked by it alone.
