@@ -18,10 +18,10 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationInfo, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from ingest.config import REPO_ROOT
 from ingest.config import get_settings as get_ingest_settings
@@ -82,7 +82,21 @@ class ApiSettings(BaseSettings):
     bootstrap_admin_key: str | None = None
     rate_limit_per_minute: int = 600
     rate_limit_burst: int = 60
-    cors_origins: tuple[str, ...] = ("http://localhost:5173", "http://localhost:3000")
+    #: ``NoDecode`` is load-bearing, not decoration. pydantic-settings treats a
+    #: tuple as a "complex" type and JSON-decodes it **in the settings source**,
+    #: before any field validator runs -- so the ``_split_csv`` validator below
+    #: never saw the value and `CORS_ORIGINS=http://a,http://b` raised
+    #: ``SettingsError: error parsing value for field "cors_origins"``.
+    #:
+    #: That is the exact line shipped in ``.env.example``, which ``make setup``
+    #: copies to ``.env``, so a clean clone could not construct settings at all:
+    #: the API would not boot and all 24 contract tests errored. ``NoDecode``
+    #: turns the source-level decoding off and hands the raw string to the
+    #: validator, which is what it was always written to receive.
+    cors_origins: Annotated[tuple[str, ...], NoDecode] = (
+        "http://localhost:5173",
+        "http://localhost:3000",
+    )
 
     # --- embeddings ------------------------------------------------------
     #: pgvector columns are fixed-width, so this pins the deployment. Changing
@@ -170,9 +184,31 @@ class ApiSettings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: Any) -> Any:
-        if isinstance(v, str):
-            return tuple(part.strip() for part in v.split(",") if part.strip())
-        return v
+        """Accept CSV (the documented form) and a JSON array (the reflex form).
+
+        CSV is what ``.env.example`` documents and what 12-factor env vars
+        normally look like. JSON is handled too because ``NoDecode`` took away
+        the source-level JSON parsing, and without this branch
+        ``CORS_ORIGINS='["http://a","http://b"]'`` would split on the comma and
+        yield ``('["http://a"', '"http://b"]')`` -- junk, accepted silently,
+        which is the same class of bug ``NoDecode`` was added to fix.
+        """
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        if text.startswith("["):
+            import json
+
+            try:
+                parsed = json.loads(text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"CORS_ORIGINS looks like JSON but does not parse: {exc}. "
+                    "Use a comma-separated list, e.g. "
+                    "CORS_ORIGINS=http://localhost:5173,http://localhost:3000"
+                ) from exc
+            return tuple(str(part).strip() for part in parsed if str(part).strip())
+        return tuple(part.strip() for part in text.split(",") if part.strip())
 
     @field_validator("data_dir", "models_dir", "uploads_dir", "reports_dir", mode="after")
     @classmethod
