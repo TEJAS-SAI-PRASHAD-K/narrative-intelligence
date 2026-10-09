@@ -8,20 +8,27 @@ import sys
 import pytest
 
 from ingest.normalize import (
+    ROMANIZED_HINDI_MARKERS,
+    SCRIPT_TO_LANG,
     build_text_fields,
     canonicalize_url,
     clean_text,
     detect_lang,
+    dominant_script,
     extract_hashtags,
     extract_html_links,
     extract_mentions,
     extract_urls,
     hamming,
     html_parser_class,
+    is_code_mixed,
     is_deleted_text,
     is_shortlink,
+    looks_romanized_hindi,
     resolve_domain,
     resolve_domains,
+    romanized_hindi_markers,
+    script_profile,
     simhash,
     strip_html,
 )
@@ -281,6 +288,147 @@ class TestLangDetect:
     def test_primary_subtag_only(self):
         code = detect_lang("这是一段足够长的中文文本，用于测试语言检测功能是否正常工作。")
         assert code == "zh"
+
+    def test_devanagari_articles_are_detected_as_hindi(self):
+        text = (
+            "बंगाल में मतदाता सूची के पुनरीक्षण के बाद सिर्फ सात लाख वोटरों ने "
+            "फिर से शामिल होने के लिए आवेदन किया है, यह दावा भ्रामक है।"
+        )
+        assert detect_lang(text) == "hi"
+
+
+class TestScriptProfile:
+    """Writing-system detection. Cheap, deterministic, and no model involved."""
+
+    def test_shares_sum_to_one_over_attributable_letters(self):
+        profile = script_profile("यह video है")
+        assert pytest.approx(sum(profile.values()), abs=1e-9) == 1.0
+        assert set(profile) == {"Devanagari", "Latin"}
+
+    def test_empty_text_is_no_evidence_not_zero_evidence(self):
+        # {} rather than {"Latin": 0.0}: a caller must be able to tell
+        # "nothing to read" from "read it, found no Latin".
+        assert script_profile("") == {}
+        assert script_profile(None) == {}
+        assert script_profile("12345 !?@#") == {}
+        assert dominant_script("") is None
+
+    def test_each_indian_script_is_recognised(self):
+        for text, expected in [
+            ("यह झूठ है", "Devanagari"),
+            ("এটা মিথ্যা", "Bengali"),
+            ("இது பொய்", "Tamil"),
+            ("ఇది అబద్ధం", "Telugu"),
+            ("ಇದು ಸುಳ್ಳು", "Kannada"),
+            ("ഇത് നുണയാണ്", "Malayalam"),
+            ("આ ખોટું છે", "Gujarati"),
+            ("ਇਹ ਝੂਠ ਹੈ", "Gurmukhi"),
+            ("یہ جھوٹ ہے", "Arabic"),
+        ]:
+            assert dominant_script(text) == expected, text
+
+    def test_code_mixing_needs_both_scripts_to_be_substantial(self):
+        assert is_code_mixed("यह video बिलकुल fake है")
+        assert not is_code_mixed("plain english only")
+        assert not is_code_mixed("पूरी तरह हिंदी में लिखा गया वाक्य")
+        # One stray Latin brand name in a Hindi paragraph is not code-mixing.
+        hindi = "यह दावा पूरी तरह से गलत है और इसकी पुष्टि नहीं हुई है। " * 3
+        assert not is_code_mixed(hindi + "WhatsApp")
+
+    def test_devanagari_is_not_mapped_to_a_language_by_script_alone(self):
+        """Hindi, Marathi and Nepali share it, so the script cannot decide."""
+        assert "Devanagari" not in SCRIPT_TO_LANG
+        # Short Devanagari therefore stays an honest null rather than a guess.
+        assert detect_lang("यह झूठ है") is None
+
+    def test_short_text_in_a_single_language_script_resolves_anyway(self):
+        """langdetect abstains under 20 chars; the alphabet does not have to."""
+        assert detect_lang("இது பொய்") == "ta"
+        assert detect_lang("ఇది అబద్ధం") == "te"
+        assert detect_lang("આ ખોટું છે") == "gu"
+        assert detect_lang("ਇਹ ਝੂਠ ਹੈ") == "pa"
+        # Latin is used by hundreds of languages, so it resolves nothing.
+        assert detect_lang("short en") is None
+
+
+class TestRomanizedHindi:
+    """Hindi typed in Latin letters: the dominant register of Indian social media.
+
+    langdetect has no class for it, so it cannot abstain -- it returns the
+    nearest of its 55 trained languages with confidence. Measured on ten
+    hand-written sentences: Swahili x5, Estonian x2, Somali x2, Turkish x1,
+    English x0. A confident `sw` is not a near miss, it routes the record to
+    the "non-English, do not score" path and out of the analysis.
+    """
+
+    POSITIVES = [
+        "yeh video bilkul fake hai maine pehle bhi dekha hai",
+        "bhai ye khabar sach hai ya jhooth batao",
+        "is video ko sabke paas share karo jaldi",
+        "mujhe lagta hai ye galat jankari failai ja rahi hai",
+        "aapne jo bataya wo bilkul sahi hai sir",
+        "sab log is message ko forward kar rahe hain",
+        "agar ye sach hai to proof dikhao",
+        "unka kehna hai ki video edited hai",
+    ]
+
+    #: Each of the first three lands exactly ONE marker. They are the reason
+    #: the threshold is two markers and not one.
+    ADVERSARIAL_ENGLISH = [
+        "jo biden said that on tuesday in washington",
+        "the ki is a japanese concept of life energy",
+        "se habla espanol here at our office today",
+        "this is so sad bro i cant believe it happened",
+        "can someone fact check this video please",
+        "ka ching that is a lot of money right there",
+    ]
+
+    def test_romanized_hindi_is_labelled_hindi(self):
+        for text in self.POSITIVES:
+            assert looks_romanized_hindi(text), text
+            assert detect_lang(text) == "hi", text
+
+    def test_english_is_never_relabelled(self):
+        for text in self.ADVERSARIAL_ENGLISH:
+            assert not looks_romanized_hindi(text), text
+            assert detect_lang(text) == "en", text
+
+    def test_one_marker_is_not_enough(self):
+        """The single-marker setting is what admits 'jo biden said that'."""
+        for text in self.ADVERSARIAL_ENGLISH[:3]:
+            hits, _ = romanized_hindi_markers(text)
+            assert hits == 1, text
+            assert looks_romanized_hindi(text, min_markers=1, min_share=0.0), text
+            assert not looks_romanized_hindi(text), text
+
+    def test_english_colliding_tokens_are_absent_from_the_lexicon(self):
+        """Including any of these buys recall and sells a wrong language label."""
+        for token in ("to", "is", "par", "ye", "log", "the", "hum", "main", "ab", "do", "me"):
+            assert token not in ROMANIZED_HINDI_MARKERS, token
+
+    def test_other_romanized_indian_languages_are_out_of_scope_not_handled(self):
+        """A per-language lexicon each time. Documented limit, not a bug."""
+        for text in [
+            "indha video poi illa naan paatha irukken",  # Tamil
+            "ee video thappu aanu njan kandittund",  # Malayalam
+            "ee video tappu nenu chusanu",  # Telugu
+        ]:
+            assert romanized_hindi_markers(text)[0] == 0, text
+
+    def test_no_latin_tokens_is_zero_not_a_crash(self):
+        assert romanized_hindi_markers("यह पूरी तरह हिंदी है") == (0, 0.0)
+        assert romanized_hindi_markers("") == (0, 0.0)
+        assert romanized_hindi_markers(None) == (0, 0.0)
+        assert not looks_romanized_hindi(None)
+
+    def test_the_check_runs_before_langdetect_not_after(self):
+        """Order matters: langdetect would have already committed to Swahili."""
+        text = "sab log is message ko forward kar rahe hain"
+        from langdetect import DetectorFactory, detect
+
+        DetectorFactory.seed = 0
+        assert detect(text) != "hi"  # langdetect alone gets this wrong
+        assert detect_lang(text) == "hi"  # the lexicon catches it first
 
 
 class TestSimhash:
