@@ -4,6 +4,83 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The corpus is retargeted from the United States to India, in English and Hindi.
+Data layer only: the case, the sources and the language detection. The modeling
+layer still scores English only, which is now a documented gap rather than a
+decision.
+
+### Added
+
+- **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
+  in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
+  Vishvas News, DigitEye) carry a claim *and a verdict* and are the only
+  supervision in the corpus; nine mainstream outlets supply the coverage a claim
+  spreads against. Every URL probed live on 2026-10-09 and then exercised
+  through the real adapter: 548 records, 16 domains, `en`/`hi`/`te`/`id` =
+  454/90/3/1.
+- **GDELT country scoping** (`gdelt.doc_api.countries`, default `[IN]`, FIPS
+  2-letter). Without it the Indian topics return mostly US coverage.
+- **The fourteen languages of India in `LANGUAGE_CODES`**, both spellings of
+  Odia included. GDELT emits language *names*, so an unmapped name is a null
+  `lang`, not a wrong one.
+- **YouTube `regionCode`** (ISO 3166-1 alpha-2, unlike GDELT's FIPS on the same
+  corpus) and optional `relevanceLanguage`, both omitted from the call entirely
+  when unset because the client serializes an explicit `None`.
+- **Script detection** — `script_profile`, `dominant_script`, `is_code_mixed` —
+  over explicit Unicode ranges at 13.4 M chars/sec.
+- **Romanized-Hindi detection** (`looks_romanized_hindi`), a function-word
+  lexicon checked before langdetect runs.
+- **Short-text resolution by alphabet.** langdetect abstains under 20 chars, but
+  Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Oriya and Sinhala are
+  each used by one major language. Devanagari is excluded on purpose: Hindi,
+  Marathi and Nepali share it, so short Devanagari stays an honest null.
+
+### Fixed
+
+- **Romanized Hindi was being assigned a confident wrong language.** langdetect
+  has no class for Hindi in Latin script, so it cannot abstain — on ten
+  hand-written sentences it returned Swahili ×5, Estonian ×2, Somali ×2,
+  Turkish ×1 and English ×0. Because `modeling/config.py` gates scoring on
+  `lang in languages`, a `sw` label silently routed the record out of the
+  analysis rather than merely mislabelling it, which would have quietly dropped
+  most of what the YouTube, Reddit and Mastodon adapters collect.
+- **`gdeltdoc` silently accepts invalid country codes.** `"India"` and `"IND"`
+  are emitted into the query and answered with zero rows — an empty corpus that
+  reads as a quiet news week. `_country_filter` shape-checks and warns loudly
+  while still passing the value through.
+- **NewsAPI's hardcoded `language="en"`** is config-driven, with the reason it
+  stays English recorded: NewsAPI's supported set has no Hindi.
+
+### Changed
+
+- `configs/topics.yaml` replaced: four Indian topic areas (communal, electoral,
+  health, scams and synthetic media) with English and Hindi seeds, replacing the
+  US vaccine/election/climate case.
+- `news_rss.fulltext.max_articles` 60 → 120, and
+  `youtube.discovery.max_searches_per_run` 4 → 12 so one run covers the case
+  (1,200 of 10,000 daily quota units).
+- `topics.yaml`'s `languages:` key is marked declarative, because nothing reads
+  it. The three real enforcement points are named instead.
+
+### Known gaps
+
+- **The GDELT country filter is not verified live.** GDELT's stateful penalty
+  window refused every attempt across ~30 minutes of spacing. The query form is
+  pinned offline by tests; the end-to-end check is owed.
+- **Romanized-Hindi recall is not a measured number.** Zero false positives on
+  454 real English records is measured; the 20/20 on positives is circular,
+  since the probe set and the lexicon share an author. Hindi/Urdu only —
+  romanized Tamil, Telugu and Malayalam score zero by construction.
+- **Hindi is ingested but not scored.** `modeling/config.py` still sets
+  `languages = ("en",)`, so the scored tables cover a subset of the corpus and
+  Hindi-vs-English volume comparisons are invalid until a multilingual
+  checkpoint lands.
+- **No WhatsApp, Telegram, X, ShareChat, Instagram or Facebook.** For an Indian
+  case this is the largest gap, not a minor one. The corpus is public web
+  discourse *about* Indian misinformation, not the misinformation itself.
+
 ## [0.4.0] — 2026-08-24
 
 Phase 4: the corpus and the models now sit behind a persistent, queryable, async
