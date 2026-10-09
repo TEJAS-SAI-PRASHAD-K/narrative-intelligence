@@ -335,7 +335,19 @@ def test_null_model_runs_and_is_reported(isolated_settings):
     result = CoordinationDetector(isolated_settings).detect(
         coordinated_corpus(n_amplifiers=8, n_organic=20), run_null_model=True
     )
-    assert result.null_modularity >= 0.0
+    # Modularity is bounded in [-1/2, 1], and a NEGATIVE value is meaningful --
+    # it means the partition is worse than chance. So `>= 0.0` was asserting
+    # something untrue of modularity in general, and it only ever passed because
+    # a time-shuffled null lands near zero.
+    #
+    # "Near zero" is where it broke: networkx returns a value a hair either side
+    # of 0 for an essentially-single-community partition, purely from summation
+    # order. CI caught Python 3.11 returning -4.440892098500626e-16 (machine
+    # epsilon) where 3.12 returned +0.0. Asserting the sign of rounding noise is
+    # not a test; assert the bound that is actually true.
+    assert -0.5 <= result.null_modularity <= 1.0
+    # What the test is really for: the null ran, and it is reported whichever
+    # way it came out.
     assert isinstance(result.exceeds_null, bool)
     assert "null_modularity" in result.summary()
 
