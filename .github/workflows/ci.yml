@@ -1,0 +1,121 @@
+name: CI
+
+# The repository had no CI, and that is partly how two defects survived:
+#
+#   * `selectolax` 1.0 removed the parser backend `ingest/normalize.py`
+#     imported, and both call sites swallowed the ImportError, so HTML parsing
+#     silently became regex parsing.
+#   * `.gitignore` carried an unanchored `models/`, which also matched
+#     `app/models/`, so the 27-table ORM package was never committed.
+#
+# Neither needed a clever test to catch. They needed any test, run anywhere
+# other than the laptop that already had the right files on disk.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A force-push should not leave three stale runs burning minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The suite patches socket.connect to raise, so a test reaching the network
+  # fails loudly rather than passing slowly. This keeps the adapters honest too.
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install "ruff>=0.4"
+      # Mirrors `make lint` exactly. `ruff format` is NOT gated: it has never
+      # been run on this codebase and would reformat 34 files, which is a
+      # separate decision deserving its own reviewable diff.
+      - run: ruff check ingest modeling tests scripts
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject requires >=3.11. Both are tested because the ingestion
+        # layer is pure-Python and cheap to verify twice, and because a version
+        # floor nobody exercises is a floor nobody can rely on.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        # The `sources` extra is NOT installed wholesale. It pulls convokit and
+        # kaggle, both heavy and fussy, and no test needs them -- every adapter
+        # declares `requires_package` and skips cleanly when its library is
+        # absent. The four source libraries that tests DO exercise are named
+        # individually, so a convokit dependency conflict cannot turn this job
+        # red for a reason unrelated to the change under review.
+        run: |
+          python -m pip install -e ".[modeling,api,dev]"
+          python -m pip install \
+            "trafilatura>=1.9" \
+            "gdeltdoc>=1.5" \
+            "google-api-python-client>=2.130" \
+            "Mastodon.py>=1.8"
+
+      - name: Test
+        # tests/test_contract.py is EXCLUDED, and not because it is flaky.
+        #
+        # It needs `app/models/`, the SQLAlchemy ORM package, which an
+        # unanchored .gitignore pattern kept out of this repository entirely
+        # (see the fix in .gitignore and tests/test_repo_layout.py). The files
+        # were never committed, so they cannot be recovered from history and
+        # have to be committed from the working copy that still holds them.
+        #
+        # 27 tests covering the whole API contract are therefore unrun. When
+        # `app/models/` lands, DELETE THIS IGNORE -- it is the single thing
+        # standing between this workflow and real backend coverage.
+        env:
+          DEMO_MODE: "1"
+          ENVIRONMENT: ci
+        run: python -m pytest --ignore=tests/test_contract.py
+
+  # Catches API contract drift without a database: openapi.json is committed and
+  # must match what the code produces. Runs even though the contract tests
+  # cannot, because `app/main.py` imports `app.models` lazily inside its startup
+  # handler -- so the module imports fine and only booting fails.
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install -e ".[api]"
+      - name: openapi.json matches the code
+        run: python -m app.openapi_export --check openapi.json
+
+  # Not yet a job, deliberately, so the gap is recorded rather than forgotten:
+  #
+  #   postgres  tests/test_migrations.py and tests/test_etl.py skip without
+  #             TEST_DATABASE_URL. A `pgvector/pgvector:pg16` service container
+  #             would unlock the migration round-trip check (`make migrate-check`),
+  #             which is the strongest assertion available about the schema.
+  #             Blocked on the same missing `app/models/`.
