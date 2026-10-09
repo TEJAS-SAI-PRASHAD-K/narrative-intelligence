@@ -8,77 +8,166 @@
 # Human-readable description of what this corpus is *about*. Quoted verbatim in
 # the EDA notebook's coverage statement, so keep it honest and specific.
 case: >
-  Cross-platform health and election misinformation narratives, 2024-2025.
-  Chosen because both domains have well-documented coordinated campaigns, are
-  covered by open corpora, and are not restricted content on any source used.
+  Indian misinformation narratives, English and Hindi, 2025-2026. Four domains
+  that Indian fact-checking organisations debunk daily and that are documented
+  in the academic literature on Indian information disorder: communal and
+  religious claims, electoral-process claims, health claims, and financial
+  scams and synthetic media.
+
+  Chosen over the previous US health/election case for two reasons. First,
+  India is the stated subject of this project and a US corpus could not support
+  that claim. Second, India has an unusually dense public fact-checking
+  ecosystem (IFCN-signatory organisations publishing structured verdicts in
+  English and Hindi under open RSS), which is the only accessible source of
+  *labelled* misinformation at the scale this project needs. The corpus and its
+  labels can therefore come from the same country and the same window.
+
+  What this case is NOT: a sample of Indian public opinion, or a measurement of
+  how much misinformation exists in India. See the README's coverage statement.
 
 topics:
-  - id: health_vaccine
-    label: Vaccine and public health claims
+  - id: communal_claims
+    label: Communal and inter-religious claims
+    # Recontextualised media is the dominant form here: an old or unrelated
+    # video relabelled as a fresh incident. The claim is rarely a sentence that
+    # can be checked -- it is a caption attached to real footage -- which is why
+    # `misinfo_prob` alone will underperform on this topic and the Phase 2
+    # cluster/stance path matters more. Said here so the result is expected
+    # rather than discovered.
+    keywords:
+      - communal
+      - communal tension
+      - religious violence
+      - temple
+      - mosque
+      - procession
+      - old video
+      - unrelated video
+      - "फर्जी दावा"
+      - "सांप्रदायिक"
+      - "पुराना वीडियो"
+      - "भ्रामक वीडियो"
+    # GDELT DOC 2.0: a LIST OF EXACT PHRASES, OR-joined by the client into
+    # ("a" OR "b"). Verified against the live API by the Phase 1 author: a
+    # hand-written boolean string is quoted as a single phrase and rejected
+    # with "phrase search that was too short or too long". Two-to-five word
+    # phrases work best.
+    gdelt_keywords:
+      - communal claim fact check
+      - old video viral claim
+      - unrelated video shared
+      - communal misinformation india
+    hashtags: [factcheck, fakenews, misinformation, communalharmony, oldvideo]
+    youtube_queries:
+      - communal claim fact check india
+      - old video viral false claim india
+      - "सांप्रदायिक अफवाह फैक्ट चेक"
+
+  - id: electoral_integrity
+    label: Electoral process, voter-roll and EVM claims
+    keywords:
+      - voter roll
+      - electoral roll
+      - voter list deletion
+      - EVM
+      - electronic voting machine
+      - booth capturing
+      - Election Commission
+      - vote fraud
+      - "वोट चोरी"
+      - "मतदाता सूची"
+      - "ईवीएम"
+      - "चुनाव आयोग"
+    gdelt_keywords:
+      - voter roll claim
+      - electoral roll fraud claim
+      - EVM tampering claim
+      - election commission fact check
+    hashtags: [evm, voterlist, electioncommission, votechori, electionfactcheck]
+    youtube_queries:
+      - EVM tampering claim fact check
+      - voter list deletion claim india
+      - "वोट चोरी दावा फैक्ट चेक"
+
+  - id: health_claims
+    label: Health, medicine and public-health claims
+    # Closest topic to the LIAR / CoAID / FakeNewsNet benchmarks the Phase 2
+    # classifiers are trained on, so expect the *smallest* domain-transfer gap
+    # here and the largest on communal_claims. That contrast is worth measuring
+    # explicitly rather than reporting one pooled number.
     keywords:
       - vaccine
       - vaccination
-      - mRNA
+      - cancer cure
+      - home remedy
+      - ayurvedic cure
       - immunity
-      - CDC
-      - WHO
       - outbreak
-      - measles
-      - "public health"
-    # GDELT DOC 2.0: a LIST OF EXACT PHRASES, OR-joined by the client into
-    # ("a" OR "b"). Verified against the live API: a hand-written boolean
-    # string is quoted as a single phrase and rejected with "phrase search
-    # that was too short or too long". Two-to-five word phrases work best.
+      - ICMR
+      - "टीका"
+      - "घरेलू नुस्खा"
+      - "कैंसर का इलाज"
+      - "स्वास्थ्य दावा"
     gdelt_keywords:
-      - vaccine misinformation
-      - vaccine claim
-      - vaccine debunked
-      - mRNA vaccine claim
-    hashtags: [vaccine, vaccines, publichealth, mrna, cdc]
+      - vaccine claim fact check
+      - health misinformation india
+      - cancer cure claim
+      - home remedy false claim
+    hashtags: [healthmisinformation, vaccine, factcheck, publichealth]
     youtube_queries:
-      - vaccine misinformation debunked
-      - mRNA vaccine claims
+      - health misinformation fact check india
+      - cancer cure claim debunked
+      - "स्वास्थ्य से जुड़ा फर्जी दावा"
 
-  - id: election_integrity
-    label: Election integrity and voting-process claims
+  - id: scams_synthetic
+    label: Financial scams, fake schemes and AI-generated media
+    # The only topic where the *artefact* is the claim: a cloned voice or a
+    # face-swapped endorsement is the misinformation, not a caption about it.
+    # Phase 2's media module is out of scope for this project, so records here
+    # carry the claim text only and the synthetic-media judgement is absent
+    # rather than guessed.
     keywords:
-      - election
-      - ballot
-      - voter fraud
-      - mail-in
-      - recount
-      - "voting machine"
+      - deepfake
+      - AI generated video
+      - voice clone
+      - fake investment
+      - trading scam
+      - government scheme
+      - free money scheme
+      - "डीपफेक"
+      - "फर्जी योजना"
+      - "निवेश घोटाला"
+      - "एआई वीडियो"
     gdelt_keywords:
-      - election fraud claim
-      - voter fraud claim
-      - ballot fraud
-      - election misinformation
-    hashtags: [election, voterfraud, ballots, electionintegrity]
+      - deepfake video claim
+      - ai generated video india
+      - fake investment scheme claim
+      - government scheme false claim
+    hashtags: [deepfake, aigenerated, scamalert, fakescheme, factcheck]
     youtube_queries:
-      - election fraud claims fact check
-      - voting machine claims
+      - deepfake endorsement scam india
+      - fake government scheme claim fact check
+      - "डीपफेक वीडियो फैक्ट चेक"
 
-  - id: climate
-    label: Climate science claims
-    keywords:
-      - climate change
-      - global warming
-      - IPCC
-      - "net zero"
-      - emissions
-    gdelt_keywords:
-      - climate change hoax
-      - climate misinformation
-      - global warming hoax
-    hashtags: [climate, climatechange, globalwarming]
-    youtube_queries:
-      - climate change claims fact check
-
-# Languages to keep at the query level where a source supports filtering.
-# Records in other languages are still ingested when they arrive; this only
-# scopes what we go looking for. Bias implications are documented in the EDA.
+# Languages this case goes looking for.
+#
+# DECLARATIVE ONLY. Nothing reads this key -- it records intent so the EDA
+# notebook and the model cards can state the scope in one place. The actual
+# enforcement points are three, and they are deliberately separate because they
+# gate different things:
+#
+#   configs/sources.yaml  gdelt.doc_api.languages   -> which GDELT articles are fetched
+#   configs/sources.yaml  youtube.discovery.*       -> regionCode / relevanceLanguage
+#   modeling/config.py    Settings.languages        -> which records get SCORED
+#
+# The third is still `("en",)`. Ingesting Hindi and scoring Hindi are separate
+# decisions, and widening the scorer needs a multilingual checkpoint, not a
+# config edit. Until that lands, Hindi records are collected and stored but
+# skipped by the scoring pass with a reason code. That gap is intentional and
+# is stated in the README rather than hidden behind a config default.
 languages:
   - english
+  - hindi
 
 # Rolling window for time-scoped sources (GDELT, NewsAPI). Days.
 lookback_days: 7
