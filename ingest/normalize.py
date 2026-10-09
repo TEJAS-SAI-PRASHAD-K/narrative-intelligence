@@ -12,6 +12,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Iterable, Sequence
+from functools import lru_cache
 from html import unescape
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -412,6 +413,194 @@ def _dedupe_lower(values: Iterable[str]) -> list[str]:
     return out
 
 
+# --- script ---------------------------------------------------------------
+
+#: Unicode block -> script name, for the scripts this corpus can contain.
+#: Explicit ranges rather than ``unicodedata.name()`` per character: the name
+#: lookup is ~40x slower and this runs on every record, including 15k-character
+#: articles.
+_SCRIPT_RANGES: tuple[tuple[int, int, str], ...] = (
+    (0x0041, 0x005A, "Latin"),
+    (0x0061, 0x007A, "Latin"),
+    (0x00C0, 0x024F, "Latin"),
+    (0x0370, 0x03FF, "Greek"),
+    (0x0400, 0x04FF, "Cyrillic"),
+    (0x0590, 0x05FF, "Hebrew"),
+    # Urdu, Kashmiri and Sindhi are written in Perso-Arabic.
+    (0x0600, 0x06FF, "Arabic"),
+    (0x0750, 0x077F, "Arabic"),
+    # The languages of India, in Unicode block order.
+    (0x0900, 0x097F, "Devanagari"),
+    (0x0980, 0x09FF, "Bengali"),
+    (0x0A00, 0x0A7F, "Gurmukhi"),
+    (0x0A80, 0x0AFF, "Gujarati"),
+    (0x0B00, 0x0B7F, "Oriya"),
+    (0x0B80, 0x0BFF, "Tamil"),
+    (0x0C00, 0x0C7F, "Telugu"),
+    (0x0C80, 0x0CFF, "Kannada"),
+    (0x0D00, 0x0D7F, "Malayalam"),
+    (0x0D80, 0x0DFF, "Sinhala"),
+    (0x4E00, 0x9FFF, "Han"),
+)
+
+#: Scripts used by exactly one major Indian language, so the script alone
+#: identifies it. Devanagari is absent on purpose -- it carries Hindi, Marathi,
+#: Nepali, Sanskrit, Bhojpuri and Konkani, so script is not a language there
+#: and pretending otherwise would mislabel every Marathi record as Hindi.
+SCRIPT_TO_LANG: dict[str, str] = {
+    "Tamil": "ta",
+    "Telugu": "te",
+    "Kannada": "kn",
+    "Malayalam": "ml",
+    "Gujarati": "gu",
+    "Gurmukhi": "pa",
+    "Oriya": "or",
+    "Sinhala": "si",
+}
+
+
+@lru_cache(maxsize=4096)
+def _script_of(char: str) -> str | None:
+    code = ord(char)
+    for start, end, name in _SCRIPT_RANGES:
+        if start <= code <= end:
+            return name
+    return None
+
+
+def script_profile(text: str | None) -> dict[str, float]:
+    """Share of alphabetic characters belonging to each writing system.
+
+    Shares sum to 1.0 over the characters that could be attributed; characters
+    in no listed block are excluded from the denominator rather than lumped
+    into a bucket, so a share is always "of the text we can read".
+
+    Empty input gives ``{}``, not ``{"Latin": 0.0}`` -- no evidence is not the
+    same as evidence of nothing.
+    """
+    counts: dict[str, int] = {}
+    total = 0
+    for char in text or "":
+        if not char.isalpha():
+            continue
+        script = _script_of(char)
+        if script is None:
+            continue
+        counts[script] = counts.get(script, 0) + 1
+        total += 1
+    if not total:
+        return {}
+    return {name: count / total for name, count in counts.items()}
+
+
+def dominant_script(text: str | None, min_share: float = 0.5) -> str | None:
+    """The one script carrying more than ``min_share`` of the letters, if any."""
+    profile = script_profile(text)
+    if not profile:
+        return None
+    name, share = max(profile.items(), key=lambda kv: kv[1])
+    return name if share >= min_share else None
+
+
+def is_code_mixed(text: str | None, min_share: float = 0.10) -> bool:
+    """True when two or more writing systems each carry ``min_share`` of the text.
+
+    This is *script* mixing, which is only one of the two kinds of code-mixing
+    Indian social media produces. It catches "यह video बिलकुल fake है"; it
+    cannot catch fully romanized "yeh video bilkul fake hai", which has one
+    script and two languages. Use :func:`looks_romanized_hindi` for that.
+    """
+    profile = script_profile(text)
+    return sum(1 for share in profile.values() if share >= min_share) >= 2
+
+
+# --- romanized Hindi ------------------------------------------------------
+
+#: High-frequency Hindi/Urdu function and discourse words as typed in Latin
+#: script, restricted to tokens that are NOT also English words.
+#:
+#: The exclusions matter more than the inclusions. "to", "is", "par", "ye",
+#: "log", "the", "hum", "main", "ab", "do" and "me" are all frequent romanized
+#: Hindi *and* ordinary English, and every one of them is deliberately absent:
+#: including any of them trades a false "this English comment is Hindi" for a
+#: marginal recall gain, and a wrong language label is worse than a missing one
+#: because the Phase 2 scorer acts on it.
+#:
+#: Hindi and Urdu share this vocabulary almost entirely in speech, so this
+#: detects the pair, not Hindi alone. It detects no other Indian language:
+#: romanized Tamil, Telugu and Malayalam score zero against it, by construction
+#: rather than by accident. Extending it is a per-language lexicon each time.
+ROMANIZED_HINDI_MARKERS = frozenset(
+    """
+    hai hain hun hoon nahi nahin nhi kya kyun kyon kaise kaisa kaisi jo woh yeh
+    bhi aur ko ka ki se mein mera meri mere mujhe mujhse tumhe tumhara aap aapka
+    aapko aapne apna apne unka unke uska iska inka kuch sab sabko sabke bahut
+    bohot bilkul sirf abhi pehle baad liye karo karna kiya karta karte karti
+    kijiye raha rahi rahe tha thi gaya gayi gaye diya dena lena hona hoga hogi
+    chahiye lekin agar phir matlab acha accha achha theek thik sach jhooth jhoot
+    khabar batao bataya bataye dekha dekho dekhiye suno bhejo bhejein bhej
+    jaldi dhyan jankari galat sahi logo logon yahan wahan kahan kaun kab
+    kitna kitne jarur zaroor zarur waise aisa aise jaisa jaise unhe inhe hamara
+    hamare humara tumne usne isne kisne koi kisi wala wali wale banaya banana
+    dijiye milega milta sakta sakte sakti chahta chahte raho rakho samajh samjho
+    bola bole boli kehte kehta kaha kahte nikla nikli nikle lagta lagti lage
+    """.split()
+)
+
+_LATIN_TOKEN_RE = re.compile(r"[a-z]+")
+
+#: Two markers minimum, not one. Measured: six adversarial English sentences
+#: ("jo biden said that", "the ki is a japanese concept", "se habla espanol
+#: here") each land exactly one marker, and the second-marker requirement is
+#: the only thing that rejects them. See the thresholds note in
+#: :func:`looks_romanized_hindi`.
+_ROMANIZED_MIN_MARKERS = 2
+_ROMANIZED_MIN_SHARE = 0.06
+
+
+def romanized_hindi_markers(text: str | None) -> tuple[int, float]:
+    """``(marker count, marker share of Latin tokens)``. Pure; no model."""
+    tokens = _LATIN_TOKEN_RE.findall((text or "").lower())
+    if not tokens:
+        return 0, 0.0
+    hits = sum(1 for token in tokens if token in ROMANIZED_HINDI_MARKERS)
+    return hits, hits / len(tokens)
+
+
+def looks_romanized_hindi(
+    text: str | None,
+    min_markers: int = _ROMANIZED_MIN_MARKERS,
+    min_share: float = _ROMANIZED_MIN_SHARE,
+) -> bool:
+    """Whether Latin-script text is Hindi/Urdu typed in Latin letters.
+
+    Deliberately a lexicon and not a classifier. langdetect has no romanized
+    Hindi class at all, so it cannot abstain on this input -- it picks the
+    nearest of its 55 trained languages and commits. Measured on 10 hand-written
+    romanized Hindi sentences it returned Swahili five times, Estonian twice,
+    Somali twice and Turkish once: **0/10**, and never once English, which is
+    the detail that matters. A confident `sw` is not a near miss; it sends the
+    record down the "non-English, do not score" path and out of the analysis
+    entirely, silently.
+
+    Thresholds were swept against the ingested corpus (454 real English news
+    records) and two hand-written probe sets. Every setting from
+    ``(1, 0.06)`` upward gave zero false positives on the real English; the
+    binding case was short informal English, where ``min_markers=1`` admits
+    the adversarial examples above. ``(2, 0.06)`` is the loosest setting that
+    rejects all of them.
+
+    **Recall is not measured.** The positive set is hand-written, and written
+    by the same person who chose the lexicon, so its 20/20 is circular and is
+    an upper bound rather than a result. The false-positive rate is the only
+    number here measured against data nobody curated for it. Closing this
+    properly needs hand-labelled romanized records out of the real corpus,
+    which is a Phase 2 labelling task, not a config change.
+    """
+    hits, share = romanized_hindi_markers(text)
+    return hits >= min_markers and share >= min_share
+
+
 # --- language -------------------------------------------------------------
 
 _MIN_LANG_CHARS = 20
@@ -423,12 +612,36 @@ def detect_lang(text: str | None, min_chars: int = _MIN_LANG_CHARS) -> str | Non
     Under ~20 characters langdetect is close to a coin flip, so we return
     ``None`` rather than a guess: an honest null is cheaper to handle downstream
     than a confident wrong label.
+
+    Two script-aware corrections sit on top of langdetect, in this order:
+
+    1. **Romanized Hindi/Urdu.** Checked *before* langdetect runs, because
+       langdetect cannot abstain on input it has no class for and answers with
+       a confident wrong language instead. See :func:`looks_romanized_hindi`.
+    2. **Short text in a single-language script.** langdetect abstains below
+       ``min_chars``, but Tamil, Telugu, Gujarati and the other scripts in
+       :data:`SCRIPT_TO_LANG` are used by exactly one major language, so the
+       script settles it with no statistics at all. Devanagari is excluded --
+       it carries Hindi, Marathi and Nepali, and guessing Hindi there would
+       mislabel every short Marathi record.
+
+    On the 548-record corpus ingested on 2026-10-09 neither correction fires:
+    news articles are long, and langdetect already got all 90 Devanagari
+    records right. Both exist for the short, romanized, social-media text that
+    the YouTube, Reddit and Mastodon adapters produce.
     """
     if not text:
         return None
     stripped = text.strip()
+
+    # Latin-script Hindi, before langdetect gets a chance to call it Swahili.
+    if looks_romanized_hindi(stripped):
+        return "hi"
+
     if len(stripped) < min_chars:
-        return None
+        # Too short for statistics, but maybe not too short for the alphabet.
+        script = dominant_script(stripped)
+        return SCRIPT_TO_LANG.get(script) if script else None
     try:
         from langdetect import DetectorFactory, detect
 
