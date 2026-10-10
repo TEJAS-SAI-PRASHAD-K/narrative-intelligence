@@ -2,8 +2,17 @@
 #
 # Indian fact-checkers are the only source of *labelled* misinformation this
 # project can reach, which is the whole reason the case is India. This file is
-# where their verdicts become training labels, and every judgement involved is
-# here rather than in code.
+# where their verdicts become labels, and every judgement involved is here
+# rather than in code.
+#
+# THESE LABELS ARE FOR EVALUATION, NOT TRAINING. Published fact-checks are
+# single-class: a measured 96 `false` and 0 `true` on the first full run,
+# because debunking a viral falsehood is news and confirming a true claim is
+# not. Nothing can be trained on one class, so this artifact measures recall on
+# claims that were actually debunked in India, and training data stays with the
+# benchmarks. See the README section "Fact-check supervision" -- including why a
+# recall figure from this set is meaningless unless reported against the model's
+# flag rate on the whole corpus.
 
 # ---------------------------------------------------------------------------
 # Publishers

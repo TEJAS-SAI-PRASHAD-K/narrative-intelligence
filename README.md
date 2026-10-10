@@ -443,23 +443,46 @@ Measured on the 548-record corpus, 111 eligible records from four publishers:
 > be trained on one class. The ratings actually observed were `false` ×96,
 > `misleading` ×6, `missing context` ×1, `half true` ×1, and **no `true` at any point**.
 >
-> Negatives have to come from somewhere else, and choosing where is a research
-> decision with real consequences, not an implementation detail:
+> ### The decision: evaluation only
 >
-> - **Presumed-true mainstream articles.** Cheap and in-domain, but the label is an
->   assumption, and it is an assumption that correlates with publisher — which is the
->   leakage the News section already warns about.
-> - **Positive-unlabelled (PU) learning.** Honest about what the data is, and a
->   genuinely defensible methodological choice for a capstone. Costs you the
->   straightforward macro-F1 comparison against the LIAR-trained baseline.
-> - **LIAR / CoAID for the `true` class.** Gives real negatives, at the price of mixing
->   a US political-statement domain into an Indian recontextualised-media one. The
->   transfer gap this project already documents would apply *within* the training set.
-> - **Use it as an evaluation set only** — recall on known-false Indian claims — and
->   train elsewhere. The most conservative reading, and the one that cannot be wrong.
+> **This artifact is never trained on.** It is an evaluation set measuring recall on
+> claims Indian fact-checkers have actually debunked. Training data comes from the
+> benchmarks (LIAR, CoAID, FNC-1) as it already does; this measures the thing those
+> benchmarks cannot — whether a model trained on US political statements catches Indian
+> recontextualised media.
 >
-> Nothing in this repository picks one. The CLI prints a warning on every run where
-> only one class is present.
+> Three alternatives were considered and rejected. Presumed-true mainstream articles
+> give negatives whose label is an assumption correlated with publisher, which is the
+> leakage the News section already warns about. Positive-unlabelled learning is honest
+> but costs the macro-F1 comparison against the existing baseline. Borrowing LIAR's
+> `true` class puts a US-vs-India domain gap *inside* the training set. Evaluation-only
+> gives up the least and cannot be wrong about what the data is.
+>
+> ### Recall on a positives-only set is meaningless on its own
+>
+> A model that labels everything `false` scores **recall 1.0** here. So a recall figure
+> from this set must never be reported alone. Report it against the model's flag rate
+> on the unlabelled corpus:
+>
+> ```
+> lift = recall on known-false claims / flag rate on the whole corpus
+> ```
+>
+> 90% recall at a 10% corpus-wide flag rate is a real result. 90% recall at an 85% flag
+> rate is a model that has learned to say "false". The two are indistinguishable from
+> the recall number by itself, which is exactly how positives-only evaluation gets
+> misreported.
+>
+> The CLI prints a warning on every single-class run, so the constraint is visible at
+> the point of use and not only here.
+
+**Eval-set size, audited:** 96 rows, 96 distinct claims, 96 distinct `record_id`s — zero
+exact duplicates and zero near-duplicates at the project's own `hamming <= 3` threshold.
+83 English, 12 Hindi, 1 mislabelled `id` by langdetect on a short claim. The
+deduplication check stays in the pipeline regardless: the same claim gets debunked by
+several publishers within days, so a longer collection window *will* produce
+cross-publisher duplicates, and counting one claim three times would inflate the
+apparent size of the only evaluation set this project has for its actual subject.
 
 Two more things the numbers say:
 
