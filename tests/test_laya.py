@@ -255,3 +255,78 @@ class TestGracefulAbsence:
         reason = scorer.available().reason
         assert "pip install" in reason
         assert "[laya]" in reason
+
+
+class TestTrainingExport:
+    """The JSONL the fine-tune consumes.
+
+    The whole point of this class is that laya's CSV shortcut builds a CHOICE
+    question from the distinct labels, while this project asks a NOUL at
+    inference. Training one head and querying another degrades silently.
+    """
+
+    def test_the_exported_question_is_the_one_the_scorer_asks(self, scorer):
+        """One definition, read by both sides. Drift is otherwise invisible."""
+        from modeling.text.laya_clf import LayaTrainingExporter
+
+        exporter = LayaTrainingExporter(scorer)
+        row = exporter.row("a claim", True)
+        assert row["questions"] == scorer.question()
+        assert row["questions"][scorer.question_id]["type"] == "noul"
+
+    def test_expected_is_a_boolean_and_true_means_misinformation(self, scorer):
+        """`expected` for a noul is a bool; True = yes to "is this false?".
+
+        Matches liar.py's `label = (binary == "false")`, so a 1 in the
+        benchmark and a True here mean the same class.
+        """
+        from modeling.text.laya_clf import LayaTrainingExporter
+
+        exporter = LayaTrainingExporter(scorer)
+        assert exporter.row("x", True)["expected"] == {"misinfo": True}
+        assert exporter.row("x", False)["expected"] == {"misinfo": False}
+        assert isinstance(exporter.row("x", 1)["expected"]["misinfo"], bool)
+
+    def test_export_writes_one_json_object_per_line(self, scorer, tmp_path):
+        import json
+
+        from modeling.text.laya_clf import LayaTrainingExporter
+
+        frame = _frame(
+            [
+                {"id": "a", "text": "a false claim", "label": 1},
+                {"id": "b", "text": "a true claim", "label": 0},
+            ]
+        )
+        path = tmp_path / "train.jsonl"
+        assert LayaTrainingExporter(scorer).export(frame, path) == 2
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert [r["expected"]["misinfo"] for r in rows] == [True, False]
+        assert all(r["state"] for r in rows)
+
+    def test_unlabelled_and_empty_rows_are_not_exported(self, scorer, tmp_path):
+        from modeling.text.laya_clf import LayaTrainingExporter
+
+        frame = _frame(
+            [
+                {"id": "a", "text": "a real claim", "label": 1},
+                {"id": "b", "text": "", "label": 1},
+                {"id": "c", "text": "unlabelled", "label": None},
+            ]
+        )
+        path = tmp_path / "train.jsonl"
+        assert LayaTrainingExporter(scorer).export(frame, path) == 1
+
+    def test_devanagari_survives_the_json_round_trip(self, scorer, tmp_path):
+        """ensure_ascii=False, so the file stays readable and the tokenizer
+        sees the same bytes the corpus holds."""
+        import json
+
+        from modeling.text.laya_clf import LayaTrainingExporter
+
+        claim = "यह दावा पूरी तरह से गलत है"
+        frame = _frame([{"id": "a", "text": claim, "label": 1}])
+        path = tmp_path / "train.jsonl"
+        LayaTrainingExporter(scorer).export(frame, path)
+        assert claim in path.read_text(encoding="utf-8")
+        assert json.loads(path.read_text(encoding="utf-8").strip())["state"] == claim

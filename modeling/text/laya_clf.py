@@ -249,6 +249,80 @@ class LayaScorer:
         return outcome
 
 
+class LayaTrainingExporter:
+    """Writes the fine-tuning JSONL, using the *same* question the scorer asks.
+
+    **Do not use laya's CSV path for this.** ``laya.train.read_data`` sends a
+    ``.csv`` to ``rows_from_csv``, which "discovers distinct labels in
+    `label_column` ... and builds a **choice** question with those labels" --
+    so a CSV of ``text,label`` with labels ``false``/``true`` trains a two-option
+    *choice* head. This project asks a ``noul`` at inference. Training one head
+    and querying another degrades quietly rather than erroring, and the
+    resulting numbers would look like a weak model instead of a wiring mistake.
+
+    So the JSONL path is used, and the question comes from
+    :meth:`LayaScorer.question` rather than being written out again here. One
+    definition, read by both sides, is the only way train/inference drift
+    cannot happen.
+
+    The row schema, from ``laya.train.items_from_rows``::
+
+        {"state": ..., "questions": {...}, "expected": {"<qid>": <bool>}}
+
+    ``expected`` for a ``noul`` is a **boolean**, and ``True`` means the answer
+    to the question is yes. The question asks whether the claim is false, so
+    ``True`` is the misinformation class -- matching ``misinfo``'s
+    ``label = (binary == "false")`` in modeling/datasets/liar.py.
+
+    Soft targets are available instead, via
+    ``{"gold": {"<qid>": {"probabilities": {"false": p, "true": q}}}}``, which
+    is the form to reach for if a label source ever carries confidence. The
+    benchmarks do not, so this writes hard booleans.
+    """
+
+    def __init__(self, scorer: LayaScorer | None = None):
+        self.scorer = scorer or LayaScorer()
+
+    def row(self, text: str, is_misinformation: bool) -> dict[str, Any]:
+        return {
+            "state": text,
+            "questions": self.scorer.question(),
+            "expected": {self.scorer.question_id: bool(is_misinformation)},
+        }
+
+    def export(self, frame: Any, path: Any, label_column: str = "label") -> int:
+        """Write one JSONL row per labelled record. Returns the row count.
+
+        ``label_column`` is read with the benchmark convention this project
+        already uses: truthy / ``1`` means misinformation. See liar.py.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        out = _Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with out.open("w", encoding="utf-8") as handle:
+            for record in frame.itertuples():
+                text = (getattr(record, "text", "") or "").strip()
+                if not text:
+                    continue
+                label = getattr(record, label_column, None)
+                # `label != label` is the NaN test. pandas stores a missing
+                # value in a numeric column as NaN, not None, so an `is None`
+                # check passes it through and `int(nan)` then raises. An
+                # unlabelled row must be skipped, never coerced -- guessing a
+                # class here would put fabricated labels in the training set.
+                if label is None or label != label:
+                    continue
+                handle.write(
+                    _json.dumps(self.row(text, bool(int(label))), ensure_ascii=False) + "\n"
+                )
+                written += 1
+        log.info("wrote %d laya training rows to %s", written, out)
+        return written
+
+
 def polarity_note() -> str:
     """The one sentence that must stay true, quoted in the model card.
 
