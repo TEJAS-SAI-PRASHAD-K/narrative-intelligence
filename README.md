@@ -418,6 +418,83 @@ them.
 
 ---
 
+## Fact-check supervision: read this before training anything on it
+
+`python -m ingest.cli factchecks` extracts published verdicts into
+`data/factchecks/` as a side artifact keyed on `record_id` — the same pattern GDELT's
+`mentions` uses, and for the mirror-image reason: a verdict is an annotation on a news
+article, not a post of its own.
+
+Measured on the 548-record corpus, 111 eligible records from four publishers:
+
+| publisher | tier | verdicts | claim language |
+|---|---|---|---|
+| BOOM | `claimreview` | 55 | en |
+| The Quint WebQoof | `claimreview` | 29 | en |
+| Vishvas News | `claimreview` | 8 | **hi** |
+| Fact Crescendo | `rss_tag` | 4 | **hi** |
+
+**96 verdicts. 96 of them `false`. Zero `true`.**
+
+> ### This is positive-class supervision, not a training set
+>
+> Fact-checkers debunk viral falsehoods. Confirming that a true claim is true is not
+> newsworthy, so a `true` verdict is vanishingly rare — and a binary classifier cannot
+> be trained on one class. The ratings actually observed were `false` ×96,
+> `misleading` ×6, `missing context` ×1, `half true` ×1, and **no `true` at any point**.
+>
+> Negatives have to come from somewhere else, and choosing where is a research
+> decision with real consequences, not an implementation detail:
+>
+> - **Presumed-true mainstream articles.** Cheap and in-domain, but the label is an
+>   assumption, and it is an assumption that correlates with publisher — which is the
+>   leakage the News section already warns about.
+> - **Positive-unlabelled (PU) learning.** Honest about what the data is, and a
+>   genuinely defensible methodological choice for a capstone. Costs you the
+>   straightforward macro-F1 comparison against the LIAR-trained baseline.
+> - **LIAR / CoAID for the `true` class.** Gives real negatives, at the price of mixing
+>   a US political-statement domain into an Indian recontextualised-media one. The
+>   transfer gap this project already documents would apply *within* the training set.
+> - **Use it as an evaluation set only** — recall on known-false Indian claims — and
+>   train elsewhere. The most conservative reading, and the one that cannot be wrong.
+>
+> Nothing in this repository picks one. The CLI prints a warning on every run where
+> only one class is present.
+
+Two more things the numbers say:
+
+- **The binary mapping costs ~8% of rated items.** `configs/factcheck.yaml` maps
+  `misleading` and `missing context` to `drop`, matching `misinfo`'s existing LIAR
+  mapping, which drops `half-true` rather than "manufacturing label noise the metrics
+  cannot see". Eight rows were dropped that way here. The config explains why those two
+  specifically, and the extractor prints per-rating counts so the decision is
+  reconsidered with numbers rather than from memory.
+- **An unknown rating is never silently dropped.** A publisher adding a vocabulary term
+  is exactly the change that would otherwise shrink the dataset with nobody noticing, so
+  unmapped ratings are counted separately from deliberate drops and printed in red.
+
+### Only four of eight publishers are machine-readable
+
+| publisher | ClaimReview JSON-LD | how the verdict is reachable |
+|---|---|---|
+| BOOM, The Quint, Vishvas News | ✅ | structured, tier 1 |
+| Fact Crescendo | ❌ | verdict is an RSS `<category>` term, tier 2 |
+| Newschecker | ❌ | visible `Claim` block in the DOM — **not implemented** |
+| Alt News, Factly | ❌ | headline predicate only — **not implemented** |
+| DigitEye | — | site unreachable when probed |
+
+Tiers 3 and 4 are deliberately absent. Parsing a DOM block needs a per-publisher CSS
+selector that breaks on a reskin, and inferring a verdict from a headline is inference
+rather than extraction — it deserves its own measured error rate, not a quiet seat next
+to structured data. Every row records which tier produced it, so Phase 2 can filter and
+the eval can report per tier.
+
+Also worth knowing: **the publisher's claim is not the headline**, and the extractor
+keeps the claim. A headline is written to be read; a claim is written to be checked.
+Training on headlines teaches a model one publisher's house style.
+
+---
+
 ## What retargeting to India taught us
 
 Three things that were not in the plan, found by running it.
