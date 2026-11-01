@@ -309,16 +309,36 @@ class NewsRssSource(BaseSource):
             )
 
     def _robots_allows(self, url: str) -> bool:
-        """Honour robots.txt per host, fetched once and cached for the run."""
+        """Honour robots.txt per host, fetched once and cached for the run.
+
+        robots.txt goes through the session rather than ``RobotFileParser.read()``.
+        ``read()`` uses urllib with no User-Agent and no timeout, so it fails on
+        hosts that reject urllib's default agent and hangs on slow ones, and
+        every one of those failures is indistinguishable from a real Disallow.
+        Measured on the fact-check feeds: 53 articles reported as disallowed
+        across four publishers whose robots.txt permits all of them.
+
+        An unreachable robots.txt still blocks the fetch, because unknown is not
+        permission, but it is counted separately so a flaky network cannot be
+        mistaken for a publisher's policy.
+        """
         parts = urlsplit(url)
         host = f"{parts.scheme}://{parts.netloc}"
         if host not in self._robots:
-            parser = RobotFileParser()
-            parser.set_url(f"{host}/robots.txt")
+            parser: RobotFileParser | None = None
             try:
-                parser.read()
-            except Exception:
-                parser = None  # unreachable robots.txt: treat as unknown, not as allow-all
+                response = self.http().get(f"{host}/robots.txt")
+                if response.status_code == 200:
+                    parser = RobotFileParser()
+                    parser.parse(response.text.splitlines())
+                elif 400 <= response.status_code < 500:
+                    # No robots.txt is "crawl permitted" per the standard, and
+                    # is not the same as one that could not be read.
+                    parser = RobotFileParser()
+                    parser.parse([])
+            except Exception as exc:
+                self.note("robots_unreachable", f"{host}: {type(exc).__name__}")
+                self.log.debug("robots.txt unreachable for %s: %s", host, exc)
             self._robots[host] = parser
         parser = self._robots[host]
         if parser is None:
