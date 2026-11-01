@@ -1,37 +1,51 @@
-# Narrative Intelligence Platform — Phases 1–2: Ingestion, Modeling & Scoring
+# Narrative Intelligence Platform
 
-A reproducible, schema-normalized, multi-platform corpus for research on coordinated
-misinformation narratives **in India**, in English and Hindi.
+A research pipeline for studying coordinated misinformation narratives **in India**, in
+English and Hindi. It collects public web content, normalizes every record onto one
+schema, scores it, and serves the result through an API and a dashboard.
 
 The case is defined entirely in `configs/topics.yaml` and `configs/sources.yaml`: four
-domains that Indian fact-checking organisations debunk daily — communal and religious
-claims, electoral-process and voter-roll claims, health claims, and financial scams and
-synthetic media. India is the subject rather than an example because the country has an
-unusually dense public fact-checking ecosystem publishing structured verdicts under open
-RSS in both languages, which is the only accessible source of *labelled* misinformation at
-the scale this project needs. Corpus and labels come from the same country and the same
-window.
+domains that Indian fact-checking organisations debunk daily, namely communal and
+religious claims, electoral-process and voter-roll claims, health claims, and financial
+scams and synthetic media. India is the subject rather than an example because the country
+has an unusually dense public fact-checking ecosystem publishing structured verdicts under
+open RSS in both languages, which is the only accessible source of *labelled*
+misinformation at the scale this project needs. Corpus and labels come from the same
+country and the same window.
 
-This replaced an earlier US health/election case. Nothing was wrong with it; it could not
-support the project's stated subject. Swapping the case back, or to a third country, is
-still a config edit and `make data`.
+Swapping the case, to a different country or a different domain, is a `configs/` edit and
+`make data`. Editing an adapter to add a source means the config is wrong.
 
-**Phase 1** is ingestion: a partitioned Parquet corpus in which every record — Reddit
-comment, Mastodon toot, news article, YouTube comment — obeys one schema, plus the tooling
-to rebuild it from scratch.
+### Where to start
 
-**Phase 2** is modeling and scoring: trained models, reproducible evaluation evidence, and
-a batch pipeline that turns the corpus into scored Parquet tables. No API, no dashboard,
-no fused risk score — those are Phases 4–6, and the fusion weighting is deliberately left
-to Phase 4 because it is a product decision rather than a model output.
+| | |
+|---|---|
+| [CLAUDE.md](CLAUDE.md) | how the repo is built, the invariants, the traps. Read before changing anything |
+| [docs/roadmap.md](docs/roadmap.md) | what is done, what does not work and why, what is left |
+| [docs/how-it-works.md](docs/how-it-works.md) | the pipeline end to end |
+| [docs/api.md](docs/api.md) | the HTTP contract |
+| [docs/data-model.md](docs/data-model.md) | the database schema |
+| [docs/scoring.md](docs/scoring.md) | how each score is produced and how to read it |
+| [docs/laya-finetune.md](docs/laya-finetune.md) | fine-tuning the multilingual scorer on a GPU |
 
-Two things are equally the Phase 2 deliverable: the models, and the evidence that they
-work. A model without a group-split evaluation, a baseline comparison and an error
-analysis is not done, and several modules here are honestly marked *not done* on exactly
-that basis.
+### The four layers
 
-`ingest/schema.py` is the only interface Phase 2 depends on, and Phase 2 never writes to
-`ingest/`.
+Ingestion (`ingest/`) builds a partitioned Parquet corpus in which every record, whether
+a Reddit comment, a Mastodon post, a news article or a YouTube comment, obeys one schema,
+plus the tooling to rebuild it from scratch.
+
+Modeling (`modeling/`) turns that corpus into scored Parquet tables, with the evaluation
+evidence that says whether each model works. A model without a group-split evaluation, a
+baseline comparison and an error analysis is not done, and several modules here are marked
+*not done* on exactly that basis.
+
+The backend (`app/`) serves both through a FastAPI service over Postgres with pgvector,
+with Celery workers for the long jobs and a fused risk score that returns its own
+explanation. The dashboard lives in a separate repository and is built against the
+committed `openapi.json`.
+
+`ingest/schema.py` is the only interface the modeling layer depends on, and the modeling
+layer never writes to `ingest/`.
 
 ---
 
@@ -42,8 +56,9 @@ make setup
 ```
 
 That creates `.venv`, installs everything, and copies `.env.example` to `.env`. **Every
-credential is optional** — sources you cannot authenticate are skipped with a warning,
-never a failure.
+credential is optional.** A source that cannot authenticate is skipped with a warning,
+never a failure. Python 3.11 to 3.13; not 3.14, which several dependencies have no wheels
+for.
 
 ```bash
 make data
@@ -56,10 +71,19 @@ make stats       # per-source summary table
 make validate    # re-validate the corpus on disk against the schema
 ```
 
-Single source, bounded:
+Extract the published fact-check verdicts, an enrichment pass over the news records that
+`make data` already fetched:
 
 ```bash
-python -m ingest.cli fetch mastodon --limit 500
+python -m ingest.cli factchecks --dry-run   # report what it would write
+python -m ingest.cli factchecks
+```
+
+Single source, bounded, which is what to use while developing an adapter. `news_rss`
+carries the Indian feeds and is the one to reach for first:
+
+```bash
+python -m ingest.cli fetch news_rss --limit 200
 ```
 
 What the pipeline can see, without printing any secret values:
