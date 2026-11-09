@@ -50,6 +50,24 @@ def test_failure_does_not_stop_later_steps(tmp_path):
     ]
 
 
+def test_a_hung_step_times_out_as_failed_and_later_steps_run(tmp_path):
+    marker = tmp_path / "ran"
+    steps = [
+        cd.Step("hang", py("import time; time.sleep(30)")),
+        cd.Step("after", py(f"open({str(marker)!r}, 'w').close()")),
+    ]
+    out = io.StringIO()
+    code = cd.collect(steps, tmp_path, out=out, timeout=0.5)
+    assert code == cd.EXIT_FAILED
+    assert "hang: FAILED" in out.getvalue() and "after: ok" in out.getvalue()
+    assert marker.exists()
+    assert "timed out" in next((tmp_path / "logs").glob("collect-daily-*.log")).read_text()
+
+
+def test_step_timeout_default_is_thirty_minutes():
+    assert cd.STEP_TIMEOUT_SECONDS == 1800
+
+
 def test_missing_command_is_a_failure(tmp_path):
     code, out = run([cd.Step("x", ("/nonexistent/binary",)), cd.Step("y", py("pass"))], tmp_path)
     assert code == cd.EXIT_FAILED

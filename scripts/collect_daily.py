@@ -29,6 +29,10 @@ EXIT_FAILED = 1
 EXIT_DEGRADED = 2
 EXIT_LOCKED = 75
 
+#: Seconds one step may run. A hung fetch would otherwise hold the lock and block
+#: every later day's run.
+STEP_TIMEOUT_SECONDS = 1800
+
 #: Output markers of a run that exited 0 but lost data. The fetch commands exit 0
 #: on a throttle and on a skipped source, so the exit code alone hides both.
 DEGRADED_MARKERS = re.compile(r"rate_limited|\bSKIP\b")
@@ -49,8 +53,13 @@ def default_steps(python: str = sys.executable) -> list[Step]:
     ]
 
 
-def run_step(step: Step, log, cwd: Path | None = None) -> str:
-    """Run one step, copy its output to the log, and return ok, FAILED or DEGRADED."""
+def run_step(
+    step: Step, log, cwd: Path | None = None, timeout: float = STEP_TIMEOUT_SECONDS
+) -> str:
+    """Run one step, copy its output to the log, and return ok, FAILED or DEGRADED.
+
+    A step that runs longer than ``timeout`` seconds is killed and is FAILED.
+    """
     log.write(f"=== {step.name}: {' '.join(step.command)}\n")
     log.flush()
     try:
@@ -61,7 +70,15 @@ def run_step(step: Step, log, cwd: Path | None = None) -> str:
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        log.write(partial)
+        log.write(f"=== {step.name}: timed out after {timeout:g} seconds\n")
+        return "FAILED"
     except OSError as exc:
         log.write(f"could not start: {exc}\n")
         return "FAILED"
@@ -74,7 +91,13 @@ def run_step(step: Step, log, cwd: Path | None = None) -> str:
     return "ok"
 
 
-def collect(steps: Sequence[Step], data_dir: Path, cwd: Path | None = None, out=None) -> int:
+def collect(
+    steps: Sequence[Step],
+    data_dir: Path,
+    cwd: Path | None = None,
+    out=None,
+    timeout: float = STEP_TIMEOUT_SECONDS,
+) -> int:
     out = out or sys.stdout
     data_dir.mkdir(parents=True, exist_ok=True)
     lock_path = data_dir / "collect-daily.lock"
@@ -93,7 +116,7 @@ def collect(steps: Sequence[Step], data_dir: Path, cwd: Path | None = None, out=
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"##### collect-daily start {stamp.isoformat()}\n")
             for step in steps:
-                status = run_step(step, log, cwd)
+                status = run_step(step, log, cwd, timeout)
                 statuses[step.name] = status
                 print(f"collect-daily: {step.name}: {status}", file=out)
                 out.flush()
