@@ -331,13 +331,17 @@ class NewsRssSource(BaseSource):
                 response = self.http().get(f"{host}/robots.txt")
                 if response.status_code == 200:
                     parser = RobotFileParser()
-                    parser.parse(response.text.splitlines())
+                    # utf-8-sig drops a leading byte-order mark, which would
+                    # otherwise glue itself to the first directive and hide it.
+                    body = response.content.decode("utf-8-sig", errors="replace")
+                    parser.parse(body.splitlines())
                 elif response.status_code in (404, 410):
                     # Only 404 and 410 say "no robots.txt here", which the
                     # standard reads as crawl permitted. Any other status
-                    # (401, 403, 429, other 4xx, 5xx, redirects) tells us
+                    # (401, 403, 429, other 4xx, 5xx) tells us
                     # nothing about the publisher's rules, so the host is
-                    # unreachable.
+                    # unreachable. Redirects never reach this point: the
+                    # session follows them.
                     parser = RobotFileParser()
                     parser.parse([])
                 else:

@@ -374,27 +374,28 @@ def news_payloads(fixtures_dir):
 
 
 class _RobotsResponse:
-    def __init__(self, status_code: int, text: str = ""):
+    def __init__(self, status_code: int, content: bytes = b""):
         self.status_code = status_code
-        self.text = text
+        self.content = content
 
 
 class _RobotsSession:
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, body: bytes = b""):
         self.status_code = status_code
+        self.body = body
         self.calls: list[str] = []
 
     def get(self, url, **kwargs):
         self.calls.append(url)
-        return _RobotsResponse(self.status_code)
+        return _RobotsResponse(self.status_code, self.body)
 
 
 class TestNewsRssRobots:
     URL_A = "https://news.example.com/a"
     URL_B = "https://news.example.com/b"
 
-    def _use(self, news, monkeypatch, status):
-        session = _RobotsSession(status)
+    def _use(self, news, monkeypatch, status, body=b""):
+        session = _RobotsSession(status, body)
         monkeypatch.setattr(news, "http", lambda: session)
         return session
 
@@ -409,6 +410,21 @@ class TestNewsRssRobots:
         self._use(news, monkeypatch, status)
         assert news._robots_allows(self.URL_A) is False
         assert news.flags["robots_unreachable"] == 1
+        assert "robots_disallowed" not in news.flags
+
+    @pytest.mark.parametrize(
+        "body", [b"User-agent: *\nDisallow: /", b"\xef\xbb\xbfUser-agent: *\nDisallow: /"]
+    )
+    def test_a_real_disallow_is_counted_as_one(self, news, monkeypatch, body):
+        """A 200 with a Disallow blocks the fetch and is counted, with or without a BOM."""
+        self._use(news, monkeypatch, 200, body)
+        assert news._robots_allows(self.URL_A) is False
+        assert news.flags["robots_disallowed"] == 1
+        assert "robots_unreachable" not in news.flags
+
+    def test_a_200_with_no_matching_rule_allows(self, news, monkeypatch):
+        self._use(news, monkeypatch, 200, b"User-agent: *\nDisallow: /private/\n")
+        assert news._robots_allows(self.URL_A) is True
         assert "robots_disallowed" not in news.flags
 
     def test_one_robots_request_per_host(self, news, monkeypatch):

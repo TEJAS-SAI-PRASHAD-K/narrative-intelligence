@@ -291,7 +291,19 @@ class TestRobotsHandling:
     def test_a_real_disallow_is_reported_as_one(self, extractor, monkeypatch):
         class Response:
             status_code = 200
-            text = "User-agent: *\nDisallow: /fact-check/\n"
+            content = b"User-agent: *\nDisallow: /fact-check/\n"
+
+        import requests
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: Response())
+        allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        assert allowed is False
+        assert reason == DropReason.ROBOTS_DISALLOWED
+
+    def test_a_byte_order_mark_does_not_hide_the_first_directive(self, extractor, monkeypatch):
+        class Response:
+            status_code = 200
+            content = b"\xef\xbb\xbfUser-agent: *\nDisallow: /"
 
         import requests
 
@@ -304,7 +316,7 @@ class TestRobotsHandling:
         """404 means no rules, which the standard reads as allow."""
         class Response:
             status_code = 404
-            text = ""
+            content = b""
 
         import requests
 
@@ -321,7 +333,7 @@ class TestRobotsHandling:
         status = {"code": 404}
 
         class Response:
-            text = ""
+            content = b""
 
             def __init__(self, code):
                 self.status_code = code
