@@ -634,3 +634,28 @@ def test_a_model_that_is_not_a_control_still_ships_on_the_same_numbers():
 def test_the_baseline_cannot_be_a_control():
     with pytest.raises(EvalInputError, match="control"):
         control_result(controls=["tfidf"])
+
+
+# ---------------------------------------------------------------------------
+# corpus_text rates are not like for like across model families
+# ---------------------------------------------------------------------------
+def test_every_corpus_text_flag_rate_and_lift_carries_the_notice_and_title_does_not():
+    from modeling.eval.factcheck_eval import CORPUS_TEXT_NOTICE, render_markdown
+
+    result = run(pair())
+    text = render_markdown(result)
+    title_part, text_part = text.split("## Recall, flag rate and lift: corpus full text")
+    text_part = text_part.split("## Hindi gate")[0]
+    title_part = title_part.split("## Recall, flag rate and lift: corpus titles")[1]
+
+    assert CORPUS_TEXT_NOTICE in text_part and CORPUS_TEXT_NOTICE not in title_part
+    assert "predict_long" in CORPUS_TEXT_NOTICE and "256 tokens" in CORPUS_TEXT_NOTICE
+    rows = [line for line in text_part.splitlines() if line.startswith("| ") and "---" not in line]
+    body = rows[1:]  # the first row is the header
+    assert len(body) == 2 * 3  # two models, languages en, hi and all
+    for row in body:
+        flag_cell, lift_cell = row.split(" | ")[5], row.split(" | ")[6]
+        assert flag_cell.endswith("(not like for like)"), row
+        assert lift_cell.endswith("(not like for like)"), row
+    assert "(not like for like)" not in title_part
+    assert result["evaluation_set"]["corpus_text_notice"] == CORPUS_TEXT_NOTICE

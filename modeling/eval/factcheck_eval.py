@@ -579,6 +579,15 @@ EVALUATION_SET_STATEMENT = (
     "detection of publicly debunked claims and is never reported without the flag rate on the "
     "unlabelled corpus."
 )
+#: Shown beside every corpus_text flag rate and lift. It states a difference in what
+#: the models read, and it changes no number.
+CORPUS_TEXT_NOTICE = (
+    "Full-text flag rates and lifts are not like for like across model families. Laya "
+    "scores long text with predict_long, which takes the maximum over windows of the whole "
+    "text. The roberta classifier truncates the text at 256 tokens. A model that reads more "
+    "of a long article has more chances to cross its threshold. Compare models on "
+    "corpus_title, the primary figure, and read corpus_text as a second value."
+)
 NOT_FROZEN_NOTICE = (
     "WARNING: evaluation set not frozen. No manifest exists, so the claim set is whatever "
     "factchecks.parquet holds today and can change between runs. Freeze it with "
@@ -1308,6 +1317,7 @@ def evaluate(
             "n_evaluation_claims": len(universe.eval_ids),
             "dedup_counts": universe.dedup_counts,
             "statement": EVALUATION_SET_STATEMENT,
+            "corpus_text_notice": CORPUS_TEXT_NOTICE,
         },
         "notices": notices,
         "models": model_out,
@@ -1457,6 +1467,10 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
             "Lift = recall on known-false claims / flag rate on the unlabelled corpus, at the "
             "same threshold. Fact-check publishers are excluded from the corpus.",
             "",
+        ]
+        if key == "text":
+            lines += [f"> **Not like for like.** {CORPUS_TEXT_NOTICE}", ""]
+        lines += [
             "| model | language | claims scored/rows | recall [95% CI] | corpus scored/rows | "
             "flag rate [95% CI] | lift [95% CI] | zero-flag resamples |",
             "|---|---|---|---|---|---|---|---|",
@@ -1467,13 +1481,14 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
                 claims, corpus = cell["claims"], cell[corpus_key]
                 lift = cell[f"lift_{key}"]
                 zero = lift.get("n_zero_flag_resamples")
+                mark = " (not like for like)" if key == "text" else ""
                 lines.append(
                     f"| {name} | {language} | "
                     f"{claims.get('n_scored', 0)}/{claims.get('n_rows', 0)} | "
                     f"{_escape(_cell_text(claims.get('recall')))} | "
                     f"{corpus.get('n_scored', 0)}/{corpus.get('n_rows', 0)} | "
-                    f"{_escape(_cell_text(corpus.get('flag_rate')))} | "
-                    f"{_escape(_cell_text(lift))} | "
+                    f"{_escape(_cell_text(corpus.get('flag_rate')))}{mark} | "
+                    f"{_escape(_cell_text(lift))}{mark} | "
                     f"{zero if zero is not None else 'n/a'} of {result['n_bootstrap']} |"
                 )
         lines.append("")
