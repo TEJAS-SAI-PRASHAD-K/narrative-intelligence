@@ -1035,6 +1035,9 @@ def build_parts(ctx: Context) -> dict[str, pd.DataFrame]:
 # score: frozen inputs and provenance
 # ---------------------------------------------------------------------------
 FROZEN_PARTS = ("claims", "corpus_title", "corpus_text")
+#: The backbone that the comparison requires of the ``misinfo`` checkpoint. The trainer
+#: falls back to ``distilbert-base-uncased`` when it cannot load ``roberta-base``.
+REQUIRED_MISINFO_BACKBONE = "roberta"
 #: Files whose bytes go into a checkpoint identity. All other files count by name and size.
 CHECKPOINT_CONFIG_FILES = ("config.json", "rl_agent_config.json")
 
@@ -1176,6 +1179,35 @@ def directory_identity(directory: Path) -> dict[str, Any] | None:
     }
 
 
+def misinfo_backbone(ctx: Context) -> str:
+    """The ``model_type`` in the ``misinfo`` checkpoint's ``config.json``. Refuses unless roberta.
+
+    ``MisinfoClassifier._load_base`` trains ``distilbert-base-uncased`` when it cannot load
+    ``roberta-base``, and nothing else records it. The checkpoint holds the answer, so this
+    reads the file and needs no new training.
+    """
+    path = ctx.misinfo_dir() / "config.json"
+    if not path.is_file():
+        raise StageError(
+            EXIT_FAILED,
+            f"misinfo: {path} does not exist, so the backbone cannot be checked. "
+            f"The comparison requires {REQUIRED_MISINFO_BACKBONE}.",
+        )
+    try:
+        model_type = read_json(path).get("model_type")
+    except ValueError as exc:
+        raise StageError(EXIT_FAILED, f"misinfo: {path} is not valid JSON ({exc})") from exc
+    if model_type != REQUIRED_MISINFO_BACKBONE:
+        raise StageError(
+            EXIT_FAILED,
+            f"misinfo: the checkpoint at {path.parent} has model_type {model_type!r}, and the "
+            f"comparison requires {REQUIRED_MISINFO_BACKBONE!r}. The trainer falls back to "
+            "distilbert-base-uncased when roberta-base does not load. Fix the download and "
+            "train again with --force. Nothing was scored.",
+        )
+    return str(model_type)
+
+
 def checkpoint_identity(ctx: Context, model: str) -> dict[str, Any] | None:
     """What a model's weights are: a directory and its hash, a pinned revision, or a file hash.
 
@@ -1199,7 +1231,10 @@ def checkpoint_identity(ctx: Context, model: str) -> dict[str, Any] | None:
             "revision": str(config["revision"]),
         }
     if model == "misinfo":
-        return directory_identity(ctx.misinfo_dir())
+        identity = directory_identity(ctx.misinfo_dir())
+        if identity is not None:
+            identity["backbone"] = misinfo_backbone(ctx)
+        return identity
     which = "en" if model == "laya_en" else "multilingual"
     return directory_identity(ctx.laya_checkpoint_dir(which))
 
@@ -1564,6 +1599,9 @@ def stage_score(ctx: Context) -> None:
             EXIT_FAILED, "[score] checkpoints are missing, so nothing was scored:\n  "
             + "\n  ".join(missing),
         )
+
+    if "misinfo" in todo:
+        misinfo_backbone(ctx)  # refuses a fallback backbone before the GPU is read
 
     def body() -> dict[str, Any]:
         parts = build_parts(ctx)

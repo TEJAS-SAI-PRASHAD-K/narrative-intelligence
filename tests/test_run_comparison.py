@@ -173,6 +173,7 @@ def add_checkpoints(out: Path) -> None:
     misinfo = out / "models" / "misinfo" / MISINFO_V
     misinfo.mkdir(parents=True)
     (misinfo / "calibrator.json").write_text("{}", encoding="utf-8")
+    (misinfo / "config.json").write_text('{"model_type": "roberta"}', encoding="utf-8")
     for prefix in ("en", "multi"):
         directory = out / "models" / "laya" / f"{prefix}-{LAYA_V}"
         directory.mkdir(parents=True)
@@ -1232,7 +1233,7 @@ def test_every_score_file_has_a_provenance_sidecar(scored):
         assert recorded["model_version"]
     misinfo = read_provenance(scored, "misinfo")["checkpoint"]
     assert misinfo["kind"] == "directory" and misinfo["name"] == MISINFO_V
-    assert len(misinfo["sha256"]) == 64
+    assert misinfo["backbone"] == "roberta" and len(misinfo["sha256"]) == 64
     assert read_provenance(scored, "laya_en")["checkpoint"]["name"] == f"en-{LAYA_V}"
     assert read_provenance(scored, "laya_multi")["checkpoint"]["name"] == f"multi-{LAYA_V}"
     base = read_provenance(scored, "laya_multi_base")["checkpoint"]
@@ -1377,6 +1378,40 @@ def test_the_zero_shot_control_is_listed_among_the_models_and_fails_the_gate(sco
 
 
 # ---------------------------------------------------------------------------
+# the misinfo backbone
+# ---------------------------------------------------------------------------
+def test_score_refuses_a_misinfo_checkpoint_that_fell_back_to_distilbert(
+    prepared, fake_laya, fake_misinfo, capsys
+):
+    add_checkpoints(prepared)
+    config = prepared / "models" / "misinfo" / MISINFO_V / "config.json"
+    config.write_text('{"model_type": "distilbert"}', encoding="utf-8")
+    deps, gpu, *_ = make_deps()
+    assert run(score_argv(prepared), deps) == rc.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "model_type 'distilbert'" in err and "roberta" in err and "--force" in err
+    assert gpu.calls == [] and not (prepared / "scores").exists()
+
+
+def test_score_refuses_a_misinfo_checkpoint_with_no_config_json(
+    prepared, fake_laya, fake_misinfo, capsys
+):
+    add_checkpoints(prepared)
+    (prepared / "models" / "misinfo" / MISINFO_V / "config.json").unlink()
+    deps, *_ = make_deps()
+    assert run(score_argv(prepared), deps) == rc.EXIT_FAILED
+    assert "backbone cannot be checked" in capsys.readouterr().err
+
+
+def test_evaluate_refuses_after_the_misinfo_backbone_changed(scored, capsys):
+    config = scored / "models" / "misinfo" / MISINFO_V / "config.json"
+    config.write_text('{"model_type": "distilbert"}', encoding="utf-8")
+    deps, *_ = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == rc.EXIT_FAILED
+    assert "model_type 'distilbert'" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------
 def test_evaluate_refuses_when_a_score_file_is_missing(scored, capsys):
@@ -1418,6 +1453,7 @@ def test_the_full_demo_flow_runs_end_to_end_with_fakes(
         directory = Path(settings.models_dir) / "misinfo" / MISINFO_V
         directory.mkdir(parents=True)
         (directory / "calibrator.json").write_text("{}", encoding="utf-8")
+        (directory / "config.json").write_text('{"model_type": "roberta"}', encoding="utf-8")
         return misinfo_result(split_of(out))
 
     monkeypatch.setattr("modeling.training.train_module", fake_train)
