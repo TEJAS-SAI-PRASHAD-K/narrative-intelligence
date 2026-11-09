@@ -101,7 +101,7 @@ one corrected:
 
 ## 3. Why the training data is the benchmarks and not the Indian verdicts
 
-`data/factchecks/` is **evaluation only**. Published fact-checks are
+`data/factchecks/factchecks.parquet` is **evaluation only**. Published fact-checks are
 single-class — a measured 96 `false` and 0 `true` — because debunking is news
 and confirming is not. Nothing can be trained on one class.
 
@@ -172,7 +172,7 @@ the scorer reads — so train/inference drift cannot happen.
 Check the first row before spending GPU hours on it:
 
 ```bash
-head -c 600 data/laya/train.jsonl | python3 -m json.tool 2>/dev/null | head -20
+head -n1 data/laya/train.jsonl | python3 -m json.tool
 ```
 
 `expected.misinfo` must be `true` for a false claim. If that is inverted,
@@ -278,8 +278,8 @@ print(a.predict('A video claims the PM resigned today.', {'misinfo': {'type':'no
 
 This is the deliverable, and it needs code that does not exist. Three pieces:
 
-**6a. Score the Indian eval set with all three models.** `data/factchecks/`
-holds 96 claims with `claim`, `claim_lang` and `label` (all `false`). Score
+**6a. Score the Indian eval set with all three models.**
+`data/factchecks/factchecks.parquet` holds 96 claims with `claim`, `claim_lang` and `label` (all `false`). Score
 `claim` with Laya (English checkpoint for `en`, multilingual for `hi`; report
 the base multilingual checkpoint on `hi` as well, see step 5), with the
 `misinfo` roberta fine-tune, and with TF-IDF + logistic regression from

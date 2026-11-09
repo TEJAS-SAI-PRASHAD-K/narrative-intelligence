@@ -26,7 +26,7 @@ the module being quietly described as present.
 | Laya scorer | code only | base checkpoints load, no fine-tune has run, no stage in modeling/scoring.py |
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation |
 | API | done | 69 paths, 80 operations, contract tested under `DEMO_MODE` |
-| database | done | 27 tables, 3 migrations, round-trip asserted in CI |
+| database | done | 27 tables, 4 migrations, round-trip asserted in CI |
 | dashboard | done | separate repo, built against the committed contract |
 | CI | done | lint, suite on 3.11 and 3.12, OpenAPI drift, Postgres suite |
 
@@ -120,7 +120,7 @@ the next.
 
 ### How to report the fact-check evaluation
 
-`data/factchecks/` is an **evaluation set, never a training set**. Published
+`data/factchecks/factchecks.parquet` is an **evaluation set, never a training set**. Published
 fact-checks are single-class: the measured split is 96 false and 0 true, because
 debunking a viral falsehood is news and confirming a true claim is not. Nothing
 can be trained on one class.
