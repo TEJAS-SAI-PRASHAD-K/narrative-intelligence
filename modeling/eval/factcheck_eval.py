@@ -271,3 +271,256 @@ def check_shared_test_split(models: dict[str, ModelScores]) -> None:
                 f"models {reference_name!r} and {name!r} give different labels "
                 "for the same test ids"
             )
+
+
+# ---------------------------------------------------------------------------
+# The claim set, and freezing it
+# ---------------------------------------------------------------------------
+#: Reason codes for a claim id that is in a score file and is left out of recall.
+CLAIM_COLLAPSED_DUPLICATE = "collapsed_duplicate"
+CLAIM_NOT_KNOWN_FALSE = "label_not_false"
+CLAIM_NOT_IN_FROZEN_SET = "not_in_frozen_set"
+#: The id is in no fact-check row that the reader returned, kept or collapsed.
+CLAIM_UNKNOWN_ID = "unknown_claim_id"
+
+MANIFEST_COLUMNS = ("record_id", "url", "claim_sha256")
+
+
+def default_manifest_path() -> Path:
+    """``configs/factcheck_eval_manifest.csv``. Absent until someone freezes the set."""
+    from modeling.config import CONFIG_DIR
+
+    return CONFIG_DIR / "factcheck_eval_manifest.csv"
+
+
+def claim_hash(claim: str) -> str:
+    """SHA-256 of the claim text exactly as stored. The manifest keeps this, not the text."""
+    return hashlib.sha256(claim.encode("utf-8")).hexdigest()
+
+
+def _is_false(row: dict[str, Any]) -> bool:
+    return str(row.get("label") or "").strip().lower() == "false"
+
+
+def build_manifest(kept_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """The manifest rows for a deduplicated read: the known-false claims, by record id.
+
+    The frozen set is exactly what the harness scores recall on, so only rows
+    labelled ``false`` go in. Sorted by ``record_id`` so the file is stable.
+    """
+    rows: list[dict[str, str]] = []
+    for item in kept_rows:
+        if not _is_false(item):
+            continue
+        if not item.get("claim"):
+            raise EvalInputError(
+                f"fact-check row {item.get('record_id')!r} has no claim text; cannot hash it"
+            )
+        rows.append(
+            {
+                "record_id": str(item["record_id"]),
+                "url": str(item.get("url") or ""),
+                "claim_sha256": claim_hash(str(item["claim"])),
+            }
+        )
+    rows.sort(key=lambda r: r["record_id"])
+    return rows
+
+
+def write_manifest(rows: list[dict[str, str]], path: Path, *, overwrite: bool = False) -> Path:
+    """Write the manifest CSV. Refuses to replace a frozen set unless told to.
+
+    Replacing the file silently would make "frozen" mean nothing, so an existing
+    file is an error unless ``overwrite`` is set, which is a deliberate act.
+    """
+    import csv
+
+    path = Path(path)
+    if not rows:
+        raise EvalInputError("no known-false claims to freeze; the manifest would be empty")
+    if path.exists() and not overwrite:
+        raise EvalInputError(
+            f"{path} already exists. The evaluation set is frozen; pass overwrite to replace it "
+            "on purpose, and say why in the commit."
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(MANIFEST_COLUMNS), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def read_manifest(path: Path) -> list[dict[str, str]] | None:
+    """The manifest rows, or ``None`` when no manifest exists (the set is not frozen)."""
+    import csv
+
+    path = Path(path)
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != MANIFEST_COLUMNS:
+            raise ManifestMismatch(
+                f"{path}: header must be {list(MANIFEST_COLUMNS)}, is {reader.fieldnames}"
+            )
+        rows = [dict(r) for r in reader]
+    if not rows:
+        raise ManifestMismatch(f"{path} has no rows; delete it or rebuild it")
+    ids = [r["record_id"] for r in rows]
+    if len(set(ids)) != len(ids):
+        raise ManifestMismatch(f"{path}: a record_id appears more than once")
+    for r in rows:
+        digest = r["claim_sha256"] or ""
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ManifestMismatch(f"{path}: record {r['record_id']!r} has no valid SHA-256")
+    return rows
+
+
+def verify_manifest(
+    manifest: list[dict[str, str]],
+    kept_rows: list[dict[str, Any]],
+    collapsed: list[tuple[str, str, int]],
+) -> None:
+    """Stop unless every manifest row is present and unchanged in the current rows.
+
+    Checks, for each manifest row: the record exists as a kept row (a row that is
+    now a collapsed duplicate counts as missing, because the set it was frozen in
+    has changed), the URL is the same, and the claim hash is the same. Raises
+    ``ManifestMismatch`` listing every problem category with examples.
+    """
+    kept = {str(r["record_id"]): r for r in kept_rows}
+    collapsed_into = {record_id: rep for record_id, rep, _ in collapsed}
+    missing: list[str] = []
+    now_duplicate: list[str] = []
+    hash_changed: list[str] = []
+    url_changed: list[str] = []
+    for entry in manifest:
+        record_id = entry["record_id"]
+        row = kept.get(record_id)
+        if row is None:
+            if record_id in collapsed_into:
+                rep = collapsed_into[record_id]
+                now_duplicate.append(f"{record_id} (now a duplicate of {rep})")
+            else:
+                missing.append(record_id)
+            continue
+        if claim_hash(str(row.get("claim") or "")) != entry["claim_sha256"]:
+            hash_changed.append(record_id)
+        if str(row.get("url") or "") != entry["url"]:
+            url_changed.append(record_id)
+
+    problems: list[str] = []
+    for label, items in (
+        ("missing from the fact-check rows", missing),
+        ("no longer kept after claim deduplication", now_duplicate),
+        ("claim hash differs", hash_changed),
+        ("URL differs", url_changed),
+    ):
+        if items:
+            more = f", and {len(items) - 5} more" if len(items) > 5 else ""
+            shown = ", ".join(items[:5]) + more
+            problems.append(f"{len(items)} row(s) {label}: {shown}")
+    if problems:
+        raise ManifestMismatch(
+            "The frozen evaluation set does not match the fact-check data on disk. "
+            + "; ".join(problems)
+            + ". Do not report numbers from a changed set. Restore the data, or rebuild the "
+            "manifest on purpose and record why."
+        )
+
+
+@dataclass
+class ClaimUniverse:
+    """Which claim ids count towards recall, and why the others do not."""
+
+    #: Known-false claim ids that recall is computed on.
+    eval_ids: frozenset[str]
+    #: Ids left out on purpose, mapped to their reason code.
+    excluded: dict[str, str]
+    frozen: bool
+    manifest_path: Path | None = None
+    manifest_rows: int = 0
+    #: Counts from the deduplicating reader, for the report.
+    dedup_counts: dict[str, int] = field(default_factory=dict)
+
+    def reason_for_exclusion(self, claim_id: str) -> str | None:
+        """The reason code if ``claim_id`` is not an evaluation claim, else ``None``."""
+        if claim_id in self.eval_ids:
+            return None
+        return self.excluded.get(claim_id, CLAIM_UNKNOWN_ID)
+
+
+def build_claim_universe(
+    kept_rows: list[dict[str, Any]],
+    collapsed: list[tuple[str, str, int]],
+    *,
+    manifest: list[dict[str, str]] | None = None,
+    manifest_path: Path | None = None,
+    dedup_counts: dict[str, int] | None = None,
+) -> ClaimUniverse:
+    """Decide which ids are evaluation claims.
+
+    Without a manifest the set is the deduplicated rows labelled ``false``. With
+    one, the manifest is verified first (a mismatch raises) and the set is
+    exactly the manifest ids: a row added to the data after freezing is not part
+    of the frozen set and is counted as ``not_in_frozen_set``.
+    """
+    if manifest is not None:
+        verify_manifest(manifest, kept_rows, collapsed)
+    frozen_ids = {entry["record_id"] for entry in manifest} if manifest is not None else None
+
+    eval_ids: set[str] = set()
+    excluded: dict[str, str] = {}
+    for record_id, _, _ in collapsed:
+        excluded[record_id] = CLAIM_COLLAPSED_DUPLICATE
+    for item in kept_rows:
+        record_id = str(item["record_id"])
+        if not _is_false(item):
+            excluded[record_id] = CLAIM_NOT_KNOWN_FALSE
+        elif frozen_ids is not None and record_id not in frozen_ids:
+            excluded[record_id] = CLAIM_NOT_IN_FROZEN_SET
+        else:
+            eval_ids.add(record_id)
+    return ClaimUniverse(
+        eval_ids=frozenset(eval_ids),
+        excluded=excluded,
+        frozen=manifest is not None,
+        manifest_path=manifest_path,
+        manifest_rows=len(manifest) if manifest is not None else 0,
+        dedup_counts=dict(dedup_counts or {}),
+    )
+
+
+def load_claim_universe(data_dir: Path, manifest_path: Path | None = None) -> ClaimUniverse:
+    """Read ``factchecks.parquet`` through the deduplicating reader and build the set.
+
+    ``ingest`` is imported here and nowhere else in this module. Uses the manifest
+    at ``manifest_path`` (default ``configs/factcheck_eval_manifest.csv``) when it
+    exists, and raises ``ManifestMismatch`` if the data disagrees with it.
+    """
+    from ingest.config import Settings
+    from ingest.factcheck import read_deduplicated_factchecks
+
+    result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
+    path = Path(manifest_path) if manifest_path else default_manifest_path()
+    return build_claim_universe(
+        result.kept,
+        result.collapsed,
+        manifest=read_manifest(path),
+        manifest_path=path,
+        dedup_counts=result.counts,
+    )
+
+
+def freeze_manifest_from_data(
+    data_dir: Path, path: Path | None = None, *, overwrite: bool = False
+) -> tuple[Path, int]:
+    """Write the manifest for the deduplicated known-false claims on disk."""
+    from ingest.config import Settings
+    from ingest.factcheck import read_deduplicated_factchecks
+
+    result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
+    rows = build_manifest(result.kept)
+    target = write_manifest(rows, path or default_manifest_path(), overwrite=overwrite)
+    return target, len(rows)
