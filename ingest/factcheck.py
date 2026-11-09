@@ -331,12 +331,13 @@ class FactCheckExtractor:
     # --- tier 1: ClaimReview --------------------------------------------
     def from_html(self, record: dict, html: str) -> FactCheck | None:
         url = record.get("url") or ""
-        reviews = find_claim_reviews(
-            html, on_too_deep=lambda: self.drop(DropReason.JSONLD_TOO_DEEP, url)
-        )
+        too_deep: list[int] = []
+        reviews = find_claim_reviews(html, on_too_deep=lambda: too_deep.append(1))
         if not reviews:
-            self.drop(DropReason.NO_CLAIMREVIEW, url)
+            self.drop(DropReason.JSONLD_TOO_DEEP if too_deep else DropReason.NO_CLAIMREVIEW, url)
             return None
+        if too_deep:
+            log.warning("skipped %d JSON-LD blocks nested too deep on %s", len(too_deep), url)
         for review in reviews:
             claim, rating = claim_and_rating(review)
             if not rating:

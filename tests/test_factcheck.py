@@ -394,8 +394,30 @@ class TestPoisonedPage:
         verdicts = list(extractor.run(records))
         assert [v.record_id for v in verdicts] == ["news:good"]
         assert extractor.dropped[DropReason.JSONLD_TOO_DEEP.value] == 1
+        assert DropReason.NO_CLAIMREVIEW.value not in extractor.dropped
         # A rerun over the same cached page behaves the same, not worse.
         assert list(extractor.run(records[:1])) == []
+
+    def test_a_page_with_only_too_deep_blocks_is_counted_once(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        deep = '<script type="application/ld+json">' + "[" * 100_000 + "</script>"
+        self._cache(extractor, self.URL_BAD, deep + deep)
+        records = [{"id": "news:bad", "url": self.URL_BAD, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.JSONLD_TOO_DEEP.value: 1}
+
+    def test_a_too_deep_block_beside_a_claimreview_yields_a_verdict_and_a_warning(
+        self, extractor, monkeypatch, caplog
+    ):
+        _no_network(monkeypatch)
+        deep = '<script type="application/ld+json">' + "[" * 100_000 + "</script>"
+        self._cache(extractor, self.URL_BAD, BOOM_HTML.replace("<head>", "<head>" + deep, 1))
+        records = [{"id": "news:bad", "url": self.URL_BAD, "source_detail": "boomlive.in"}]
+        with caplog.at_level(logging.WARNING, logger="ingest.factcheck"):
+            verdicts = list(extractor.run(records))
+        assert [v.record_id for v in verdicts] == ["news:bad"]
+        assert DropReason.JSONLD_TOO_DEEP.value not in extractor.dropped
+        assert any("nested too deep" in r.getMessage() for r in caplog.records)
 
     def test_walk_jsonld_survives_nesting_past_the_recursion_limit(self):
         from ingest.factcheck import walk_jsonld
