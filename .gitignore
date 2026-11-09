@@ -64,5 +64,8 @@ htmlcov/
 # Hand-label CSVs carry verbatim corpus text; see artifacts/hand_labels/README.md
 artifacts/hand_labels/*.csv
 
+# Fitted baseline models are build products, never committed
+/artifacts/baselines/
+
 # Local working notes, never committed
 NOTES.local.md
