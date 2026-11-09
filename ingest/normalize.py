@@ -37,11 +37,19 @@ _INVISIBLE = dict.fromkeys(
 )
 
 _URL_RE = re.compile(r"""(?i)\bhttps?://[^\s<>"'`\\]+""")
-_HASHTAG_RE = re.compile(r"(?<![\w&])#(\w{1,139})", re.UNICODE)
+#: Characters that make up a word. ``\w`` misses combining marks (Unicode Mn and
+#: Mc), so a plain ``\w+`` splits a Devanagari word at every vowel sign. The Indic
+#: block U+0900 to U+0DFF is added whole, minus the punctuation inside it: the
+#: danda and double danda (U+0964, U+0965) and the abbreviation sign (U+0970),
+#: which sit against the last word of a sentence and would otherwise stay in it.
+#: The zero width non-joiner and joiner (U+200C, U+200D) are also word characters,
+#: because inside a conjunct such as क्‍ष they are part of the word.
+WORD_CHARS = r"\w\u0900-\u0963\u0966-\u096f\u0971-\u0dff\u200c\u200d"
+_HASHTAG_RE = re.compile(rf"(?<![\w&])#([{WORD_CHARS}]{{1,139}})", re.UNICODE)
 _MENTION_RE = re.compile(r"(?<![\w])@([A-Za-z0-9_.\-]{1,64}(?:@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})?)")
 _WS_RUN = re.compile(r"[^\S\n]+")  # horizontal whitespace only
 _NEWLINE_RUN = re.compile(r"\n{3,}")
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
+_WORD_RE = re.compile(rf"[{WORD_CHARS}]+", re.UNICODE)
 _TRAILING_PUNCT = ".,;:!?)]}'\"»”’"
 
 #: Reddit/YouTube tombstones. Text that is one of these carries no information.

@@ -94,6 +94,35 @@ python -m ingest.cli show-config
 
 ---
 
+## Daily capture
+
+```bash
+make collect-daily
+```
+
+This target runs three steps in order: `news_rss`, the fact-check extraction, and one
+GDELT pass. The fact-check RSS feeds hold only 10 to 60 entries. A day that you do not
+capture is lost.
+
+- A failed step does not stop the next steps. The target prints one status line for each
+  step (`ok`, `FAILED` or `DEGRADED`).
+- The exit code is 1 if a step failed. It is 2 if a step exited 0 but reported a GDELT
+  throttle or a skipped source. It is 75 if another run holds the lock.
+- A lock file in `data/` prevents overlapping runs.
+- The output goes to `data/logs/collect-daily-YYYY-MM-DD.log`. `data/` is gitignored.
+- Two runs do not write the same `id` twice, also when a source reports a different
+  timestamp for an article. The store counts these as `duplicates_cross_partition`.
+
+Run the target once each day. The GDELT rate limit is a per-IP penalty window that a
+retry or a second run in the same day can extend. Add a user-level `crontab` line. Replace
+`/path/to/narrative-intelligence` with the path of your clone:
+
+```cron
+17 6 * * * cd /path/to/narrative-intelligence && make collect-daily
+```
+
+---
+
 ## The schema is the contract
 
 Everything converges on one record type (`ingest/schema.py`). A downstream consumer must
@@ -633,8 +662,11 @@ stay reviewable), then run it.
 - `simhash` is already computed — near-duplicate clustering is cheap.
 - Author roll-ups are in `data/authors/source=<source>/authors.parquet`, with account age,
   follower counts and the `bot` flag where the platform provides them.
-- Benchmarks for training: `make benchmarks` fetches LIAR, CoAID and FakeNewsNet into
-  `data/benchmarks/` with checksums. Note that FakeNewsNet ships ids and a crawler rather
+- Benchmarks for training: `make benchmarks` fetches LIAR, CoAID, FakeNewsNet and FNC-1 into
+  `data/benchmarks/`. Each download is pinned: git clones are checked out at an exact commit,
+  and every download is compared with a pinned checksum. A mismatch stops the script with a
+  non-zero exit and keeps the data out of the manifest. FNC-1 goes to `data/benchmarks/stance/`
+  for the stance task and is not part of the misinformation training set. Note that FakeNewsNet ships ids and a crawler rather
   than article text, and CoAID's tweet content cannot be recollected in this project.
 - **Coordination work is only valid on `reddit` (ConvoKit), `mastodon` and `youtube`.**
   `news` and `gdelt` have no threading, and Kaggle-sourced Reddit has none either.

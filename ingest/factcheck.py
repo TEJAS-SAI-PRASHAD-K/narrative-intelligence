@@ -46,7 +46,7 @@ from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 from ingest.config import Settings, get_settings, load_yaml
-from ingest.normalize import clean_text, detect_lang, resolve_domain, simhash
+from ingest.normalize import WORD_CHARS, clean_text, detect_lang, resolve_domain, simhash
 
 log = logging.getLogger("ingest.factcheck")
 
@@ -244,7 +244,7 @@ def claim_and_rating(review: dict) -> tuple[str, str]:
 
 # --- rating normalization --------------------------------------------------
 
-_PUNCT = re.compile(r"[^\w\s]+", re.UNICODE)
+_PUNCT = re.compile(rf"[^{WORD_CHARS}\s]+", re.UNICODE)
 _WS = re.compile(r"\s+")
 
 
@@ -755,6 +755,151 @@ def write_factchecks(
                 os.replace(legacy, destination)
     log.info("wrote %d verdicts (%d new this run) to %s", len(merged), len(verdicts), path)
     return path
+
+
+class CollapseReason(str, Enum):
+    """Why a stored verdict row is left out of a deduplicated read. Counted, never silent."""
+
+    #: Its claim simhash is within the Hamming radius of a kept row's claim,
+    #: directly or through a chain of such rows.
+    DUPLICATE_CLAIM = "duplicate_claim"
+
+
+#: Claims whose simhashes differ in this many bits or fewer are the same claim.
+#: Matches `simhash_hamming` in configs/models.yaml, used for corpus records.
+CLAIM_HAMMING_RADIUS = 3
+
+
+@dataclass
+class CollapseResult:
+    """Outcome of `collapse_duplicate_claims`."""
+
+    #: One row per group, sorted by ``record_id``.
+    kept: list[dict[str, Any]]
+    #: ``(record_id, kept_record_id, hamming distance to that row)`` per collapsed row.
+    #: In a chain the distance can be larger than the radius.
+    collapsed: list[tuple[str, str, int]]
+    counts: dict[str, int]
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    return row.as_row() if isinstance(row, FactCheck) else row
+
+
+def collapse_duplicate_claims(
+    rows: Iterable[Any], max_distance: int = CLAIM_HAMMING_RADIUS
+) -> CollapseResult:
+    """Keep one row per claim, for a reader that must not count a claim twice.
+
+    The same claim is debunked by several publishers, so an evaluation set built
+    from the raw artifact counts it more than once. This is a read-side view:
+    ``factchecks.parquet`` stays lossless and nothing is deleted from it.
+
+    Two rows are linked when their ``claim_simhash`` values differ in
+    ``max_distance`` bits or fewer. Groups are the connected components of that
+    relation (union-find), so a chain A-B-C collapses to one row even when A and
+    C are farther apart than the radius. Chaining can merge claims that are not
+    the same claim. The radius is small to keep that rare, and the distance of
+    each collapsed row to its representative is returned for audit.
+
+    The representative of a group is the row with the smallest ``record_id``.
+    ``extracted_at`` plays no part: it is re-stamped when an extraction reruns, so
+    ordering by it would let the representative change between runs. The result
+    does not depend on input order.
+
+    A hash of ``0`` (or ``None``) means "no hash", so that row never links to
+    anything and is always kept. Those rows are counted as ``unhashed_kept``.
+    Each collapsed row is counted under ``CollapseReason.DUPLICATE_CLAIM``.
+    A group whose rows carry more than one distinct ``label`` is still collapsed,
+    and is counted once under ``label_conflict`` so the disagreement is visible.
+    """
+    items = [_row_dict(row) for row in rows]
+    n = len(items)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    hashes: list[int] = []
+    for item in items:
+        value = item.get("claim_simhash")
+        value = 0 if value is None or value != value else int(value)
+        if not 0 <= value < 1 << 64:
+            raise ValueError(f"claim_simhash {value} does not fit in an unsigned 64-bit integer")
+        hashes.append(value)
+
+    # Pigeonhole: two 64-bit values within 3 bits differ in at most 3 of 4
+    # 16-bit blocks, so they share at least one whole block. Bucketing by
+    # (block, value) finds every pair without comparing all of them. A larger
+    # radius needs more blocks, so the block count follows it. Bits left over
+    # when 64 is not divisible by the block count only lower the budget.
+    blocks = max_distance + 1
+    width = 64 // blocks
+    mask = (1 << width) - 1
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for index, value in enumerate(hashes):
+        if value == 0:
+            continue
+        for block in range(blocks):
+            key = (block, (value >> (block * width)) & mask)
+            buckets.setdefault(key, []).append(index)
+    for members in buckets.values():
+        for a in range(len(members)):
+            for b in range(a + 1, len(members)):
+                i, j = members[a], members[b]
+                if find(i) != find(j) and bin(hashes[i] ^ hashes[j]).count("1") <= max_distance:
+                    parent[find(j)] = find(i)
+
+    def order(i: int) -> str:
+        return str(items[i].get("record_id") or "")
+
+    groups: dict[int, list[int]] = {}
+    for index in range(n):
+        groups.setdefault(find(index), []).append(index)
+
+    kept: list[dict[str, Any]] = []
+    collapsed: list[tuple[str, str, int]] = []
+    label_conflicts = 0
+    for members in groups.values():
+        representative = min(members, key=order)
+        labels = {items[i].get("label") for i in members if items[i].get("label") is not None}
+        if len(labels) > 1:
+            label_conflicts += 1
+        kept.append(items[representative])
+        rep_id = str(items[representative].get("record_id") or "")
+        for index in members:
+            if index != representative:
+                distance = bin(hashes[index] ^ hashes[representative]).count("1")
+                collapsed.append((str(items[index].get("record_id") or ""), rep_id, distance))
+    kept.sort(key=lambda row: str(row.get("record_id") or ""))
+    collapsed.sort()
+    counts = {
+        CollapseReason.DUPLICATE_CLAIM.value: len(collapsed),
+        "unhashed_kept": sum(1 for value in hashes if value == 0),
+        "label_conflict": label_conflicts,
+    }
+    return CollapseResult(kept=kept, collapsed=collapsed, counts=counts)
+
+
+def read_deduplicated_factchecks(settings: Settings | None = None) -> CollapseResult:
+    """``factchecks.parquet`` with duplicate claims collapsed, for an evaluation harness.
+
+    An absent file gives an empty result. The file is not modified.
+    """
+    settings = settings or get_settings()
+    path = settings.data_dir / "factchecks" / FACTCHECKS_FILENAME
+    rows = _read_rows(path) if path.exists() else []
+    result = collapse_duplicate_claims(rows)
+    if result.collapsed:
+        log.info(
+            "collapsed %d verdict rows as %s",
+            len(result.collapsed),
+            CollapseReason.DUPLICATE_CLAIM.value,
+        )
+    return result
 
 
 def label_distribution(verdicts: Iterable[FactCheck]) -> dict[str, int]:

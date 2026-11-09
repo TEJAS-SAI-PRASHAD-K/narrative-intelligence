@@ -211,27 +211,49 @@ class ParquetStore:
     def write_records(self, records: Iterable[Record], *, dedupe: bool = True) -> dict[str, int]:
         """Append records to their ``source=/date=`` partitions.
 
-        Returns ``{"written": n, "duplicates": n}``. Dedupe is on ``id`` against
-        both the incoming batch and what is already on disk, which is what makes
-        "kill it mid-run and start again" safe.
+        Dedupe is on ``id`` against the incoming batch and against every partition of
+        the same source already on disk, which is what makes "kill it mid-run and
+        start again" and a daily re-run safe. The partition key is the record's own
+        timestamp, and a feed can report a different timestamp for the same article on
+        a later run, so checking only the target partition lets one id land in two.
+
+        Returns ``written``, the ``duplicates`` total, and the reason codes that sum
+        to it: ``duplicates_in_batch``, ``duplicates_same_partition`` and
+        ``duplicates_cross_partition``. A non-zero cross-partition count means a
+        source reports an unstable timestamp for an id it has already delivered.
         """
         buckets: dict[tuple[str, str], list[Record]] = defaultdict(list)
         batch_ids: set[str] = set()
-        duplicates = 0
+        in_batch = 0
         for record in records:
             if dedupe and record.id in batch_ids:
-                duplicates += 1
+                in_batch += 1
                 continue
             batch_ids.add(record.id)
             buckets[(record.source, record.date_partition)].append(record)
 
         written = 0
+        same_partition = 0
+        cross_partition = 0
+        on_disk: dict[str, dict[str, set[str]]] = {}
         for (source, date), bucket in sorted(buckets.items()):
             partition = self.root / f"source={source}" / f"date={date}"
             if dedupe:
-                existing = self.existing_ids(source=source, date=date)
-                fresh = [r for r in bucket if r.id not in existing]
-                duplicates += len(bucket) - len(fresh)
+                if source not in on_disk:
+                    on_disk[source] = self._ids_by_partition(source)
+                here = on_disk[source].get(date, set())
+                elsewhere: set[str] = set()
+                for other_date, ids in on_disk[source].items():
+                    if other_date != date:
+                        elsewhere |= ids
+                fresh = []
+                for r in bucket:
+                    if r.id in here:
+                        same_partition += 1
+                    elif r.id in elsewhere:
+                        cross_partition += 1
+                    else:
+                        fresh.append(r)
             else:
                 fresh = bucket
             if not fresh:
@@ -243,9 +265,39 @@ class ParquetStore:
             written += table.num_rows
             log.debug("wrote %d rows -> %s", table.num_rows, out)
 
+        duplicates = in_batch + same_partition + cross_partition
         if duplicates:
-            log.info("skipped %d duplicate record ids", duplicates)
-        return {"written": written, "duplicates": duplicates}
+            log.info(
+                "skipped %d duplicate record ids (in_batch=%d same_partition=%d "
+                "cross_partition=%d)",
+                duplicates,
+                in_batch,
+                same_partition,
+                cross_partition,
+            )
+        if cross_partition:
+            log.warning(
+                "%d record ids were already on disk under a different date partition; "
+                "the source reported a different timestamp for them",
+                cross_partition,
+            )
+        return {
+            "written": written,
+            "duplicates": duplicates,
+            "duplicates_in_batch": in_batch,
+            "duplicates_same_partition": same_partition,
+            "duplicates_cross_partition": cross_partition,
+        }
+
+    def _ids_by_partition(self, source: str) -> dict[str, set[str]]:
+        """Ids on disk for one source, keyed by the ``date=`` partition they sit in."""
+        out: dict[str, set[str]] = {}
+        source_dir = self.root / f"source={source}"
+        for part in source_dir.glob("date=*"):
+            out[part.name.split("=", 1)[1]] = self.existing_ids(
+                source=source, date=part.name.split("=", 1)[1]
+            )
+        return out
 
     def write_authors(self, authors: Iterable[Any], source: str) -> int:
         """Author roll-ups, one parquet file per source (rewritten, not appended).

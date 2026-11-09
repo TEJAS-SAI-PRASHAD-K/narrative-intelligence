@@ -192,8 +192,10 @@ def factchecks(
     rather than a new source.
     """
     from ingest.factcheck import (
+        CollapseReason,
         DropReason,
         FactCheckExtractor,
+        collapse_duplicate_claims,
         label_distribution,
         records_from_corpus,
         write_factchecks,
@@ -262,6 +264,16 @@ def factchecks(
             f"[red]UNKNOWN ratings (a publisher changed vocabulary; add them to "
             f"configs/factcheck.yaml): {summary['unknown_ratings']}"
         )
+
+    # Counted over this run's verdicts. The artifact keeps every row; readers
+    # call `read_deduplicated_factchecks` to get one row per claim.
+    claims = collapse_duplicate_claims(verdicts)
+    reason = CollapseReason.DUPLICATE_CLAIM.value
+    console.print(
+        f"{reason}: {claims.counts[reason]} "
+        f"of {len(verdicts):,} verdicts this run repeat another claim "
+        f"(collapsed on read, not in the file); unhashed: {claims.counts['unhashed_kept']}"
+    )
 
     if dry_run:
         console.print("[cyan]--dry-run: nothing written.")
