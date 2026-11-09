@@ -44,7 +44,12 @@ def test_claim_hash_is_sha256_of_the_utf8_text():
 def test_build_manifest_keeps_only_false_rows_sorted_and_without_claim_text():
     rows = build_manifest([kept("b", "abc"), kept("a", "x", label="true"), kept("c", "abc")])
     assert [r["record_id"] for r in rows] == ["b", "c"]
-    assert rows[0] == {"record_id": "b", "url": "https://example.org/b", "claim_sha256": ABC}
+    assert rows[0] == {
+        "record_id": "b",
+        "url": "https://example.org/b",
+        "claim_sha256": ABC,
+        "verdict": "false",
+    }
     assert "claim" not in rows[0]
 
 
@@ -52,10 +57,15 @@ def test_write_then_read_round_trips_and_has_no_claim_text(tmp_path):
     path = tmp_path / "m.csv"
     write_manifest(build_manifest([kept("a", "abc")]), path)
     assert path.read_text() == (
-        "record_id,url,claim_sha256\n" f"a,https://example.org/a,{ABC}\n"
+        "record_id,url,claim_sha256,verdict\n" f"a,https://example.org/a,{ABC},false\n"
     )
     assert read_manifest(path) == [
-        {"record_id": "a", "url": "https://example.org/a", "claim_sha256": ABC}
+        {
+            "record_id": "a",
+            "url": "https://example.org/a",
+            "claim_sha256": ABC,
+            "verdict": "false",
+        }
     ]
 
 
@@ -81,15 +91,23 @@ def test_empty_manifest_is_not_written(tmp_path):
     "text",
     [
         "id,url,hash\na,u,x\n",
-        "record_id,url,claim_sha256\n",
-        f"record_id,url,claim_sha256\na,u,{ABC}\na,u,{ABC}\n",
-        "record_id,url,claim_sha256\na,u,not-a-hash\n",
+        "record_id,url,claim_sha256,verdict\n",
+        f"record_id,url,claim_sha256,verdict\na,u,{ABC},false\na,u,{ABC},false\n",
+        "record_id,url,claim_sha256,verdict\na,u,not-a-hash,false\n",
+        f"record_id,url,claim_sha256,verdict\na,u,{ABC},\n",
     ],
 )
 def test_malformed_manifest_refuses(tmp_path, text):
     path = tmp_path / "m.csv"
     path.write_text(text)
     with pytest.raises(ManifestMismatch):
+        read_manifest(path)
+
+
+def test_manifest_without_a_verdict_column_is_refused(tmp_path):
+    path = tmp_path / "m.csv"
+    path.write_text(f"record_id,url,claim_sha256\na,https://example.org/a,{ABC}\n")
+    with pytest.raises(ManifestMismatch, match="no verdict column"):
         read_manifest(path)
 
 
@@ -102,6 +120,15 @@ def test_changed_claim_text_stops():
     manifest = build_manifest([kept("a", "abc")])
     with pytest.raises(ManifestMismatch, match="claim hash differs: a"):
         verify_manifest(manifest, [kept("a", "abd")], [])
+
+
+def test_changed_verdict_stops_instead_of_shrinking_the_set():
+    manifest = build_manifest([kept("a", "abc"), kept("b", "xyz")])
+    relabelled = [kept("a", "abc", label="true"), kept("b", "xyz")]
+    with pytest.raises(ManifestMismatch, match=r"verdict differs: a \('false' -> 'true'\)"):
+        verify_manifest(manifest, relabelled, [])
+    with pytest.raises(ManifestMismatch, match="verdict differs"):
+        build_claim_universe(relabelled, [], manifest=manifest)
 
 
 def test_missing_row_stops():

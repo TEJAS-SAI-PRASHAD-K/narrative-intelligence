@@ -284,7 +284,7 @@ CLAIM_NOT_IN_FROZEN_SET = "not_in_frozen_set"
 #: The id is in no fact-check row that the reader returned, kept or collapsed.
 CLAIM_UNKNOWN_ID = "unknown_claim_id"
 
-MANIFEST_COLUMNS = ("record_id", "url", "claim_sha256")
+MANIFEST_COLUMNS = ("record_id", "url", "claim_sha256", "verdict")
 
 
 def default_manifest_path() -> Path:
@@ -299,8 +299,13 @@ def claim_hash(claim: str) -> str:
     return hashlib.sha256(claim.encode("utf-8")).hexdigest()
 
 
+def _verdict(row: dict[str, Any]) -> str:
+    """The claim's verdict label as the manifest stores it: stripped and lower case."""
+    return str(row.get("label") or "").strip().lower()
+
+
 def _is_false(row: dict[str, Any]) -> bool:
-    return str(row.get("label") or "").strip().lower() == "false"
+    return _verdict(row) == "false"
 
 
 def build_manifest(kept_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -322,6 +327,7 @@ def build_manifest(kept_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "record_id": str(item["record_id"]),
                 "url": str(item.get("url") or ""),
                 "claim_sha256": claim_hash(str(item["claim"])),
+                "verdict": _verdict(item),
             }
         )
     rows.sort(key=lambda r: r["record_id"])
@@ -361,7 +367,14 @@ def read_manifest(path: Path) -> list[dict[str, str]] | None:
         return None
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        if tuple(reader.fieldnames or ()) != MANIFEST_COLUMNS:
+        header = tuple(reader.fieldnames or ())
+        if header == MANIFEST_COLUMNS[:-1]:
+            raise ManifestMismatch(
+                f"{path}: this manifest has no verdict column, so a claim whose label changed "
+                "would drop out of the evaluation set unnoticed. Rebuild it on purpose and "
+                "record why."
+            )
+        if header != MANIFEST_COLUMNS:
             raise ManifestMismatch(
                 f"{path}: header must be {list(MANIFEST_COLUMNS)}, is {reader.fieldnames}"
             )
@@ -375,6 +388,8 @@ def read_manifest(path: Path) -> list[dict[str, str]] | None:
         digest = r["claim_sha256"] or ""
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ManifestMismatch(f"{path}: record {r['record_id']!r} has no valid SHA-256")
+        if not (r["verdict"] or "").strip():
+            raise ManifestMismatch(f"{path}: record {r['record_id']!r} has no verdict")
     return rows
 
 
@@ -387,7 +402,8 @@ def verify_manifest(
 
     Checks, for each manifest row: the record exists as a kept row (a row that is
     now a collapsed duplicate counts as missing, because the set it was frozen in
-    has changed), the URL is the same, and the claim hash is the same. Raises
+    has changed), the URL is the same, the claim hash is the same, and the verdict
+    is the same. Raises
     ``ManifestMismatch`` listing every problem category with examples.
     """
     kept = {str(r["record_id"]): r for r in kept_rows}
@@ -396,6 +412,7 @@ def verify_manifest(
     now_duplicate: list[str] = []
     hash_changed: list[str] = []
     url_changed: list[str] = []
+    verdict_changed: list[str] = []
     for entry in manifest:
         record_id = entry["record_id"]
         row = kept.get(record_id)
@@ -410,6 +427,8 @@ def verify_manifest(
             hash_changed.append(record_id)
         if str(row.get("url") or "") != entry["url"]:
             url_changed.append(record_id)
+        if _verdict(row) != entry["verdict"]:
+            verdict_changed.append(f"{record_id} ({entry['verdict']!r} -> {_verdict(row)!r})")
 
     problems: list[str] = []
     for label, items in (
@@ -417,6 +436,7 @@ def verify_manifest(
         ("no longer kept after claim deduplication", now_duplicate),
         ("claim hash differs", hash_changed),
         ("URL differs", url_changed),
+        ("verdict differs", verdict_changed),
     ):
         if items:
             more = f", and {len(items) - 5} more" if len(items) > 5 else ""

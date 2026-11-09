@@ -188,7 +188,7 @@ def test_freeze_command_writes_hashes_not_text_and_refuses_to_replace(env):
     first = runner.invoke(cli.app, ["freeze-factchecks", "--out", str(env["manifest"])])
     assert first.exit_code == 0, first.output
     text = env["manifest"].read_text()
-    assert text.splitlines()[0] == "record_id,url,claim_sha256"
+    assert text.splitlines()[0] == "record_id,url,claim_sha256,verdict"
     assert len(text.splitlines()) == 6
     assert "claim text" not in text
 
