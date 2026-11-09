@@ -242,6 +242,21 @@ class TestUnknownLanguage:
         outcome = scorer.score(frame)
         assert outcome.values == {"u": 0.55}
 
+    def test_nan_lang_from_parquet_is_a_null_not_the_language_nan(self, scorer, monkeypatch):
+        monkeypatch.setattr(scorer.settings, "score_unknown_language", True, raising=False)
+        _force_available(scorer, monkeypatch)
+        monkeypatch.setattr(scorer, "agent_for", lambda lang: FakeAgent(0.55))
+        frame = _frame([{"id": "u", "text": "no language tag on this claim", "lang": float("nan")}])
+        assert scorer.score(frame).values == {"u": 0.55}
+
+    def test_a_language_outside_the_laya_list_is_refused(self, scorer, monkeypatch):
+        _force_available(scorer, monkeypatch)
+        monkeypatch.setattr(scorer, "agent_for", lambda lang: FakeAgent(0.55))
+        text = "der vertrag wurde ohne ausschreibung vergeben"
+        frame = _frame([{"id": "d", "text": text, "lang": "de"}])
+        outcome = scorer.score(frame)
+        assert outcome.skipped["d"] == LayaSkipReason.UNROUTED_LANGUAGE
+
 
 class TestGracefulAbsence:
     def test_without_laya_every_record_is_skipped_and_none_is_guessed(self, scorer):

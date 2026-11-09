@@ -307,7 +307,7 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
     versions = {"misinfo": checkpoint_stamp("misinfo", version, checkpoint)}
     done = {key[0] for key in ctx.store.already_scored("record_scores", versions)}
     eligible = ctx.records.loc[
-        ctx.records["lang"].map(ctx.settings.language_allowed)
+        ctx.records["lang"].map(lambda lang: ctx.settings.language_allowed("misinfo", lang))
         & ctx.records["text"].fillna("").astype(str).str.len().ge(20)
         & ~ctx.records["id"].astype(str).isin(done)
     ]

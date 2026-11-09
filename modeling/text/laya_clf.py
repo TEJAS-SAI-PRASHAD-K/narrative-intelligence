@@ -6,12 +6,12 @@ probabilities. For this project the relevant primitive is ``noul``: one
 question, one calibrated ``P(true)``.
 
 **Why it is here at all.** The corpus is English and Hindi since the India
-retarget, and ``modeling.config.Settings.languages`` is still ``("en",)`` --
-Hindi records are collected, normalized, stored, and then skipped by every
-scorer. Laya ships a multilingual checkpoint (mmBERT-base, 100+ languages),
-which is the only thing in this project capable of closing that gap. The
-English checkpoint exists here as the control: if Laya cannot match
-``misinfo`` on English, its Hindi numbers are not worth much either.
+retarget, and every other text scorer lists only ``en`` under ``languages`` in
+``configs/models.yaml`` -- Hindi records are collected, normalized, stored,
+and then skipped by every other text scorer. Laya ships a multilingual
+checkpoint (mmBERT-base, 100+ languages), which is the only thing in this
+project capable of closing that gap. The English checkpoint exists here as the
+control: if Laya cannot match ``misinfo`` on English, its Hindi numbers are not worth much either.
 
 **It does not replace anything.** `modeling/eval/` compares it against the
 roberta-base fine-tune and the TF-IDF baseline on identical splits. A second
@@ -22,7 +22,7 @@ Three things inverted from every other scorer in this tree, each on purpose:
 * **Not English-gated.** `modeling/aux/base.py` gates on language because an
   English toxicity model run on German text "produces a number, and that
   number is noise". Laya multilingual is the exception that the gate exists to
-  make possible, so it routes by language instead of refusing.
+  make possible, so its own list is `en` and `hi`, and it routes by language.
 * **Fine-tuning is mandatory.** Vendor-reported, the base checkpoint scores
   0.362 on typed-decisions against a 0.461 majority-class baseline -- *worse
   than guessing*. A zero-shot number is a baseline to report, never a model to
@@ -340,7 +340,9 @@ class LayaScorer:
             if len(text) < MIN_CHARS:
                 outcome.skipped[record_id] = LayaSkipReason.TEXT_TOO_SHORT
                 continue
-            if lang is None:
+            # NaN as well as None: a null string column read back from Parquet
+            # arrives as NaN, and str(NaN) would be routed as the language "nan".
+            if lang is None or lang != lang:
                 if not score_unknown:
                     outcome.skipped[record_id] = LayaSkipReason.UNKNOWN_LANGUAGE
                     continue
@@ -348,6 +350,9 @@ class LayaScorer:
                 # modeling/config.py's `score_unknown_language` requires.
                 lang = "en"
             lang = str(lang).lower()
+            if not self.settings.language_allowed("laya", lang):
+                outcome.skipped[record_id] = LayaSkipReason.UNROUTED_LANGUAGE
+                continue
             try:
                 checkpoint, _ = self.checkpoint_for(lang)
             except LayaCheckpointMissing as exc:

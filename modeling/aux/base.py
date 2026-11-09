@@ -162,7 +162,8 @@ class AuxScorer(ABC):
     def gate(self, text: str | None, lang: str | None) -> str | None:
         """Return a skip reason, or ``None`` to proceed.
 
-        The one place the English-only policy is applied to text scoring. A
+        The one place the language policy is applied to text scoring, read from
+        this scorer's own module entry in ``configs/models.yaml``. A
         ``lang`` of ``None`` (common for short text, where Phase 1 declined to
         guess) is admitted only because ``score_unknown_language`` says so, and
         that assumption is recorded rather than hidden.
@@ -175,7 +176,7 @@ class AuxScorer(ABC):
             return SkipReason.EMPTY_TEXT
         if len(str(text).strip()) < self.min_chars:
             return SkipReason.TEXT_TOO_SHORT
-        if not self.settings.language_allowed(lang):
+        if not self.settings.language_allowed(self.module, lang):
             return SkipReason.UNSUPPORTED_LANGUAGE
         return None
 
