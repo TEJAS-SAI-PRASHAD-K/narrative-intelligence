@@ -313,6 +313,50 @@ class TestRobotsHandling:
         assert allowed is True
         assert reason is None
 
+    @pytest.fixture
+    def robots_get(self, monkeypatch):
+        import requests
+
+        calls: list[str] = []
+        status = {"code": 404}
+
+        class Response:
+            text = ""
+
+            def __init__(self, code):
+                self.status_code = code
+
+        def fake_get(url, *a, **k):
+            calls.append(url)
+            return Response(status["code"])
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        return calls, status
+
+    @pytest.mark.parametrize("code", [404, 410])
+    def test_no_published_rules_allows(self, extractor, robots_get, code):
+        robots_get[1]["code"] = code
+        allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        assert (allowed, reason) == (True, None)
+
+    @pytest.mark.parametrize("code", [403, 429, 503])
+    def test_any_other_status_is_unreachable(self, extractor, robots_get, code):
+        robots_get[1]["code"] = code
+        allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        assert allowed is False
+        assert reason == DropReason.ROBOTS_UNREACHABLE
+
+    def test_unreachable_status_drops_with_the_unreachable_code(self, extractor, robots_get):
+        robots_get[1]["code"] = 403
+        assert extractor.fetch_html(BOOM_URL) is None
+        assert extractor.dropped == {DropReason.ROBOTS_UNREACHABLE.value: 1}
+
+    def test_one_robots_request_per_host(self, extractor, robots_get):
+        calls, _ = robots_get
+        extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        extractor._robots_allows("https://www.boomlive.in/fact-check/y")
+        assert calls == ["https://www.boomlive.in/robots.txt"]
+
 
 class TestDriver:
     def test_an_unconfigured_domain_is_skipped_and_counted(self, extractor):

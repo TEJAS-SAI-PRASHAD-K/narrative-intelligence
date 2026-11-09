@@ -59,6 +59,10 @@ class Tier(str, Enum):
     RSS_TAG = "rss_tag"
 
 
+#: robots.txt statuses that mean "no rules published".
+_ROBOTS_ABSENT_STATUSES = frozenset({404, 410})
+
+
 class DropReason(str, Enum):
     """Why a candidate produced no row. Every one is counted, never silent."""
 
@@ -422,6 +426,8 @@ class FactCheckExtractor:
         across four publishers whose robots.txt in fact permits all of them --
         every one of those was `read()` failing, not a publisher saying no.
 
+        Status rule: 200 is parsed; 404 and 410 mean no rules are published
+        and allow; every other status, and any network error, is unreachable.
         An unreachable robots.txt still means no fetch: unknown is not
         permission. But it reports ROBOTS_UNREACHABLE rather than
         ROBOTS_DISALLOWED, so a bad network cannot be mistaken for a ban.
@@ -441,11 +447,16 @@ class FactCheckExtractor:
                 if response.status_code == 200:
                     parser = RobotFileParser()
                     parser.parse(response.text.splitlines())
-                elif 400 <= response.status_code < 500:
-                    # No robots.txt at all is "crawl permitted" per the
-                    # standard, and is not the same as one we could not read.
+                elif response.status_code in _ROBOTS_ABSENT_STATUSES:
+                    # Only 404 and 410 say "no robots.txt here", which the
+                    # standard reads as crawl permitted. Any other status
+                    # (401, 403, 429, other 4xx, 5xx, redirects) tells us
+                    # nothing about the publisher's rules, so the parser
+                    # stays None and the host is unreachable.
                     parser = RobotFileParser()
                     parser.parse([])
+                else:
+                    log.debug("robots.txt for %s returned %s", host, response.status_code)
             except Exception as exc:
                 log.debug("robots.txt unreachable for %s: %s", host, exc)
             self._robots[host] = parser
