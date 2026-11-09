@@ -90,7 +90,7 @@ The shortest route from here to a defensible result, in order. Each step unblock
 the next.
 
 1. **Fetch the benchmarks.** A new clone has no `data/benchmarks/`. `make benchmarks`
-   pulls LIAR, CoAID and FakeNewsNet with checksums. The FakeNewsNet label CSVs and
+   pulls LIAR, CoAID and FakeNewsNet, pinned to exact commits and checksums. The FakeNewsNet label CSVs and
    the CoAID CSVs are enough, with no crawl. The current classifier was trained on
    the union of all three, so a like-for-like comparison needs all three. On the
    public data, `build_training_frame` and the project seed reproduce the recorded
@@ -169,8 +169,8 @@ the honest entry in that cell, not a zero.
   transformer. Its weights are gone, so the current state is neither.
 - **Fine-tune stance.** The corpus supplied as SemEval-2016 is actually FNC-1,
   which is the better fit because its four labels map one to one onto the
-  contract. 75,385 pairs over 2,587 bodies. `make benchmarks` does not fetch it
-  yet. The fine-tune starts
+  contract. 75,385 pairs over 2,587 bodies. `make benchmarks` fetches it into
+  `data/benchmarks/stance/` at a pinned commit. The fine-tune starts
   from an NLI and FEVER checkpoint rather than a bare encoder.
 - **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
   statements, CoAID is COVID-era health claims, and this corpus is Indian

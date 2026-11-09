@@ -633,8 +633,11 @@ stay reviewable), then run it.
 - `simhash` is already computed — near-duplicate clustering is cheap.
 - Author roll-ups are in `data/authors/source=<source>/authors.parquet`, with account age,
   follower counts and the `bot` flag where the platform provides them.
-- Benchmarks for training: `make benchmarks` fetches LIAR, CoAID and FakeNewsNet into
-  `data/benchmarks/` with checksums. Note that FakeNewsNet ships ids and a crawler rather
+- Benchmarks for training: `make benchmarks` fetches LIAR, CoAID, FakeNewsNet and FNC-1 into
+  `data/benchmarks/`. Each download is pinned: git clones are checked out at an exact commit,
+  and every download is compared with a pinned checksum. A mismatch stops the script with a
+  non-zero exit and keeps the data out of the manifest. FNC-1 goes to `data/benchmarks/stance/`
+  for the stance task and is not part of the misinformation training set. Note that FakeNewsNet ships ids and a crawler rather
   than article text, and CoAID's tweet content cannot be recollected in this project.
 - **Coordination work is only valid on `reddit` (ConvoKit), `mastodon` and `youtube`.**
   `news` and `gdelt` have no threading, and Kaggle-sourced Reddit has none either.

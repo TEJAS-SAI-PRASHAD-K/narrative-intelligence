@@ -34,7 +34,7 @@ validate: ## Re-validate the whole normalized corpus against the schema
 stats: ## Per-source summary table of the corpus on disk
 	$(BIN)/python -m ingest.cli stats
 
-benchmarks: ## Download LIAR / FakeNewsNet / CoAID for Phase 2 (not used in Phase 1)
+benchmarks: ## Download LIAR / FakeNewsNet / CoAID / FNC-1 for Phase 2, pinned (not used in Phase 1)
 	$(BIN)/python scripts/download_benchmarks.py
 
 # --- Phase 2: modeling & scoring -------------------------------------------

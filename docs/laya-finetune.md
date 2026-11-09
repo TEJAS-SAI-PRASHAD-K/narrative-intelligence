@@ -19,7 +19,7 @@ result.
 | `modeling/text/laya_clf.py` | written, 24 tests in `tests/test_laya.py` (22 pass, 2 skip because laya is installed). The real checkpoints load through `LayaScorer` in a smoke test on 2026-11-09 with laya 0.4.30, **base checkpoints only**. No fine-tune has run |
 | `configs/models.yaml → laya` | written: routing, question, train knobs, precision target |
 | Training JSONL exporter | written (`LayaTrainingExporter`), tested |
-| `data/benchmarks/` | `make benchmarks` supplies LIAR (zip, unattended), the CoAID repository clone, and the FakeNewsNet repository clone. The FakeNewsNet clone has the label CSVs and the crawler, not article text. Checksums go in `data/benchmarks/manifest.json` |
+| `data/benchmarks/` | `make benchmarks` supplies LIAR (zip, unattended), the CoAID repository clone, and the FakeNewsNet repository clone. The FakeNewsNet clone has the label CSVs and the crawler, not article text. Each download is pinned to a commit or checksum, and a mismatch stops the script. (`make benchmarks` also fetches FNC-1 into `stance/`; it is not used here.) Checksums go in `data/benchmarks/manifest.json` |
 | The fine-tune | not run |
 | Scoring integration | `modeling/scoring.py` has **no Laya stage**, and `LayaScorer.checkpoint_for` cannot yet select a fine-tuned directory (it returns only the configured base checkpoint). A finished fine-tune is **not yet reachable from scoring** |
 | The eval harness for the three-way comparison | **not written** — see step 6 |
