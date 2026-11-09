@@ -155,11 +155,12 @@ def test_fnc1_label_map_stays_one_to_one():
     assert len(set(LABEL_MAP.values())) == 4, "two FNC-1 labels collapsed into one bucket"
 
 
-def test_fnc1_groups_by_body_not_by_row():
-    """The organizers' own key: their competition test set shares zero bodies
-    with train. Row-level splitting would let one body's text train and test."""
+def test_fnc1_groups_by_headline_not_by_row():
+    """One headline appears against many bodies. Splitting by body or by row puts
+    the same headline on both sides, and its label prior leaks."""
     loaded = get_dataset("fnc1").load(demo=True)
-    assert loaded.group_col == "body_id"
+    assert loaded.group_col == "claim_id"
+    assert loaded.frame["claim_id"].nunique() <= loaded.frame["target"].str.lower().nunique()
     assert loaded.frame["body_id"].nunique() < len(loaded.frame)
 
 
@@ -180,7 +181,7 @@ def test_fnc1_and_semeval_share_a_directory_without_colliding():
     fnc1 = get_dataset("fnc1").load(demo=True)
     semeval = get_dataset("stance").load(demo=True)
     assert len(fnc1) > 0 and len(semeval) > 0
-    assert fnc1.group_col == "body_id"
+    assert fnc1.group_col == "claim_id"
     assert semeval.group_col == "claim_id"
 
 

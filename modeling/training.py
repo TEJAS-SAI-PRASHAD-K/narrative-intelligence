@@ -490,12 +490,13 @@ def _train_stance(
 ) -> TrainingResult:
     """Fine-tune a pre-existing NLI checkpoint on FNC-1.
 
-    The split is the organizers' own protocol rather than a fresh random one:
-    FNC-1 ships a competition test set whose article bodies are disjoint from
-    train, which is both the strongest available group key and the published
-    comparison point. ``domain_holdout`` reproduces it exactly, and does not
-    dedupe -- in FNC-1 one body legitimately appears against many headlines, so
-    near-duplicate collapse on ``text`` would delete most of the corpus.
+    The test set is the organizers' competition set, the published comparison
+    point. Train and val are split by headline (``claim_id``), because one
+    headline appears against many bodies and a body-level split puts every
+    validation headline in train too. Train rows whose headline also occurs in
+    the test set are purged. Nothing dedupes on ``text``: in FNC-1 one body
+    legitimately appears against many headlines, so near-duplicate collapse
+    would delete most of the corpus.
     """
     from modeling.registry import register
     from modeling.text.stance_clf import STANCE_LABELS, StanceClassifier
@@ -526,33 +527,8 @@ def _train_stance(
             notes=[f"only {len(frame)} usable pairs; refusing to report a metric"],
         )
 
-    official = set(frame.get("official_split", pd.Series(dtype=str)).astype(str).unique())
-    if "competition_test" in official:
-        work, split = domain_holdout(
-            frame,
-            domain_col="official_split",
-            held_out="competition_test",
-            group_col="body_id",
-        )
-        split_description = (
-            "FNC-1's own competition test set (bodies disjoint from train); "
-            f"train/val grouped by body_id; sizes = "
-            f"{len(split.train)}/{len(split.val)}/{len(split.test)}; seed={settings.seed}"
-        )
-        notes.append("test set is the organizers' competition split, not a resampled one")
-    else:
-        # Only the train file is on disk. Fall back to a grouped split by body,
-        # and say so -- the number is then not comparable to published FNC-1
-        # results, which all use the competition test set.
-        work, split = group_train_val_test(
-            frame, group_col="body_id", label_col="label",
-            seed=settings.seed, dedupe=False,
-        )
-        split_description = split.describe()
-        notes.append(
-            "competition_test_stances.csv was not on disk; this is a resampled "
-            "body-grouped split and is NOT comparable to published FNC-1 numbers"
-        )
+    work, split, split_description, split_notes = stance_split(frame, settings)
+    notes.extend(split_notes)
 
     label_index = {label: i for i, label in enumerate(STANCE_LABELS)}
     work = work.assign(label_id=work["label"].map(label_index))
@@ -690,6 +666,53 @@ def _train_stance(
     )
     notes.append(f"checkpoint {checkpoint.uri}")
     return TrainingResult("stance", version, report, artifacts=artifacts, notes=notes)
+
+
+def stance_split(
+    frame: pd.DataFrame, settings: ModelingSettings
+) -> tuple[pd.DataFrame, Any, str, list[str]]:
+    """Headline-grouped train/val and, when present, FNC-1's own test set.
+
+    Returns ``(work, split, description, notes)``; the split indices are
+    positional into ``work``, not into ``frame``.
+    """
+    notes: list[str] = []
+    official = set(frame.get("official_split", pd.Series(dtype=str)).astype(str).unique())
+    if "competition_test" in official:
+        work, split = domain_holdout(
+            frame,
+            domain_col="official_split",
+            held_out="competition_test",
+            group_col="claim_id",
+            purge_col="claim_id",
+        )
+        purged = split.dropped.get("purged_overlap_with_test", 0)
+        split_description = (
+            "FNC-1's own competition test set (bodies disjoint from train); "
+            "train/val grouped by headline (claim_id), headlines shared with the test set "
+            f"purged from train ({purged} rows); sizes = "
+            f"{len(split.train)}/{len(split.val)}/{len(split.test)}; seed={settings.seed}"
+        )
+        notes.append("test set is the organizers' competition split, not a resampled one")
+        if purged:
+            notes.append(
+                f"purged_overlap_with_test: {purged} train rows dropped because their "
+                "headline also occurs in the competition test set"
+            )
+    else:
+        # Only the train file is on disk. Fall back to a grouped split by body,
+        # and say so -- the number is then not comparable to published FNC-1
+        # results, which all use the competition test set.
+        work, split = group_train_val_test(
+            frame, group_col="claim_id", label_col="label",
+            seed=settings.seed, dedupe=False,
+        )
+        split_description = split.describe()
+        notes.append(
+            "competition_test_stances.csv was not on disk; this is a resampled "
+            "headline-grouped split and is NOT comparable to published FNC-1 numbers"
+        )
+    return work, split, split_description, notes
 
 
 def _zero_shot_stance_baseline(
