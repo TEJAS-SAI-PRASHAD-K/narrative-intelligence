@@ -105,7 +105,7 @@ laya:
   # Hugging Face commit of convaiinnovations/laya (both checkpoints live in
   # that repo). Applied to Hub loads only. A fine-tuned local directory has no
   # revision. Update it deliberately and bump `version` with it.
-  revision: 85cc74ddae6109077ebe2853a9b3077fb6606a78
+  revision: 55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851
   # Local fine-tuned checkpoint directory per language, null for the base
   # checkpoint. A path that does not exist skips the record with reason
   # `checkpoint_missing`. It never falls back to the base checkpoint.
