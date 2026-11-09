@@ -8,6 +8,11 @@ Stages, in order (``all`` runs them and stops at the first failure)::
     score          one <model>.parquet per model, in the harness input schema
     evaluate       modeling.eval.factcheck_eval.run_comparison
 
+Every model is scored on the same rows. The first ``score`` run freezes the claim and
+corpus ids in ``score_inputs.parquet``, and later runs reuse them. Each score file has a
+``<model>.provenance.json`` beside it. It ties the file to the split, the checkpoint and the
+frozen inputs, so ``score`` does not reuse a stale file and ``evaluate`` refuses one.
+
 Everything is written under one directory (``--out``, default ``data/comparison``,
 which ``/data/`` in ``.gitignore`` covers). ``--demo`` runs the same flow on the
 committed fixtures, with a different default directory, and refuses to reuse a
@@ -241,6 +246,10 @@ class Context:
     @property
     def split_file(self) -> Path:
         return self.out / "split.json"
+
+    @property
+    def frozen_inputs_file(self) -> Path:
+        return self.out / "score_inputs.parquet"
 
     @property
     def eval_rows_file(self) -> Path:
@@ -986,10 +995,17 @@ def _lang_or_none(value: Any) -> str | None:
 
 def build_parts(ctx: Context) -> dict[str, pd.DataFrame]:
     """The five input tables. Each has id, text, lang, label, source_detail."""
+    split_info = require_prepared(ctx)
     eval_rows = pd.read_parquet(ctx.eval_rows_file)
     parts: dict[str, pd.DataFrame] = {}
     for name in ("val", "test"):
         chosen = eval_rows[eval_rows["split"] == name]
+        if sorted(chosen["id"].astype(str)) != sorted(split_info["ids"][name]):
+            raise StageError(
+                EXIT_SPLIT,
+                f"{ctx.eval_rows_file} has other {name} ids than {ctx.split_file}. "
+                "Run the prepare stage again with --force.",
+            )
         parts[name] = pd.DataFrame(
             {
                 "id": chosen["id"].astype(str).to_numpy(),
@@ -1012,7 +1028,259 @@ def build_parts(ctx: Context) -> dict[str, pd.DataFrame]:
                 "source_detail": corpus["source_detail"].to_numpy(),
             }
         )
-    return parts
+    return freeze_or_apply_inputs(ctx, parts)
+
+
+# ---------------------------------------------------------------------------
+# score: frozen inputs and provenance
+# ---------------------------------------------------------------------------
+FROZEN_PARTS = ("claims", "corpus_title", "corpus_text")
+#: Files whose bytes go into a checkpoint identity. All other files count by name and size.
+CHECKPOINT_CONFIG_FILES = ("config.json", "rl_agent_config.json")
+
+
+def _text_sha256(value: Any) -> str:
+    return "" if _blank(value) else hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def input_manifest(parts: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """One row per claim or corpus row: part, id, lang and a hash of the text that is scored."""
+    frames = []
+    for part in FROZEN_PARTS:
+        frame = parts[part]
+        frames.append(
+            pd.DataFrame(
+                {
+                    "part": part,
+                    "id": [str(i) for i in frame["id"]],
+                    "lang": [_lang_or_none(v) or "" for v in frame["lang"]],
+                    "text_sha256": [_text_sha256(v) for v in frame["text"]],
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def input_manifest_hash(manifest: pd.DataFrame) -> str:
+    """The hash of a manifest. It does not depend on the row order."""
+    digest = hashlib.sha256()
+    ordered = manifest.sort_values(["part", "id"], kind="stable")
+    for row in zip(
+        ordered["part"], ordered["id"], ordered["lang"], ordered["text_sha256"], strict=True
+    ):
+        digest.update(("\x00".join(row) + "\n").encode("utf-8"))
+    return digest.hexdigest()
+
+
+def read_frozen_inputs(ctx: Context) -> pd.DataFrame | None:
+    if not ctx.frozen_inputs_file.exists():
+        return None
+    return pd.read_parquet(ctx.frozen_inputs_file)
+
+
+def current_inputs_hash(ctx: Context) -> str | None:
+    """The hash of the frozen inputs on disk, or ``None`` before the first score run."""
+    frozen = read_frozen_inputs(ctx)
+    return None if frozen is None else input_manifest_hash(frozen)
+
+
+def freeze_or_apply_inputs(ctx: Context, parts: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Freeze the claim and corpus ids on the first run, and reuse them on every later run.
+
+    A re-read of the corpus can return other rows than the first read did, and a model
+    scored on other rows is not comparable with one scored on the first rows. Later runs
+    keep exactly the frozen ids, in the frozen order. A frozen id that is gone or whose
+    text changed stops the run. A new id is left out and counted. ``--refreeze`` replaces
+    the frozen ids, and the score files of the other models then fail the provenance check.
+    """
+    current = input_manifest(parts)
+    frozen = read_frozen_inputs(ctx)
+    if frozen is None or bool(getattr(ctx.args, "refreeze", False)):
+        ctx.out.mkdir(parents=True, exist_ok=True)
+        tmp = ctx.frozen_inputs_file.with_name(ctx.frozen_inputs_file.name + ".tmp")
+        current.to_parquet(tmp, index=False)
+        os.replace(tmp, ctx.frozen_inputs_file)
+        counts = current["part"].value_counts().to_dict()
+        ctx.say(f"[score] froze the ids of {counts} in {ctx.frozen_inputs_file}")
+        return parts
+
+    kept: dict[str, pd.DataFrame] = dict(parts)
+    problems: list[str] = []
+    for part in FROZEN_PARTS:
+        want = frozen[frozen["part"] == part]
+        now = current[current["part"] == part]
+        have = dict(zip(now["id"], zip(now["lang"], now["text_sha256"], strict=True), strict=True))
+        missing = [i for i in want["id"] if i not in have]
+        changed = [
+            i
+            for i, lang, sha in zip(want["id"], want["lang"], want["text_sha256"], strict=True)
+            if i in have and have[i] != (lang, sha)
+        ]
+        for label, ids in (("gone from the data", missing), ("changed text or language", changed)):
+            if ids:
+                problems.append(f"{part}: {len(ids)} frozen id(s) {label}, for example {ids[:3]}")
+        new = len(have) - (len(want) - len(missing))
+        if new:
+            ctx.say(f"[score] {part}: {new} row(s) are new since the freeze and are left out")
+            log.warning("%s: %d row(s) are new since the freeze and are left out", part, new)
+        position = {str(i): n for n, i in enumerate(parts[part]["id"])}
+        keep = [position[i] for i in want["id"] if i in position]
+        kept[part] = parts[part].iloc[keep].reset_index(drop=True)
+    if problems:
+        raise StageError(
+            EXIT_FAILED,
+            f"[score] the claims or the corpus changed since {ctx.frozen_inputs_file} was "
+            "written.\n  " + "\n  ".join(problems) + "\n"
+            "Every model must score the same rows. Restore the data, or run the score stage "
+            "with --refreeze to freeze the new rows and score the selected models again.",
+        )
+    return kept
+
+
+def split_fingerprint(split_info: dict[str, Any]) -> str:
+    """A hash of what ``prepare`` saved: the frame hash, the seed and the id of every row."""
+    payload = {
+        "frame_sha256": split_info.get("frame_sha256"),
+        "seed": split_info.get("seed"),
+        "description": split_info.get("description"),
+        "ids": split_info.get("ids"),
+    }
+    text = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def directory_identity(directory: Path) -> dict[str, Any] | None:
+    """The name of a checkpoint directory and a hash of what it holds, or ``None`` if absent.
+
+    The hash covers the file names with sizes and the bytes of the config files. It reads
+    no weights, so it is fast on a large checkpoint.
+    """
+    if not directory.is_dir():
+        return None
+    listing = sorted(
+        (path.relative_to(directory).as_posix(), path.stat().st_size)
+        for path in directory.rglob("*")
+        if path.is_file() and not path.name.endswith(".tmp")
+    )
+    configs = {
+        name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+        for name in CHECKPOINT_CONFIG_FILES
+        if (directory / name).is_file()
+    }
+    text = json.dumps({"files": listing, "configs": configs}, sort_keys=True)
+    return {
+        "kind": "directory",
+        "name": directory.name,
+        "files": len(listing),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+
+def checkpoint_identity(ctx: Context, model: str) -> dict[str, Any] | None:
+    """What a model's weights are: a directory and its hash, a pinned revision, or a file hash.
+
+    ``None`` when the checkpoint is not there.
+    """
+    from modeling.config import module_config
+
+    if model == "tfidf":
+        if not ctx.tfidf_file.exists():
+            return None
+        digest = hashlib.sha256(ctx.tfidf_file.read_bytes()).hexdigest()
+        return {"kind": "file", "name": ctx.tfidf_file.name, "sha256": digest}
+    if model == "laya_multi_base":
+        config = module_config("laya")
+        if not config.get("revision"):
+            return None
+        return {
+            "kind": "pinned_revision",
+            "repo": config.get("multilingual_checkpoint"),
+            "subfolder": config.get("multilingual_subfolder"),
+            "revision": str(config["revision"]),
+        }
+    if model == "misinfo":
+        return directory_identity(ctx.misinfo_dir())
+    which = "en" if model == "laya_en" else "multilingual"
+    return directory_identity(ctx.laya_checkpoint_dir(which))
+
+
+def provenance_file(ctx: Context, model: str) -> Path:
+    return ctx.scores_dir / f"{model}.provenance.json"
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def provenance_problem(
+    ctx: Context, model: str, split_info: dict[str, Any], inputs_hash: str | None
+) -> tuple[int, str] | None:
+    """Why a score file cannot be used now, as an exit code and a message, or ``None``.
+
+    The file is current only when its provenance sidecar names the same split, the same
+    checkpoint and the same frozen inputs as the current state, and the file is the one
+    that the sidecar describes.
+    """
+    path = score_file(ctx, model)
+    if not path.exists():
+        return EXIT_FAILED, f"no score file {path}"
+    sidecar = provenance_file(ctx, model)
+    if not sidecar.exists():
+        return EXIT_FAILED, (
+            f"no provenance file {sidecar}, so nothing says which split, checkpoint and inputs "
+            "made this score file"
+        )
+    try:
+        recorded = read_json(sidecar)
+    except ValueError as exc:
+        return EXIT_FAILED, f"{sidecar} is not valid JSON ({exc})"
+    if recorded.get("model") != model:
+        return EXIT_FAILED, f"{sidecar} is for model {recorded.get('model')!r}"
+    if recorded.get("split_sha256") != split_fingerprint(split_info):
+        return EXIT_SPLIT, "the score file was made on another split than split.json holds now"
+    current = checkpoint_identity(ctx, model)
+    if current is None:
+        return EXIT_FAILED, f"the checkpoint of {model} is not present now"
+    if recorded.get("checkpoint") != current:
+        return EXIT_FAILED, (
+            f"the checkpoint changed since scoring (scored with {recorded.get('checkpoint')}, "
+            f"now {current})"
+        )
+    if inputs_hash is None:
+        return EXIT_FAILED, f"no frozen inputs in {ctx.frozen_inputs_file}"
+    if recorded.get("inputs_sha256") != inputs_hash:
+        return EXIT_FAILED, (
+            "the score file was made on other claim or corpus rows than the frozen ones"
+        )
+    if recorded.get("score_file_sha256") != file_sha256(path):
+        return EXIT_FAILED, "the score file changed after its provenance was written"
+    return None
+
+
+def write_provenance(
+    ctx: Context,
+    model: str,
+    *,
+    version: str,
+    checkpoint: dict[str, Any],
+    split_info: dict[str, Any],
+    inputs_hash: str,
+) -> Path:
+    path = provenance_file(ctx, model)
+    write_json(
+        path,
+        {
+            "schema_version": 1,
+            "model": model,
+            "model_version": version,
+            "split_sha256": split_fingerprint(split_info),
+            "checkpoint": checkpoint,
+            "inputs_sha256": inputs_hash,
+            "score_file_sha256": file_sha256(score_file(ctx, model)),
+            "written_at": datetime.now(timezone.utc),
+        },
+    )
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -1126,28 +1394,6 @@ def make_scorer(name: str, ctx: Context) -> tuple[Scorer, str]:
     if name == "misinfo":
         return make_misinfo_scorer(ctx)
     return make_laya_scorer(name, ctx)
-
-
-def model_versions(ctx: Context) -> dict[str, str]:
-    """Versions for the report: configs/models.yaml, and the checkpoint directory names."""
-    from modeling.config import get_settings, module_config
-    from modeling.text.laya_clf import LayaScorer
-
-    versions: dict[str, str] = {"misinfo": str(module_config("misinfo").get("version", "v0.0.0"))}
-    for name in ("laya_en", "laya_multi", "laya_multi_base"):
-        scorer = LayaScorer(settings=get_settings(), _config=laya_model_config(name, ctx))
-        versions[name] = scorer.model_version_for("en" if name == "laya_en" else "hi")
-    tfidf_meta = _tfidf_metadata(ctx)
-    versions["tfidf"] = f"tfidf-logreg+sklearn-{tfidf_meta.get('sklearn_version')}"
-    return versions
-
-
-def _tfidf_metadata(ctx: Context) -> dict[str, Any]:
-    if not ctx.tfidf_file.exists():
-        return {}
-    from modeling.eval.tfidf_artifact import load_tfidf
-
-    return dict(load_tfidf(ctx.tfidf_file).metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -1283,12 +1529,34 @@ def selected_models(ctx: Context) -> list[str]:
     return chosen
 
 
+def models_to_score(
+    ctx: Context, chosen: list[str], split_info: dict[str, Any]
+) -> list[str]:
+    """The selected models without a score file that matches the current state.
+
+    A score file whose provenance differs from the split, the checkpoint or the frozen
+    inputs now is scored again, and the reason is said.
+    """
+    if ctx.force or bool(getattr(ctx.args, "refreeze", False)):
+        return list(chosen)
+    inputs_hash = current_inputs_hash(ctx)
+    todo = []
+    for model in chosen:
+        problem = provenance_problem(ctx, model, split_info, inputs_hash)
+        if problem is None:
+            continue
+        if score_file(ctx, model).exists():
+            ctx.say(f"[score] {model}: the score file is not current ({problem[1]}); scoring again")
+        todo.append(model)
+    return todo
+
+
 def stage_score(ctx: Context) -> None:
-    require_prepared(ctx)
+    split_info = require_prepared(ctx)
     chosen = selected_models(ctx)
-    todo = [m for m in chosen if ctx.force or not score_file(ctx, m).exists()]
+    todo = models_to_score(ctx, chosen, split_info)
     if not todo:
-        ctx.say("[score] skipped: every selected model has a score file (use --force)")
+        ctx.say("[score] skipped: every selected model has a current score file (use --force)")
         return
     missing = checkpoints_missing(ctx, todo)
     if missing:
@@ -1299,11 +1567,13 @@ def stage_score(ctx: Context) -> None:
 
     def body() -> dict[str, Any]:
         parts = build_parts(ctx)
+        inputs_hash = current_inputs_hash(ctx)
+        assert inputs_hash is not None  # build_parts froze the inputs or reused them
         for part, frame in parts.items():
             ctx.say(f"[score] input {part}: {len(frame)} rows")
         counts: dict[str, Any] = {}
         for model in todo:
-            counts[model] = score_model(ctx, model, parts)
+            counts[model] = score_model(ctx, model, parts, split_info, inputs_hash)
             release_gpu()
         return counts
 
@@ -1314,8 +1584,19 @@ def stage_score(ctx: Context) -> None:
     write_json(summary_path, merged)
 
 
-def score_model(ctx: Context, model: str, parts: dict[str, pd.DataFrame]) -> dict[str, Any]:
+def score_model(
+    ctx: Context,
+    model: str,
+    parts: dict[str, pd.DataFrame],
+    split_info: dict[str, Any],
+    inputs_hash: str,
+) -> dict[str, Any]:
     started = ctx.deps.clock()
+    checkpoint = checkpoint_identity(ctx, model)
+    if checkpoint is None:
+        raise StageError(EXIT_FAILED, f"[score] the checkpoint of {model} is not present")
+    # The old sidecar goes first, so that a stop part way never leaves it beside a new file.
+    provenance_file(ctx, model).unlink(missing_ok=True)
     with watch_laya_oom():
         scorer, version = make_scorer(model, ctx)
         rows: list[dict[str, Any]] = []
@@ -1330,12 +1611,21 @@ def score_model(ctx: Context, model: str, parts: dict[str, pd.DataFrame]) -> dic
                 "Not writing a score file with no scores.",
             )
     write_score_file(score_file(ctx, model), rows)
+    write_provenance(
+        ctx,
+        model,
+        version=version,
+        checkpoint=checkpoint,
+        split_info=split_info,
+        inputs_hash=inputs_hash,
+    )
     ctx.say(f"[score] {model} ({version}): {score_file(ctx, model)}")
     for part, entry in counts.items():
         skipped = entry["skipped"] or "none"
         ctx.say(f"[score]   {part}: {entry['scored']}/{entry['rows']} scored, skipped: {skipped}")
     return {
         "version": version,
+        "checkpoint": checkpoint,
         "seconds": round(ctx.deps.clock() - started, 1),
         "parts": counts,
     }
@@ -1344,21 +1634,58 @@ def score_model(ctx: Context, model: str, parts: dict[str, pd.DataFrame]) -> dic
 # ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------
+def check_scores_match_split(scores: dict[str, Any], split_info: dict[str, Any]) -> None:
+    """Refuse unless every score file has exactly the val and test ids that ``prepare`` saved."""
+    for part in ("val", "test"):
+        expected = set(split_info["ids"][part])
+        for name, model in scores.items():
+            found = set(model.part(part)["id"])
+            if found != expected:
+                raise StageError(
+                    EXIT_SPLIT,
+                    f"[evaluate] {name} has other {part} ids than split.json "
+                    f"({len(found)} in the score file, {len(expected)} in the split; "
+                    f"only in the file: {sorted(found - expected)[:3]}, only in the split: "
+                    f"{sorted(expected - found)[:3]}). Score the model again.",
+                )
+
+
 def stage_evaluate(ctx: Context) -> None:
     split_info = require_prepared(ctx)
-    models = selected_models(ctx) if getattr(ctx.args, "models", None) else list(MODELS)
+    models = selected_models(ctx)
     missing = [m for m in models if not score_file(ctx, m).exists()]
     if missing:
         raise StageError(
             EXIT_FAILED,
             f"[evaluate] no score file for {missing} in {ctx.scores_dir}. Run the score stage.",
         )
-    from modeling.eval.factcheck_eval import EvalInputError, gate_text, run_comparison
+    from modeling.eval.factcheck_eval import (
+        EvalInputError,
+        gate_text,
+        load_score_dir,
+        run_comparison,
+    )
+
+    inputs_hash = current_inputs_hash(ctx)
+    versions: dict[str, str] = {}
+    for model in models:
+        problem = provenance_problem(ctx, model, split_info, inputs_hash)
+        if problem is not None:
+            raise StageError(
+                problem[0],
+                f"[evaluate] the score file of {model} does not match the current state: "
+                f"{problem[1]}. Run the score stage for {model} again with --force.",
+            )
+        versions[model] = str(read_json(provenance_file(ctx, model))["model_version"])
+    try:
+        scores = load_score_dir(ctx.scores_dir, names=models)
+    except EvalInputError as exc:
+        raise StageError(EXIT_FAILED, f"[evaluate] the harness refused: {exc}") from exc
+    check_scores_match_split(scores, split_info)
 
     description = split_info["description"]
     split_text = f"[DEMO] {description}" if ctx.demo else description
     with scoped_settings(ctx) as settings:
-        versions = model_versions(ctx)
         manifest = ctx.out / "no_manifest.csv" if ctx.demo else None
         try:
             result, paths = run_comparison(
@@ -1369,6 +1696,7 @@ def stage_evaluate(ctx: Context) -> None:
                 split_description=split_text,
                 label="comparison",
                 settings=settings,
+                models=scores,
             )
         except EvalInputError as exc:
             raise StageError(EXIT_FAILED, f"[evaluate] the harness refused: {exc}") from exc
@@ -1485,6 +1813,12 @@ def build_parser() -> argparse.ArgumentParser:
     _gpu(p)
     p.add_argument("--batch-size", type=int, default=None, help="Lower it on a shared GPU.")
     p.add_argument("--models", default=None, help=f"Comma list. Default all: {','.join(MODELS)}.")
+    p.add_argument(
+        "--refreeze",
+        action="store_true",
+        help="Freeze the claim and corpus ids again from the current data, and score the "
+        "selected models again. The other models need scoring again before evaluate.",
+    )
 
     p = sub.add_parser("evaluate", help="Run the harness on the score files.")
     _common(p)

@@ -1113,6 +1113,270 @@ def test_corpus_read_counts_other_languages_and_titles(prepared):
 
 
 # ---------------------------------------------------------------------------
+# frozen inputs, provenance and the selected models
+# ---------------------------------------------------------------------------
+def score_argv(out, *extra):
+    return ["score", "--demo", "--out", str(out), *extra]
+
+
+def patch_corpus(monkeypatch, *, add=None, drop=None, retitle=None):
+    """Make the next corpus read return other rows than the first read did."""
+    real = rc.read_corpus
+
+    def changed(ctx):
+        frame, counts = real(ctx)
+        if drop is not None:
+            frame = frame[frame["id"] != drop]
+        if retitle is not None:
+            frame = frame.copy()
+            frame.loc[frame["id"] == retitle, "text"] = "this text is different now"
+        if add is not None:
+            extra = pd.DataFrame(
+                [{"id": add, "text": "a new article body", "title": "A new headline",
+                  "lang": "en", "source_detail": "news.example"}]
+            )
+            frame = pd.concat([frame, extra], ignore_index=True)
+        return frame, counts
+
+    monkeypatch.setattr(rc, "read_corpus", changed)
+
+
+def rows_of(frame: pd.DataFrame) -> list[dict]:
+    """Score-file rows from a frame that was read back, with nulls as None and labels as int."""
+    rows = []
+    for record in frame.astype(object).where(frame.notna(), None).to_dict("records"):
+        if record["label"] is not None:
+            record["label"] = int(record["label"])
+        rows.append(record)
+    return rows
+
+
+def a_corpus_id(out) -> str:
+    return str(load_score_dir(out / "scores")["tfidf"].part("corpus_title")["id"].iloc[0])
+
+
+def test_the_first_score_run_freezes_the_claim_and_corpus_ids(scored):
+    frozen = pd.read_parquet(scored / "score_inputs.parquet")
+    frames = score_frames(scored)
+    for part in rc.FROZEN_PARTS:
+        assert sorted(frozen.loc[frozen["part"] == part, "id"]) == sorted(
+            frames["tfidf"].loc[frames["tfidf"]["part"] == part, "id"]
+        )
+    assert set(frozen.columns) == {"part", "id", "lang", "text_sha256"}
+
+
+def test_a_later_score_run_reuses_the_frozen_ids_and_leaves_new_rows_out(
+    scored, monkeypatch
+):
+    patch_corpus(monkeypatch, add="brand-new-record")
+    (scored / "scores" / "tfidf.parquet").unlink()
+    deps, _, _, out = make_deps()
+    assert run(score_argv(scored, "--models", "tfidf"), deps) == 0
+    assert "new since the freeze" in out.getvalue()
+    frames = score_frames(scored)
+    for part in ("corpus_title", "corpus_text"):
+        ids = {name: set(f.loc[f["part"] == part, "id"]) for name, f in frames.items()}
+        assert "brand-new-record" not in ids["tfidf"]
+        assert ids["tfidf"] == ids["misinfo"] == ids["laya_en"]
+
+
+def test_a_later_score_run_refuses_when_a_frozen_id_is_gone(scored, monkeypatch, capsys):
+    victim = a_corpus_id(scored)
+    patch_corpus(monkeypatch, drop=victim)
+    (scored / "scores" / "tfidf.parquet").unlink()
+    deps, gpu, *_ = make_deps()
+    assert run(score_argv(scored, "--models", "tfidf"), deps) == rc.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "gone from the data" in err and victim in err and "--refreeze" in err
+    assert not (scored / "scores" / "tfidf.parquet").exists()
+
+
+def test_a_later_score_run_refuses_when_a_frozen_text_changed(scored, monkeypatch, capsys):
+    victim = a_corpus_id(scored)
+    patch_corpus(monkeypatch, retitle=victim)
+    (scored / "scores" / "tfidf.parquet").unlink()
+    deps, *_ = make_deps()
+    assert run(score_argv(scored, "--models", "tfidf"), deps) == rc.EXIT_FAILED
+    assert "changed text or language" in capsys.readouterr().err
+
+
+def test_refreeze_scores_the_chosen_models_again_and_evaluate_refuses_the_others(
+    scored, monkeypatch, capsys
+):
+    patch_corpus(monkeypatch, add="brand-new-record")
+    deps, *_ = make_deps()
+    assert run(score_argv(scored, "--models", "tfidf", "--refreeze"), deps) == 0
+    ids = score_frames(scored)["tfidf"].query("part == 'corpus_title'")["id"]
+    assert "brand-new-record" in set(ids)
+    # The other four files were made on the old rows. The provenance check stops them.
+    capsys.readouterr()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == rc.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "misinfo" in err and "other claim or corpus rows" in err
+
+
+def read_provenance(out, model) -> dict:
+    return json.loads((out / "scores" / f"{model}.provenance.json").read_text())
+
+
+def test_every_score_file_has_a_provenance_sidecar(scored):
+    split_info = json.loads((scored / "split.json").read_text())
+    frozen_hash = rc.input_manifest_hash(pd.read_parquet(scored / "score_inputs.parquet"))
+    for model in rc.MODELS:
+        recorded = read_provenance(scored, model)
+        assert recorded["model"] == model
+        assert recorded["split_sha256"] == rc.split_fingerprint(split_info)
+        assert recorded["inputs_sha256"] == frozen_hash
+        parquet = scored / "scores" / f"{model}.parquet"
+        assert recorded["score_file_sha256"] == rc.file_sha256(parquet)
+        assert recorded["model_version"]
+    misinfo = read_provenance(scored, "misinfo")["checkpoint"]
+    assert misinfo["kind"] == "directory" and misinfo["name"] == MISINFO_V
+    assert len(misinfo["sha256"]) == 64
+    assert read_provenance(scored, "laya_en")["checkpoint"]["name"] == f"en-{LAYA_V}"
+    assert read_provenance(scored, "laya_multi")["checkpoint"]["name"] == f"multi-{LAYA_V}"
+    base = read_provenance(scored, "laya_multi_base")["checkpoint"]
+    assert base["kind"] == "pinned_revision"
+    assert base["revision"] == module_config("laya")["revision"]
+    assert read_provenance(scored, "tfidf")["checkpoint"]["kind"] == "file"
+
+
+def test_score_scores_again_a_model_whose_checkpoint_changed_and_only_that_one(
+    scored, fake_laya
+):
+    inodes = {p.stem: p.stat().st_ino for p in (scored / "scores").glob("*.parquet")}
+    (scored / "models" / "misinfo" / MISINFO_V / "pytorch_model.bin").write_bytes(b"new weights")
+    deps, _, _, out = make_deps()
+    assert run(score_argv(scored), deps) == 0
+    assert "misinfo: the score file is not current (the checkpoint changed" in out.getvalue()
+    after = {p.stem: p.stat().st_ino for p in (scored / "scores").glob("*.parquet")}
+    assert {m for m in inodes if inodes[m] != after[m]} == {"misinfo"}
+
+
+def test_score_scores_again_when_the_split_changed(scored, fake_laya):
+    path = scored / "split.json"
+    info = json.loads(path.read_text())
+    info["seed"] = info["seed"] + 1
+    path.write_text(json.dumps(info), encoding="utf-8")
+    inodes = {p.stem: p.stat().st_ino for p in (scored / "scores").glob("*.parquet")}
+    deps, _, _, out = make_deps()
+    assert run(score_argv(scored), deps) == 0
+    assert "another split" in out.getvalue()
+    after = {p.stem: p.stat().st_ino for p in (scored / "scores").glob("*.parquet")}
+    assert all(after[m] != inodes[m] for m in inodes)
+
+
+def test_score_does_not_reuse_a_file_that_has_no_provenance(scored, fake_laya):
+    (scored / "scores" / "tfidf.provenance.json").unlink()
+    inode = (scored / "scores" / "tfidf.parquet").stat().st_ino
+    deps, _, _, out = make_deps()
+    assert run(score_argv(scored), deps) == 0
+    assert "no provenance file" in out.getvalue()
+    assert (scored / "scores" / "tfidf.provenance.json").exists()
+    assert (scored / "scores" / "tfidf.parquet").stat().st_ino != inode
+
+
+def test_evaluate_refuses_a_score_file_without_provenance(scored, capsys):
+    (scored / "scores" / "tfidf.provenance.json").unlink()
+    deps, *_ = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == rc.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "tfidf" in err and "no provenance file" in err and "--force" in err
+
+
+def test_evaluate_refuses_after_the_checkpoint_changed(scored, capsys):
+    (scored / "models" / "laya" / f"en-{LAYA_V}" / "extra.bin").write_bytes(b"x")
+    deps, *_ = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == rc.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "laya_en" in err and "checkpoint changed since scoring" in err
+
+
+def test_evaluate_refuses_after_the_split_changed(scored, capsys):
+    path = scored / "split.json"
+    info = json.loads(path.read_text())
+    info["ids"]["test"] = info["ids"]["test"][1:]
+    path.write_text(json.dumps(info), encoding="utf-8")
+    deps, *_ = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == rc.EXIT_SPLIT
+    assert "another split" in capsys.readouterr().err
+
+
+def test_evaluate_refuses_score_files_whose_ids_differ_from_split_json(scored, capsys):
+    # A file with a valid sidecar and a test row missing: the ids check is the one that stops it.
+    path = scored / "scores" / "tfidf.parquet"
+    frame = pd.read_parquet(path)
+    victim = frame.loc[frame["part"] == "test", "id"].iloc[0]
+    rc.write_score_file(path, rows_of(frame[frame["id"] != victim]))
+    sidecar = scored / "scores" / "tfidf.provenance.json"
+    recorded = json.loads(sidecar.read_text())
+    recorded["score_file_sha256"] = rc.file_sha256(path)
+    sidecar.write_text(json.dumps(recorded), encoding="utf-8")
+    deps, *_ = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == rc.EXIT_SPLIT
+    err = capsys.readouterr().err
+    assert "tfidf has other test ids than split.json" in err and victim in err
+
+
+def test_check_scores_match_split_compares_val_and_test():
+    info = {"ids": {"val": ["a", "b"], "test": ["c"]}}
+
+    def scores(val, test):
+        rows = [{"part": "val", "id": i} for i in val] + [{"part": "test", "id": i} for i in test]
+        frame = pd.DataFrame(rows)
+        return {"m": types.SimpleNamespace(part=lambda n, f=frame: f[f["part"] == n])}
+
+    rc.check_scores_match_split(scores(["b", "a"], ["c"]), info)
+    with pytest.raises(rc.StageError, match="other val ids"):
+        rc.check_scores_match_split(scores(["a"], ["c"]), info)
+    with pytest.raises(rc.StageError, match="other test ids"):
+        rc.check_scores_match_split(scores(["a", "b"], ["c", "d"]), info)
+
+
+def test_evaluate_leaves_a_leftover_score_file_out_of_the_comparison(scored):
+    frame = pd.read_parquet(scored / "scores" / "tfidf.parquet")
+    leftover = frame[frame["id"] != frame.loc[frame["part"] == "corpus_title", "id"].iloc[0]]
+    rc.write_score_file(scored / "scores" / "old_run.parquet", rows_of(leftover))
+    deps, _, _, out = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == 0
+    report = next(line.split("report: ", 1)[1] for line in out.getvalue().splitlines()
+                  if line.endswith("factcheck_eval.json"))
+    assert set(json.loads(Path(report).read_text())["models"]) == set(rc.MODELS)
+
+
+def test_evaluate_with_models_compares_only_those_models(scored):
+    deps, _, _, out = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored), "--models", "tfidf,misinfo"], deps) == 0
+    report = next(line.split("report: ", 1)[1] for line in out.getvalue().splitlines()
+                  if line.endswith("factcheck_eval.json"))
+    assert set(json.loads(Path(report).read_text())["models"]) == {"tfidf", "misinfo"}
+
+
+def test_evaluate_reports_the_version_recorded_at_scoring_not_the_current_config(scored):
+    sidecar = scored / "scores" / "misinfo.provenance.json"
+    recorded = json.loads(sidecar.read_text())
+    recorded["model_version"] = "v9.9.9-recorded"
+    sidecar.write_text(json.dumps(recorded), encoding="utf-8")
+    deps, _, _, out = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == 0
+    report = next(line.split("report: ", 1)[1] for line in out.getvalue().splitlines()
+                  if line.endswith("factcheck_eval.json"))
+    models = json.loads(Path(report).read_text())["models"]
+    assert models["misinfo"]["version"] == "v9.9.9-recorded"
+
+
+def test_the_zero_shot_control_is_listed_among_the_models_and_fails_the_gate(scored):
+    from modeling.eval.factcheck_eval import CONTROL_MODELS
+
+    assert CONTROL_MODELS <= set(rc.MODELS)
+    deps, _, _, out = make_deps()
+    assert run(["evaluate", "--demo", "--out", str(scored)], deps) == 0
+    text = out.getvalue()
+    assert "laya_multi_base: do not ship" in text
+    assert "laya_multi_base: Hindi gate FAIL (control)" in text
+
+
+# ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------
 def test_evaluate_refuses_when_a_score_file_is_missing(scored, capsys):
