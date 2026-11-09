@@ -611,7 +611,7 @@ class TestRecordsFromCorpus:
                 {"id": "news:c", "source_detail": "other.com", "text": "x", "raw": {}},
             ]
         )
-        rows = list(records_from_corpus(frame, ["factcrescendo.com"]))
+        rows = list(records_from_corpus(frame, ["factcrescendo.com"], on_duplicate=lambda _: None))
         assert [r["id"] for r in rows] == ["news:a", "news:b"]
         assert rows[0]["tags"] == ["False", "Politics", "UP"]
         assert rows[0]["url"] == "https://f/a"
@@ -628,6 +628,52 @@ class TestRecordsFromCorpus:
         rows = list(records_from_corpus(frame, ["boomlive.in"], on_duplicate=repeats.append))
         assert [r["text"] for r in rows] == ["first"]
         assert repeats == ["news:a"]
+
+    def test_on_duplicate_is_required(self):
+        with pytest.raises(TypeError):
+            list(records_from_corpus(self._frame([]), ["boomlive.in"]))
+
+    def test_the_newest_copy_wins_so_a_revised_tag_list_gives_a_verdict(self, extractor):
+        pd = pytest.importorskip("pandas")
+        frame = pd.DataFrame(
+            [
+                {
+                    "id": "news:a",
+                    "source_detail": "factcrescendo.com",
+                    "text": "old",
+                    "ingested_at": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "raw": {"url": "https://f/a", "title": "T", "tags": ["Politics"]},
+                },
+                {
+                    "id": "news:a",
+                    "source_detail": "factcrescendo.com",
+                    "text": "new",
+                    "ingested_at": pd.Timestamp("2026-02-01", tz="UTC"),
+                    "raw": {"url": "https://f/a", "title": "T", "tags": ["Politics", "False"]},
+                },
+            ]
+        )
+        repeats: list[str] = []
+        rows = list(
+            records_from_corpus(frame, ["factcrescendo.com"], on_duplicate=repeats.append)
+        )
+        assert [r["text"] for r in rows] == ["new"]
+        assert repeats == ["news:a"]
+        verdicts = list(extractor.run(rows))
+        assert [v.label for v in verdicts] == ["false"]
+
+    def test_a_null_recency_falls_back_to_file_order(self):
+        pd = pytest.importorskip("pandas")
+        frame = pd.DataFrame(
+            [
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "first",
+                 "ingested_at": pd.NaT, "raw": {}},
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "second",
+                 "ingested_at": pd.NaT, "raw": {}},
+            ]
+        )
+        rows = list(records_from_corpus(frame, ["boomlive.in"], on_duplicate=lambda _: None))
+        assert [r["text"] for r in rows] == ["first"]
 
 
 class TestWriteIsIdempotent:

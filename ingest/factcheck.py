@@ -90,7 +90,7 @@ class DropReason(str, Enum):
     #: longer fetched this run. The failures themselves were counted as
     #: FETCH_FAILED; this counts the records skipped because of them.
     DOMAIN_GIVEN_UP = "domain_given_up"
-    #: The corpus held this record id more than once; only the first is kept.
+    #: The corpus held this record id more than once; only the newest is kept.
     DUPLICATE_RECORD = "duplicate_record"
     #: A corpus record with no id. A verdict is keyed on it, so it cannot be stored.
     NO_RECORD_ID = "no_record_id"
@@ -572,10 +572,35 @@ def FACTCHECK_SCHEMA():  # noqa: N802 - matches ingest/store.py's naming
     )
 
 
+def _newest_row_positions(frame: Any, allowed: set[str]) -> dict[str, int]:
+    """Position of the newest row for each repeated id among ``allowed`` publishers.
+
+    Recency is ``ingested_at``, the time the store took the row in. ``timestamp``
+    is the article's publication time and is the same for every copy of it. A
+    row with no ``ingested_at`` counts as older than any row that has one; when
+    the column is absent or null for every copy, the first copy wins.
+    """
+    has_ingested = "ingested_at" in getattr(frame, "columns", ())
+    best: dict[str, tuple[int, Any]] = {}
+    for position, (_, row) in enumerate(frame.iterrows()):
+        if row.get("source_detail") not in allowed:
+            continue
+        record_id = row.get("id")
+        if not record_id:
+            continue
+        stamp = row.get("ingested_at") if has_ingested else None
+        if stamp is not None and stamp != stamp:  # NaT or NaN
+            stamp = None
+        held = best.get(record_id)
+        if held is None or (stamp is not None and (held[1] is None or stamp > held[1])):
+            best[record_id] = (position, stamp)
+    return {record_id: position for record_id, (position, _) in best.items()}
+
+
 def records_from_corpus(
     frame: Any,
     publishers: Iterable[str],
-    on_duplicate: Callable[[str], None] | None = None,
+    on_duplicate: Callable[[str], None],
 ) -> Iterator[dict]:
     """Project corpus rows into the flat dicts the extractor consumes.
 
@@ -585,23 +610,21 @@ def records_from_corpus(
     are flattened -- Fact Crescendo's verdict is a term inside that list, so
     getting this wrong silently loses the whole tier-2 path.
 
-    Each id is yielded once, first occurrence wins: the store can return the
-    same id twice, and a repeat would otherwise be fetched and written twice.
-    ``on_duplicate`` is called with the id of every repeat that is skipped, so
-    the caller can count it.
+    Each id is yielded once, and the newest copy wins (see
+    ``_newest_row_positions``): the store can return the same id twice, and a
+    feed that revises an article's tags later can add the verdict term to the
+    newer copy only. ``on_duplicate`` is required and is called with the id of
+    every older copy that is skipped, so no caller can drop duplicates uncounted.
     """
     allowed = set(publishers)
-    seen: set[str] = set()
-    for _, row in frame.iterrows():
+    newest = _newest_row_positions(frame, allowed)
+    for position, (_, row) in enumerate(frame.iterrows()):
         if row.get("source_detail") not in allowed:
             continue
         record_id = row.get("id")
-        if record_id:
-            if record_id in seen:
-                if on_duplicate is not None:
-                    on_duplicate(str(record_id))
-                continue
-            seen.add(record_id)
+        if record_id and newest[record_id] != position:
+            on_duplicate(str(record_id))
+            continue
         raw = row.get("raw")
         if isinstance(raw, str):
             try:
