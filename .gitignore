@@ -31,6 +31,9 @@
 /uploads/
 /reports/
 
+# Fact-check comparison output: scores and flag rates from a corpus that is not committed.
+/artifacts/eval/factcheck/
+
 # Secrets
 .env
 .env.local

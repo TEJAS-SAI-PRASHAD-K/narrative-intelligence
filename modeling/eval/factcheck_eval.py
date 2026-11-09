@@ -33,6 +33,7 @@ statistics stay testable without any corpus on disk.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1236,3 +1237,302 @@ def evaluate(
         "cells": cells,
         "hindi_gate": {name: hindi_gate(name, cells[name].get("hi")) for name in ordered},
     }
+
+
+# ---------------------------------------------------------------------------
+# Output: artifacts/eval/factcheck/<label>/{factcheck_eval.json,factcheck_eval.md}
+# ---------------------------------------------------------------------------
+EVAL_MODULE = "factcheck"
+JSON_NAME = "factcheck_eval.json"
+MARKDOWN_NAME = "factcheck_eval.md"
+
+
+def _cell_text(estimate: dict[str, Any] | None, digits: int = 3) -> str:
+    """One table cell: ``value [low, high]``, or the status with its reason."""
+    if not estimate:
+        return "n/a"
+    if estimate["status"] != "ok":
+        label = "no score" if estimate["status"] == "no_score" else "undefined"
+        return f"{label}: {estimate['reason']}"
+
+    def fmt(value: float | None) -> str:
+        return "no value" if value is None else f"{value:.{digits}f}"
+
+    text = f"{fmt(estimate['value'])} [{fmt(estimate['ci_low'])}, {fmt(estimate['ci_high'])}]"
+    if estimate.get("reason"):
+        text += f" ({estimate['reason']})"
+    return text
+
+
+def _escape(text: Any) -> str:
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def _interval_text(interval: dict[str, Any] | None) -> str:
+    if not interval or interval.get("value") is None:
+        return "no value"
+    low, high = interval.get("ci_low"), interval.get("ci_high")
+    if low is None or high is None:
+        return f"{interval['value']:.3f} [no interval]"
+    return f"{interval['value']:.3f} [{low:.3f}, {high:.3f}]"
+
+
+def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None = None) -> str:
+    """The report table set. Every number shown has its sample size beside it."""
+    lines: list[str] = ["# Fact-check evaluation: three-way comparison", ""]
+    evaluation_set = result["evaluation_set"]
+    if not evaluation_set["frozen"]:
+        lines += [f"> **{NOT_FROZEN_NOTICE}**", ""]
+    lines += [f"> {evaluation_set['statement']}", ""]
+    lines += [
+        f"- Baseline: `{result['baseline']}`. Precision target: {result['precision_target']}. "
+        f"Seed: `{result['seed']}`. Resamples: {result['n_bootstrap']}. Intervals are 95% "
+        "percentile bootstrap intervals.",
+        f"- Split: {result['split']['description']}",
+        f"- Evaluation claims: {evaluation_set['n_evaluation_claims']}"
+        + (
+            f" (frozen, {evaluation_set['manifest_rows']} manifest rows)"
+            if evaluation_set["frozen"]
+            else " (not frozen)"
+        ),
+        "",
+    ]
+
+    notices = [n for n in result["notices"] if n != NOT_FROZEN_NOTICE]
+    if notices:
+        lines += ["## Notices", ""] + [f"- {_escape(n)}" for n in notices] + [""]
+
+    lines += [
+        "## Models and operating points",
+        "",
+        "The threshold of each model comes from its own validation rows. Nothing is shared.",
+        "",
+        "| model | version | threshold | val precision | val recall | target met | "
+        "val scored/rows | test scored/rows |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for name, info in result["models"].items():
+        op, test = info["operating_point"], info["test"]
+        if op["status"] == "ok":
+            op_cells = (
+                f"{op['threshold']:.4f} | {op['val_precision']:.3f} | {op['val_recall']:.3f} | "
+                f"{'yes' if op['target_met'] else '**no**'}"
+            )
+        else:
+            op_cells = f"no operating point: {_escape(op['reason'])} | n/a | n/a | n/a"
+        lines.append(
+            f"| {name} | {info['version'] or 'not supplied'} | {op_cells} | "
+            f"{op['n_val_scored']}/{op['n_val_rows']} | {test['n_scored']}/{test['n_test_rows']} |"
+        )
+    lines.append("")
+
+    lines += [
+        "## Shared test split: macro-F1 at each model's own threshold",
+        "",
+        "| model | macro-F1 [95% CI] | scored/rows | flagged | skips |",
+        "|---|---|---|---|---|",
+    ]
+    for name, info in result["models"].items():
+        test = info["test"]
+        if test.get("macro_f1"):
+            f1 = _interval_text(test["macro_f1"])
+        else:
+            f1 = f"no score: {_escape(test.get('reason'))}"
+        lines.append(
+            f"| {name} | {f1} | {test['n_scored']}/{test['n_test_rows']} | "
+            f"{test.get('n_flagged', 'n/a')} | {_describe_skips(test['skips'])} |"
+        )
+    lines += [""]
+
+    lines += [
+        "### Ship decision against the baseline",
+        "",
+        SHIP_RULE,
+        "",
+        "| model | macro-F1 difference [95% CI] | paired rows | left out | decision | reason |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name, comparison in result["comparisons"].items():
+        lines.append(
+            f"| {name} | {_interval_text(comparison.get('difference'))} | "
+            f"{comparison.get('n_paired', 'n/a')} | {comparison.get('n_left_out', 'n/a')} | "
+            f"**{'ship' if comparison['ship'] else 'do not ship'}** | "
+            f"{_escape(comparison['reason'])} |"
+        )
+    lines += [
+        "",
+        "The difference is the candidate minus the baseline, on test rows scored by both, with "
+        "the same resampled row indices for both models.",
+        "",
+    ]
+
+    for key, heading, corpus_key in (
+        ("title", "Recall, flag rate and lift: corpus titles (primary)", "corpus_title"),
+        ("text", "Recall, flag rate and lift: corpus full text (second value)", "corpus_text"),
+    ):
+        lines += [
+            f"## {heading}",
+            "",
+            "Lift = recall on known-false claims / flag rate on the unlabelled corpus, at the "
+            "same threshold. Fact-check publishers are excluded from the corpus.",
+            "",
+            "| model | language | claims scored/rows | recall [95% CI] | corpus scored/rows | "
+            "flag rate [95% CI] | lift [95% CI] | zero-flag resamples |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for name, by_language in result["cells"].items():
+            for language in result["languages"]:
+                cell = by_language[language]
+                claims, corpus = cell["claims"], cell[corpus_key]
+                lift = cell[f"lift_{key}"]
+                zero = lift.get("n_zero_flag_resamples")
+                lines.append(
+                    f"| {name} | {language} | "
+                    f"{claims.get('n_scored', 0)}/{claims.get('n_rows', 0)} | "
+                    f"{_escape(_cell_text(claims.get('recall')))} | "
+                    f"{corpus.get('n_scored', 0)}/{corpus.get('n_rows', 0)} | "
+                    f"{_escape(_cell_text(corpus.get('flag_rate')))} | "
+                    f"{_escape(_cell_text(lift))} | "
+                    f"{zero if zero is not None else 'n/a'} of {result['n_bootstrap']} |"
+                )
+        lines.append("")
+
+    lines += [
+        "## Hindi gate",
+        "",
+        f"Hindi scores enter fusion only with at least {HINDI_MIN_CLAIMS} Hindi claims and a "
+        f"title lift interval whose lower limit is above {HINDI_LIFT_FLOOR:g}.",
+        "",
+        "| model | Hindi claims scored | lift [95% CI] | result | reason |",
+        "|---|---|---|---|---|",
+    ]
+    for name, gate in result["hindi_gate"].items():
+        interval = {
+            "value": gate["lift"],
+            "ci_low": gate["lift_ci_low"],
+            "ci_high": gate["lift_ci_high"],
+        }
+        lines.append(
+            f"| {name} | {gate['n_hindi_claims_scored']} of {gate['n_hindi_claims_rows']} | "
+            f"{_interval_text(interval) if gate['lift'] is not None else 'no value'} | "
+            f"**{'PASS' if gate['pass'] else 'FAIL'}** | {_escape(gate['reason'])} |"
+        )
+    lines.append("")
+
+    lines += [
+        "## Skipped and excluded rows",
+        "",
+        "A null score is never counted as not flagged. Each one is left out of the "
+        "denominator and counted here.",
+        "",
+        "| model | part | rows | no score | skip_reason counts |",
+        "|---|---|---|---|---|",
+    ]
+    for name, by_language in result["cells"].items():
+        cell = by_language[ALL]
+        for part, key in (("claims", "claims"), ("corpus_title", "corpus_title"),
+                          ("corpus_text", "corpus_text")):
+            counts = cell[key]
+            if "n_rows" in counts:
+                lines.append(
+                    f"| {name} | {part} | {counts['n_rows']} | {counts['n_skipped']} | "
+                    f"{_describe_skips(counts['skips'])} |"
+                )
+    lines += [
+        "",
+        "| model | claim ids excluded (reason=count) | kept claims absent from scores | "
+        "corpus rows from fact-check publishers (title/text) | corpus rows without source_detail |",
+        "|---|---|---|---|---|",
+    ]
+    for name, info in result["models"].items():
+        title, text = info["corpus"]["corpus_title"], info["corpus"]["corpus_text"]
+        lines.append(
+            f"| {name} | {_describe_skips(info['claims_excluded'])} | "
+            f"{info['evaluation_claims_missing_from_scores']} | "
+            f"{title['n_excluded_fact_check_publisher']}/{text['n_excluded_fact_check_publisher']}"
+            f" | {title['n_without_source_detail']}/{text['n_without_source_detail']} |"
+        )
+    lines.append("")
+
+    lines += ["## Inputs", "", "| model | file | rows | sha256 |", "|---|---|---|---|"]
+    for name, info in result["models"].items():
+        source = info["input"]
+        lines.append(f"| {name} | {source['file']} | {source['n_rows']} | `{source['sha256']}` |")
+    lines.append("")
+    if fingerprint:
+        lines += [
+            "## Reproducibility",
+            "",
+            f"- seed: `{fingerprint['seed']}`",
+            f"- input manifest hash: `{fingerprint['input_manifest_hash']}`",
+            "- regenerate by rerunning `python -m modeling.cli evaluate-factchecks` on the same "
+            "score files and the same seed",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def write_factcheck_report(
+    result: dict[str, Any], *, label: str = "comparison", settings: Any = None
+) -> list[Path]:
+    """Write the JSON result and the Markdown report under ``artifacts/eval/factcheck/<label>/``."""
+    from datetime import datetime, timezone
+
+    from modeling.config import run_fingerprint
+    from modeling.eval.report import eval_dir
+
+    target = eval_dir(EVAL_MODULE, label, settings)
+    fingerprint = run_fingerprint(result["seed"])
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run": fingerprint,
+        **result,
+    }
+    json_path = target / JSON_NAME
+    json_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=False, allow_nan=False) + "\n", encoding="utf-8"
+    )
+    markdown_path = target / MARKDOWN_NAME
+    markdown_path.write_text(render_markdown(result, fingerprint), encoding="utf-8")
+    return [json_path, markdown_path]
+
+
+def run_comparison(
+    score_dir: Path,
+    *,
+    data_dir: Path | None = None,
+    manifest_path: Path | None = None,
+    publishers_path: Path | None = None,
+    baseline: str = DEFAULT_BASELINE,
+    precision_target: float = DEFAULT_PRECISION_TARGET,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    seed: int | None = None,
+    versions: dict[str, str] | None = None,
+    split_description: str | None = None,
+    label: str = "comparison",
+    settings: Any = None,
+    write: bool = True,
+) -> tuple[dict[str, Any], list[Path]]:
+    """Load, verify, evaluate and write. Any refusal raises before a file is written.
+
+    The manifest check runs while the claim set is built, before any statistic,
+    so a changed evaluation set stops the run with nothing written.
+    """
+    from modeling.config import get_settings
+
+    settings = settings or get_settings()
+    models = load_score_dir(score_dir)
+    universe = load_claim_universe(data_dir or settings.data_dir, manifest_path)
+    result = evaluate(
+        models,
+        universe=universe,
+        publishers=load_factcheck_publishers(publishers_path),
+        baseline=baseline,
+        precision_target=precision_target,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+        versions=versions,
+        split_description=split_description,
+    )
+    paths = write_factcheck_report(result, label=label, settings=settings) if write else []
+    return result, paths

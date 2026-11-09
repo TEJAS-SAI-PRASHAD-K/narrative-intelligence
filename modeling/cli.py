@@ -292,6 +292,90 @@ def report(
         console.print(f"wrote {path}")
 
 
+@app.command(name="evaluate-factchecks")
+def evaluate_factchecks(
+    scores: Path = typer.Argument(..., help="Directory with one <model>.parquet per model."),
+    baseline: str = typer.Option("tfidf", help="Model the others are compared against."),
+    precision: float = typer.Option(0.85, help="Validation precision target for each threshold."),
+    n_bootstrap: int = typer.Option(2000, "--n-bootstrap", help="Resamples for every interval."),
+    model_version: list[str] = typer.Option(
+        None, "--model-version", help="name=version, repeatable. Recorded in the report."
+    ),
+    manifest: Path | None = typer.Option(
+        None, help="Frozen evaluation set CSV. Default configs/factcheck_eval_manifest.csv."
+    ),
+    split: str | None = typer.Option(None, help="How val and test were split, in one line."),
+    label: str = typer.Option("comparison", help="Output goes to artifacts/eval/factcheck/LABEL."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Three-way comparison on the Indian fact-check set, from precomputed scores.
+
+    Needs no model weights and no GPU. Exits 1 and writes nothing when an input is
+    malformed, the test splits differ, or the frozen evaluation set has changed.
+    """
+    _bootstrap(verbose)
+    from modeling.eval.factcheck_eval import EvalInputError, run_comparison
+
+    versions: dict[str, str] = {}
+    for item in model_version or []:
+        name, sep, version = item.partition("=")
+        if not sep or not name or not version:
+            raise typer.BadParameter(f"--model-version needs name=version, got {item!r}")
+        versions[name] = version
+    try:
+        result, paths = run_comparison(
+            scores,
+            manifest_path=manifest,
+            baseline=baseline,
+            precision_target=precision,
+            n_bootstrap=n_bootstrap,
+            versions=versions,
+            split_description=split,
+            label=label,
+        )
+    except EvalInputError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not result["evaluation_set"]["frozen"]:
+        console.print("[bold yellow]evaluation set not frozen[/] (see the report)")
+    for name, comparison in result["comparisons"].items():
+        console.print(
+            f"{name}: {'ship' if comparison['ship'] else 'do not ship'} - {comparison['reason']}"
+        )
+    for name, gate in result["hindi_gate"].items():
+        console.print(f"{name}: Hindi gate {'PASS' if gate['pass'] else 'FAIL'} - {gate['reason']}")
+    for path in paths:
+        console.print(f"wrote {path}")
+
+
+@app.command(name="freeze-factchecks")
+def freeze_factchecks(
+    out: Path | None = typer.Option(
+        None, help="Manifest path. Default configs/factcheck_eval_manifest.csv."
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Replace an existing manifest. Say why in the commit."
+    ),
+) -> None:
+    """Write the frozen evaluation set (record id, URL, claim SHA-256) from factchecks.parquet.
+
+    The claim text is hashed and never written. Commit the CSV. Refuses to replace an
+    existing manifest without --overwrite.
+    """
+    _bootstrap()
+    from modeling.eval.factcheck_eval import EvalInputError, freeze_manifest_from_data
+
+    try:
+        path, count = freeze_manifest_from_data(
+            get_settings().data_dir, out, overwrite=overwrite
+        )
+    except EvalInputError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"froze {count} known-false claims -> {path}")
+
+
 @app.command()
 def cluster(
     demo: bool = typer.Option(False, "--demo"),
