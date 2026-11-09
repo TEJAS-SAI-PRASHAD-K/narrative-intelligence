@@ -17,6 +17,7 @@ from app.deps import FilterSpec, Page
 from app.errors import BadRequest, NotFound
 from app.repositories.filters import (
     apply_post_filters,
+    join_post_scores,
     count_rows,
     decode_cursor,
     encode_cursor,
@@ -151,7 +152,7 @@ async def list_posts(
         stmt = stmt.order_by(total.desc(), Post.id.desc()).offset(cursor.get("o", 0))
     else:  # risk
         stmt = (
-            stmt.join(PostScore, PostScore.post_id == Post.id)
+            join_post_scores(stmt)
             .where(PostScore.misinfo_likelihood.isnot(None))
             .order_by(PostScore.misinfo_likelihood.desc(), Post.id.desc())
             .offset(cursor.get("o", 0))

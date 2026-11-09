@@ -51,6 +51,23 @@ async def resolve_project_id(session: AsyncSession, identifier: str) -> uuid.UUI
     return exists
 
 
+def join_post_scores(stmt: Select) -> Select:
+    """Join ``post_scores`` to a statement over ``posts``, at most once.
+
+    A score filter and the risk sort both need the table. Joining it twice
+    repeats the unaliased name and Postgres refuses the query, so every caller
+    goes through here and a second request is a no-op.
+    """
+    from app.models.corpus import Post, PostScore
+
+    already_joined = any(
+        PostScore.__table__ in from_clause._from_objects for from_clause in stmt.get_final_froms()
+    )
+    if already_joined:
+        return stmt
+    return stmt.join(PostScore, PostScore.post_id == Post.id)
+
+
 def apply_post_filters(stmt: Select, spec: FilterSpec, project_id: uuid.UUID) -> Select:
     """Apply the shared filter spec to a statement selecting from ``posts``.
 
@@ -100,7 +117,7 @@ def apply_post_filters(stmt: Select, spec: FilterSpec, project_id: uuid.UUID) ->
         )
     )
     if needs_scores:
-        stmt = stmt.join(PostScore, PostScore.post_id == Post.id)
+        stmt = join_post_scores(stmt)
         if spec.sentiment:
             conditions.append(PostScore.sentiment.in_(spec.sentiment))
         if spec.emotion:
