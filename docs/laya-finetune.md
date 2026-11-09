@@ -22,10 +22,10 @@ result.
 | `data/benchmarks/` | `make benchmarks` supplies LIAR (zip, unattended), the CoAID repository clone, and the FakeNewsNet repository clone. The FakeNewsNet clone has the label CSVs and the crawler, not article text. Each download is pinned to a commit or checksum, and a mismatch stops the script. (`make benchmarks` also fetches FNC-1 into `stance/`; it is not used here.) Checksums go in `data/benchmarks/manifest.json` |
 | The fine-tune | not run |
 | Scoring integration | `modeling/scoring.py` has **no Laya stage**. `LayaScorer.checkpoint_for` returns the directory set in `configs/models.yaml` under `laya.finetuned_checkpoints.<lang>`, and the base checkpoint when that key is null. A path that does not exist skips the record with `checkpoint_missing`. The fine-tuned directory is reachable from the scorer, not yet from `modeling/scoring.py` |
-| The eval harness for the three-way comparison | written: `modeling/eval/factcheck_eval.py`, run with `python -m modeling.cli evaluate-factchecks` (step 6d). It reads scores that are already computed. The code that produces the score files (6a) is **not written** |
+| The eval harness for the three-way comparison | written: `modeling/eval/factcheck_eval.py`, run with `python -m modeling.cli evaluate-factchecks` (step 6d). It reads scores that are already computed. `scripts/run_comparison.py` produces the score files (6a, step 6e). It is tested with fakes and has **not run on a GPU** |
 
 Everything up to step 5 is runnable now. Step 6 produces the result. The harness
-exists. The scoring code that feeds it does not.
+and `scripts/run_comparison.py` exist. Step 6e runs steps 4 to 6 with that script.
 
 ---
 
@@ -274,9 +274,9 @@ print(a.predict('A video claims the PM resigned today.', {'misinfo': {'type':'no
 
 ---
 
-## 6. The part that is not written yet: the comparison
+## 6. The comparison
 
-This is the deliverable, and it needs code that does not exist. Three pieces:
+This is the deliverable. Three pieces:
 
 **6a. Score the Indian eval set with all three models.**
 `data/factchecks/factchecks.parquet` holds 96 claims with `claim`, `claim_lang` and `label` (all `false`). Score
@@ -332,6 +332,48 @@ output is `artifacts/eval/factcheck/<label>/factcheck_eval.json` and `.md`. With
 the manifest, the report says "evaluation set not frozen". With it, any changed or
 missing claim stops the run. Results are on the claims that publishers chose to
 debunk, and on nothing else.
+
+**6e. Run steps 4 to 6 with one script.**
+`scripts/run_comparison.py` runs the stages in order. It writes only to the
+directory in `--out`. The default is `data/comparison`, which Git ignores.
+
+| Stage | Action |
+|---|---|
+| `prepare` | Build the frame and the split. Stop if the split is not the split of step 4. Write `train.jsonl`, `val.jsonl`, the TF-IDF file and the split ids. The test split does not go to a training file. |
+| `train-misinfo` | Fine-tune roberta with `train_module`. Save the macro-F1 on the test split. |
+| `train-laya --which en` or `multilingual` | Call `laya.train.finetune` as in step 5. The base checkpoint is the revision in `configs/models.yaml`. |
+| `score` | Write one `<model>.parquet` for each of the five models. |
+| `evaluate` | Run the harness of step 6d. Print the path of the report. |
+| `all` | Run the stages in order. Stop at the first failure. |
+
+Do a demo run first. It uses the committed fixtures and one epoch.
+A demo run is not a result. It writes to `data/comparison_demo`.
+
+```bash
+.venv/bin/python scripts/run_comparison.py all --demo --wait-for-gpu
+```
+
+Then do the full run:
+
+```bash
+.venv/bin/python scripts/run_comparison.py all --wait-for-gpu
+```
+
+A stage that has output is skipped. If a run stops, run the same command again.
+Add `--force` to repeat a stage.
+
+Other users can use the GPU at the same time. Each stage that uses the GPU reads
+the free memory from `nvidia-smi` before it starts. The script never stops
+another process.
+
+- If the free memory is below `--min-free-mib`, the script stops with exit code 10.
+  The defaults are 8000 MiB to train and 6000 MiB to score.
+- With `--wait-for-gpu`, the script checks again every 5 minutes. It stops with
+  exit code 11 after `--wait-hours`.
+- If the GPU runs out of memory, the script stops with exit code 13. Lower
+  `--batch-size` (`train-misinfo` and `score`) or `--micro-batch` (`train-laya`).
+  Then run the same command again.
+- Exit code 14 means that the split is not the required split.
 
 ---
 
