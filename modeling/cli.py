@@ -467,6 +467,9 @@ def compare_embedder_command(
 def sample_for_labelling(
     what: str = typer.Argument(..., help="misinfo | narratives"),
     n: int = typer.Option(100, help="How many rows to sample."),
+    lang: str | None = typer.Option(
+        None, "--lang", help="misinfo only: restrict the sample to en or hi."
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Write a blank-label CSV for hand-labelling.
@@ -489,32 +492,35 @@ def sample_for_labelling(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if what == "misinfo":
+        from modeling.eval.corpus_transfer import SAMPLE_LANGUAGES, build_sample
+
+        if lang is not None and lang not in SAMPLE_LANGUAGES:
+            raise typer.BadParameter(f"--lang must be one of {', '.join(SAMPLE_LANGUAGES)}")
         records = CorpusReader(settings).records(columns=["id", "source", "text", "lang"])
         if not len(records):
             console.print("[red]no corpus on disk[/]")
             raise typer.Exit(code=1)
-        # Stratified by source so the sample is not all Reddit: the transfer gap
-        # is a per-platform question, and a single-source sample cannot see it.
-        per_source = max(1, n // records["source"].nunique())
-        sample = (
-            records.groupby("source", group_keys=False)
-            .apply(lambda g: g.sample(min(len(g), per_source), random_state=settings.seed))
-            .head(n)
+        built = build_sample(
+            records,
+            n=n,
+            language_allowed=settings.language_allowed,
+            lang=lang,
+            seed=settings.seed,
         )
-        scores = ScoredStore(settings).read("record_scores")
-        if len(scores) and "misinfo_prob" in scores.columns:
-            sample = sample.merge(
-                scores[["record_id", "misinfo_prob"]].rename(
-                    columns={"misinfo_prob": "score"}
-                ),
-                left_on="id",
-                right_on="record_id",
-                how="left",
-            )
-        sample["label"] = ""  # 1 = misinformation-like, 0 = not
+        sample = built.frame
+        console.print(
+            f"pool {built.pool} records"
+            + (f" in lang={lang}" if lang else "")
+            + "; not sampled because the misinfo stage cannot score them: "
+            + (", ".join(f"{k}={v}" for k, v in sorted(built.excluded.items())) or "none")
+        )
+        if not len(sample):
+            console.print("[red]no scorable record in the pool; nothing to label[/]")
+            raise typer.Exit(code=1)
+        # No model score goes in the sheet: a labeller who sees one anchors on it.
+        # `evaluate misinfo` joins the scores from record_scores by id.
         path = target_dir / "misinfo_corpus_sample.csv"
-        columns = [c for c in ("id", "source", "lang", "text", "score", "label") if c in sample]
-        sample[columns].to_csv(path, index=False)
+        sample.to_csv(path, index=False)
     elif what == "narratives":
         narratives = ScoredStore(settings).read("narratives")
         if not len(narratives):
