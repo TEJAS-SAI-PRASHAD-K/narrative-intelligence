@@ -82,6 +82,22 @@ media = [
     "opencv-python>=4.9",
     "pillow>=10.0",
 ]
+# Laya, the System One decision model. Opt-in because it is only needed by
+# modeling/text/laya_clf.py, which lazy-imports it and marks itself
+# unavailable when absent -- same treatment as the `media` tree.
+#
+# Installing this RAISES THE EFFECTIVE transformers FLOOR. The wheel declares
+# `transformers>=4.48.0` and `torch>=2.0.0`, both satisfied by the `modeling`
+# extra's own `>=4.40` / `>=2.2`, so pip resolves it without conflict and the
+# existing pins are left alone. Worth knowing before debugging a resolver:
+# the project's floor is 4.40, and with this installed it is 4.48.
+#
+# Note the docs claim transformers 5.x and torch 2.14 are required. The
+# published wheel's own metadata does not agree, and the metadata is what pip
+# resolves against.
+laya = [
+    "laya>=0.4.1",
+]
 # Narrative summarization. The pipeline completes without it (and without an
 # API key) by falling back to centroid labels.
 llm = [

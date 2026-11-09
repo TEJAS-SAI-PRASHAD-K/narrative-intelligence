@@ -181,6 +181,97 @@ def stats(source: str | None = typer.Argument(None, help="limit to one source"))
 
 
 @app.command()
+def factchecks(
+    limit: int | None = typer.Option(None, "--limit", "-n", help="stop after N verdicts"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="extract and report, write nothing"),
+) -> None:
+    """Extract published fact-check verdicts into `data/factchecks/`.
+
+    An enrichment pass over the news records already on disk, not a fetch of
+    new ones -- see ingest/factcheck.py for why these are a side artifact
+    rather than a new source.
+    """
+    from ingest.factcheck import (
+        DropReason,
+        FactCheckExtractor,
+        label_distribution,
+        records_from_corpus,
+        write_factchecks,
+    )
+
+    settings = get_settings()
+    store = ParquetStore(settings)
+    frame = store.read_all("news")
+    if frame is None or not len(frame):
+        console.print("[yellow]no news records on disk. run `python -m ingest.cli fetch news_rss`.")
+        raise typer.Exit(code=0)
+
+    extractor = FactCheckExtractor(settings)
+    if not extractor.publishers:
+        console.print("[red]configs/factcheck.yaml has no publishers configured.")
+        raise typer.Exit(code=1)
+
+    records = list(
+        records_from_corpus(
+            frame,
+            extractor.publishers,
+            on_duplicate=lambda record_id: extractor.drop(
+                DropReason.DUPLICATE_RECORD, record_id
+            ),
+        )
+    )
+    console.print(f"eligible records: {len(records):,} from {len(extractor.publishers)} publishers")
+
+    verdicts = []
+    for verdict in extractor.run(records):
+        verdicts.append(verdict)
+        if limit and len(verdicts) >= limit:
+            break
+
+    table = Table(title="verdicts extracted", header_style="bold")
+    for column in ("publisher", "tier", "verdicts", "langs"):
+        table.add_column(column, justify="right" if column != "publisher" else "left")
+    by_publisher: dict[tuple[str, str], list] = {}
+    for verdict in verdicts:
+        by_publisher.setdefault((verdict.publisher, verdict.tier), []).append(verdict)
+    for (publisher, tier), group in sorted(by_publisher.items()):
+        langs = sorted({v.claim_lang or "?" for v in group})
+        table.add_row(publisher, tier, f"{len(group):,}", ",".join(langs))
+    console.print(table)
+
+    labels = label_distribution(verdicts)
+    console.print(f"labels: {labels}")
+    # Not a footnote. Fact-checkers debunk falsehoods and rarely confirm true
+    # claims, so this artifact is usually single-class -- which means it is
+    # positive-class supervision and NOT a training set on its own. Said at the
+    # end of every run because it is the one thing about this data that is easy
+    # to forget and expensive to forget.
+    if len(labels) < 2:
+        console.print(
+            "[yellow]WARNING: only one label class present. Published fact-checks are "
+            "overwhelmingly debunks, so this is positive-class supervision, not a "
+            "trainable binary dataset. Negatives must come from elsewhere; see the "
+            "README section on fact-check supervision."
+        )
+
+    summary = extractor.summary()
+    console.print(f"dropped: {summary['dropped']}")
+    console.print(f"ratings seen: {summary['ratings_seen']}")
+    if summary["unknown_ratings"]:
+        console.print(
+            f"[red]UNKNOWN ratings (a publisher changed vocabulary; add them to "
+            f"configs/factcheck.yaml): {summary['unknown_ratings']}"
+        )
+
+    if dry_run:
+        console.print("[cyan]--dry-run: nothing written.")
+        raise typer.Exit(code=0)
+    path = write_factchecks(verdicts, settings)
+    if path:
+        console.print(f"wrote {len(verdicts):,} verdicts -> {path}")
+
+
+@app.command()
 def validate(
     source: str | None = typer.Argument(None, help="limit to one source"),
     sample: int | None = typer.Option(None, "--sample", help="validate only N rows per source"),

@@ -1,37 +1,51 @@
-# Narrative Intelligence Platform — Phases 1–2: Ingestion, Modeling & Scoring
+# Narrative Intelligence Platform
 
-A reproducible, schema-normalized, multi-platform corpus for research on coordinated
-misinformation narratives **in India**, in English and Hindi.
+A research pipeline for studying coordinated misinformation narratives **in India**, in
+English and Hindi. It collects public web content, normalizes every record onto one
+schema, scores it, and serves the result through an API and a dashboard.
 
 The case is defined entirely in `configs/topics.yaml` and `configs/sources.yaml`: four
-domains that Indian fact-checking organisations debunk daily — communal and religious
-claims, electoral-process and voter-roll claims, health claims, and financial scams and
-synthetic media. India is the subject rather than an example because the country has an
-unusually dense public fact-checking ecosystem publishing structured verdicts under open
-RSS in both languages, which is the only accessible source of *labelled* misinformation at
-the scale this project needs. Corpus and labels come from the same country and the same
-window.
+domains that Indian fact-checking organisations debunk daily, namely communal and
+religious claims, electoral-process and voter-roll claims, health claims, and financial
+scams and synthetic media. India is the subject rather than an example because the country
+has an unusually dense public fact-checking ecosystem publishing structured verdicts under
+open RSS in both languages, which is the only accessible source of *labelled*
+misinformation at the scale this project needs. Corpus and labels come from the same
+country and the same window.
 
-This replaced an earlier US health/election case. Nothing was wrong with it; it could not
-support the project's stated subject. Swapping the case back, or to a third country, is
-still a config edit and `make data`.
+Swapping the case, to a different country or a different domain, is a `configs/` edit and
+`make data`. Editing an adapter to add a source means the config is wrong.
 
-**Phase 1** is ingestion: a partitioned Parquet corpus in which every record — Reddit
-comment, Mastodon toot, news article, YouTube comment — obeys one schema, plus the tooling
-to rebuild it from scratch.
+### Where to start
 
-**Phase 2** is modeling and scoring: trained models, reproducible evaluation evidence, and
-a batch pipeline that turns the corpus into scored Parquet tables. No API, no dashboard,
-no fused risk score — those are Phases 4–6, and the fusion weighting is deliberately left
-to Phase 4 because it is a product decision rather than a model output.
+| | |
+|---|---|
+| [CLAUDE.md](CLAUDE.md) | how the repo is built, the invariants, the traps. Read before changing anything |
+| [docs/roadmap.md](docs/roadmap.md) | what is done, what does not work and why, what is left |
+| [docs/how-it-works.md](docs/how-it-works.md) | the pipeline end to end |
+| [docs/api.md](docs/api.md) | the HTTP contract |
+| [docs/data-model.md](docs/data-model.md) | the database schema |
+| [docs/scoring.md](docs/scoring.md) | how each score is produced and how to read it |
+| [docs/laya-finetune.md](docs/laya-finetune.md) | fine-tuning the multilingual scorer on a GPU |
 
-Two things are equally the Phase 2 deliverable: the models, and the evidence that they
-work. A model without a group-split evaluation, a baseline comparison and an error
-analysis is not done, and several modules here are honestly marked *not done* on exactly
-that basis.
+### The four layers
 
-`ingest/schema.py` is the only interface Phase 2 depends on, and Phase 2 never writes to
-`ingest/`.
+Ingestion (`ingest/`) builds a partitioned Parquet corpus in which every record, whether
+a Reddit comment, a Mastodon post, a news article or a YouTube comment, obeys one schema,
+plus the tooling to rebuild it from scratch.
+
+Modeling (`modeling/`) turns that corpus into scored Parquet tables, with the evaluation
+evidence that says whether each model works. A model without a group-split evaluation, a
+baseline comparison and an error analysis is not done, and several modules here are marked
+*not done* on exactly that basis.
+
+The backend (`app/`) serves both through a FastAPI service over Postgres with pgvector,
+with Celery workers for the long jobs and a fused risk score that returns its own
+explanation. The dashboard lives in a separate repository and is built against the
+committed `openapi.json`.
+
+`ingest/schema.py` is the only interface the modeling layer depends on, and the modeling
+layer never writes to `ingest/`.
 
 ---
 
@@ -42,8 +56,9 @@ make setup
 ```
 
 That creates `.venv`, installs everything, and copies `.env.example` to `.env`. **Every
-credential is optional** — sources you cannot authenticate are skipped with a warning,
-never a failure.
+credential is optional.** A source that cannot authenticate is skipped with a warning,
+never a failure. Python 3.11 to 3.13; not 3.14, which several dependencies have no wheels
+for.
 
 ```bash
 make data
@@ -56,10 +71,19 @@ make stats       # per-source summary table
 make validate    # re-validate the corpus on disk against the schema
 ```
 
-Single source, bounded:
+Extract the published fact-check verdicts, an enrichment pass over the news records that
+`make data` already fetched:
 
 ```bash
-python -m ingest.cli fetch mastodon --limit 500
+python -m ingest.cli factchecks --dry-run   # report what it would write
+python -m ingest.cli factchecks
+```
+
+Single source, bounded, which is what to use while developing an adapter. `news_rss`
+carries the Indian feeds and is the one to reach for first:
+
+```bash
+python -m ingest.cli fetch news_rss --limit 200
 ```
 
 What the pipeline can see, without printing any secret values:
@@ -415,6 +439,106 @@ make test
 of passing slowly. Every adapter is tested against recorded payloads in `fixtures/`, which
 is why each `fetch()` flattens client objects into plain dicts before `to_record()` sees
 them.
+
+---
+
+## Fact-check supervision: read this before training anything on it
+
+`python -m ingest.cli factchecks` extracts published verdicts into
+`data/factchecks/factchecks.parquet` (updated in place on each run) as a side artifact keyed on `record_id` — the same pattern GDELT's
+`mentions` uses, and for the mirror-image reason: a verdict is an annotation on a news
+article, not a post of its own.
+
+Measured on the 548-record corpus, 111 eligible records from four publishers:
+
+| publisher | tier | verdicts | claim language |
+|---|---|---|---|
+| BOOM | `claimreview` | 55 | en |
+| The Quint WebQoof | `claimreview` | 29 | en |
+| Vishvas News | `claimreview` | 8 | **hi** |
+| Fact Crescendo | `rss_tag` | 4 | **hi** |
+
+**96 verdicts. 96 of them `false`. Zero `true`.**
+
+> ### This is positive-class supervision, not a training set
+>
+> Fact-checkers debunk viral falsehoods. Confirming that a true claim is true is not
+> newsworthy, so a `true` verdict is vanishingly rare — and a binary classifier cannot
+> be trained on one class. The ratings actually observed were `false` ×96,
+> `misleading` ×6, `missing context` ×1, `half true` ×1, and **no `true` at any point**.
+>
+> ### The decision: evaluation only
+>
+> **This artifact is never trained on.** It is an evaluation set measuring recall on
+> claims Indian fact-checkers have actually debunked. Training data comes from the
+> benchmarks (LIAR, CoAID, FNC-1) as it already does; this measures the thing those
+> benchmarks cannot — whether a model trained on US political statements catches Indian
+> recontextualised media.
+>
+> Three alternatives were considered and rejected. Presumed-true mainstream articles
+> give negatives whose label is an assumption correlated with publisher, which is the
+> leakage the News section already warns about. Positive-unlabelled learning is honest
+> but costs the macro-F1 comparison against the existing baseline. Borrowing LIAR's
+> `true` class puts a US-vs-India domain gap *inside* the training set. Evaluation-only
+> gives up the least and cannot be wrong about what the data is.
+>
+> ### Recall on a positives-only set is meaningless on its own
+>
+> A model that labels everything `false` scores **recall 1.0** here. So a recall figure
+> from this set must never be reported alone. Report it against the model's flag rate
+> on the unlabelled corpus:
+>
+> ```
+> lift = recall on known-false claims / flag rate on the whole corpus
+> ```
+>
+> 90% recall at a 10% corpus-wide flag rate is a real result. 90% recall at an 85% flag
+> rate is a model that has learned to say "false". The two are indistinguishable from
+> the recall number by itself, which is exactly how positives-only evaluation gets
+> misreported.
+>
+> The CLI prints a warning on every single-class run, so the constraint is visible at
+> the point of use and not only here.
+
+**Eval-set size, audited:** 96 rows, 96 distinct claims, 96 distinct `record_id`s — zero
+exact duplicates and zero near-duplicates at the project's own `hamming <= 3` threshold.
+83 English, 12 Hindi, 1 mislabelled `id` by langdetect on a short claim. The
+deduplication check stays in the pipeline regardless: the same claim gets debunked by
+several publishers within days, so a longer collection window *will* produce
+cross-publisher duplicates, and counting one claim three times would inflate the
+apparent size of the only evaluation set this project has for its actual subject.
+
+Two more things the numbers say:
+
+- **The binary mapping costs ~8% of rated items.** `configs/factcheck.yaml` maps
+  `misleading` and `missing context` to `drop`, matching `misinfo`'s existing LIAR
+  mapping, which drops `half-true` rather than "manufacturing label noise the metrics
+  cannot see". Eight rows were dropped that way here. The config explains why those two
+  specifically, and the extractor prints per-rating counts so the decision is
+  reconsidered with numbers rather than from memory.
+- **An unknown rating is never silently dropped.** A publisher adding a vocabulary term
+  is exactly the change that would otherwise shrink the dataset with nobody noticing, so
+  unmapped ratings are counted separately from deliberate drops and printed in red.
+
+### Only four of eight publishers are machine-readable
+
+| publisher | ClaimReview JSON-LD | how the verdict is reachable |
+|---|---|---|
+| BOOM, The Quint, Vishvas News | ✅ | structured, tier 1 |
+| Fact Crescendo | ❌ | verdict is an RSS `<category>` term, tier 2 |
+| Newschecker | ❌ | visible `Claim` block in the DOM — **not implemented** |
+| Alt News, Factly | ❌ | headline predicate only — **not implemented** |
+| DigitEye | — | site unreachable when probed |
+
+Tiers 3 and 4 are deliberately absent. Parsing a DOM block needs a per-publisher CSS
+selector that breaks on a reskin, and inferring a verdict from a headline is inference
+rather than extraction — it deserves its own measured error rate, not a quiet seat next
+to structured data. Every row records which tier produced it, so Phase 2 can filter and
+the eval can report per tier.
+
+Also worth knowing: **the publisher's claim is not the headline**, and the extractor
+keeps the claim. A headline is written to be read; a claim is written to be checked.
+Training on headlines teaches a model one publisher's house style.
 
 ---
 

@@ -198,3 +198,31 @@ class TestMastodonStream:
         result = runner.invoke(cli.app, ["mastodon-stream", "--minutes", "0.01"])
         assert result.exit_code == 0
         assert "skipping stream" in result.stdout
+
+
+class TestFactchecksCommand:
+    def _news_record(self, tags: list[str], ingested_at: datetime) -> Record:
+        return Record(
+            native_id="fc1",
+            source="news",
+            source_detail="factcrescendo.com",
+            content_type="article",
+            text="a debunked claim",
+            lang="en",
+            author_id=make_id("news", "factcrescendo.com"),
+            timestamp=TS,
+            ingested_at=ingested_at,
+            raw={"url": "https://factcrescendo.com/a", "title": "Claim", "tags": tags},
+        )
+
+    def test_a_repeated_corpus_id_is_counted_and_the_newest_copy_is_used(self, cli_env):
+        store = ParquetStore(cli_env)
+        older = self._news_record(["Politics"], datetime(2024, 5, 2, tzinfo=timezone.utc))
+        newer = self._news_record(["Politics", "False"], datetime(2024, 5, 3, tzinfo=timezone.utc))
+        store.write_records([older, newer], dedupe=False)
+
+        result = runner.invoke(cli.app, ["factchecks", "--dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "'duplicate_record': 1" in result.stdout
+        assert "labels: {'false': 1}" in result.stdout

@@ -74,6 +74,103 @@ misinfo:
   calibration: isotonic
   decision_threshold: 0.5
 
+# --- Module A-bis: Laya, the multilingual alternative to `misinfo` ---------
+#
+# A System One model: non-autoregressive, generates no text, answers typed
+# questions about a state in one forward pass with calibrated probabilities.
+# It is here for one reason the roberta-base fine-tune cannot satisfy -- the
+# multilingual checkpoint covers Hindi, and the corpus is now English+Hindi
+# while `modeling.config.Settings.languages` is still ("en",). This is the
+# module that closes that gap.
+#
+# It does NOT replace `misinfo`. It is scored against it, and against the
+# TF-IDF baseline, on identical splits through one eval harness. That
+# three-way comparison is the result; a second model that nobody compared to
+# the first is not.
+laya:
+  version: v0.1.0
+  # 421M ModernBERT-large, English, 512-token context.
+  checkpoint: convaiinnovations/laya
+  # 322M mmBERT-base, 100+ languages, 1024 context, extendable to 8192 via
+  # predict_long(). THIS is the one that matters for Hindi; the English
+  # checkpoint is the baseline it has to beat on English to be worth using.
+  multilingual_checkpoint: convaiinnovations/laya
+  multilingual_subfolder: multilingual
+  # Which checkpoint scores which language. Hindi has no business going
+  # through the English encoder, and saying so in config beats discovering it
+  # in a confusion matrix.
+  route:
+    en: checkpoint
+    hi: multilingual_checkpoint
+  device: auto
+  batch_size: 16
+  # The English checkpoint's own context window. predict_long() scans anything
+  # longer in overlapping windows rather than silently truncating -- which
+  # matters here, because fact-check articles run 2,000-7,000 characters.
+  max_len: 512
+  multilingual_max_len: 1024
+  long_document_strategy: predict_long
+
+  # --- the question ------------------------------------------------------
+  # A `noul`: one calibrated P(true) per state. POLARITY IS THE WHOLE GAME
+  # HERE, so it is written out rather than implied.
+  #
+  # `misinfo` emits P(label 1) where LABEL_NAMES = ["not-misinformation",
+  # "misinformation-like"] and modeling/datasets/liar.py sets
+  # `label = (binary == "false")`. So misinfo_prob is P(the claim is false).
+  #
+  # Laya's `noul` always returns P(true) regardless of what `labels` renders,
+  # so `criteria.true` MUST describe the false claim for the two columns to
+  # mean the same thing. Get this backwards and you get a confident
+  # "not misinformation" on every debunked claim, and ROC-AUC near 0 reads as
+  # a bad model rather than a flipped sign -- the exact failure
+  # tests/test_label_orientation.py exists to prevent. There is a test.
+  question:
+    id: misinfo
+    type: noul
+    instructions: >
+      Does this text make a factual claim that is false, fabricated, or
+      presents real material as something it is not?
+    criteria:
+      "false": >
+        The claim is accurate, or the text makes no checkable factual claim.
+      "true": >
+        The claim is false or fabricated, or real footage, images or documents
+        are presented as something they are not.
+
+  # --- fine-tuning -------------------------------------------------------
+  # MANDATORY, not optional. Vendor-reported: the base checkpoint scores 0.362
+  # on typed-decisions against a 0.461 majority-class baseline -- worse than
+  # guessing -- and 0.766 fine-tuned. A zero-shot Laya number is a baseline to
+  # report, never a model to ship.
+  #
+  # laya.train.finetune(data, model_dir, output_dir, config) preprocesses,
+  # trains, CALIBRATES and saves in one call; `calib_frac` of the data is held
+  # out to fit temperatures. So calibration is not a separate stage here, which
+  # is why this module has no `calibration:` key like `misinfo` does.
+  train:
+    epochs: 4
+    micro_batch: 8
+    grad_accum: 8
+    encoder_lr: 2.5e-5
+    head_lr: 1.0e-4
+    weight_decay: 0.01
+    grad_clip: 1.0
+    loss: rlcd
+    rl_samples: 4
+    # Held out from training to fit one temperature per (question type, option
+    # count). Vendor-reported mean ECE 0.466 -> 0.081 after. The checkpoints
+    # ship over-confident, so skipping this ships a miscalibrated model.
+    calib_frac: 0.1
+    calib_max: 400
+    calib_seed: 20260922
+
+  # Operating point. NOT 0.5: same discipline as `bot` and `deepfake`, where a
+  # false accusation costs more than a miss, so the threshold comes off the PR
+  # curve at a precision target and is re-derived per checkpoint.
+  decision_threshold: null
+  precision_target: 0.85
+
 stance:
   version: v0.2.0
   # An NLI+FEVER-tuned encoder, not a bare one. (claim, post) stance is

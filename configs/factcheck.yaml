@@ -1,0 +1,154 @@
+# Fact-check verdict extraction: which publishers, which path, which labels.
+#
+# Indian fact-checkers are the only source of *labelled* misinformation this
+# project can reach, which is the whole reason the case is India. This file is
+# where their verdicts become labels, and every judgement involved is here
+# rather than in code.
+#
+# THESE LABELS ARE FOR EVALUATION, NOT TRAINING. Published fact-checks are
+# single-class: a measured 96 `false` and 0 `true` on the first full run,
+# because debunking a viral falsehood is news and confirming a true claim is
+# not. Nothing can be trained on one class, so this artifact measures recall on
+# claims that were actually debunked in India, and training data stays with the
+# benchmarks. See the README section "Fact-check supervision" -- including why a
+# recall figure from this set is meaningless unless reported against the model's
+# flag rate on the whole corpus.
+
+# ---------------------------------------------------------------------------
+# Publishers
+# ---------------------------------------------------------------------------
+# Keyed by the `source_detail` the news adapter already writes (the registrable
+# domain), so no new source type and no re-fetch of the article list.
+#
+# `tier` records HOW the verdict is obtained, and it is written onto every
+# extracted row. That is not bookkeeping: a tier-1 verdict is the publisher's
+# own machine-readable rating, and a tier-4 verdict is this project guessing
+# from a headline. Mixing them silently would produce a label column nobody can
+# audit, so Phase 2 can filter on it and the eval can report per tier.
+#
+#   claimreview  schema.org ClaimReview JSON-LD on the article page. The
+#                publisher states the claim and the rating itself. Verified
+#                live 2026-10-09 on each site marked with it.
+#   rss_tag      the RSS <category> list contains the verdict as one of its
+#                terms (Fact Crescendo ships `['False', 'International', ...]`).
+#                Structured, but positional -- the verdict is just another tag.
+#
+# NOT IMPLEMENTED HERE, and listed so the gap is explicit rather than implied:
+#   dom_block       newschecker.in has no JSON-LD at all but renders a visible
+#                   "Claim" heading in the article body. Parsing it needs a
+#                   per-publisher CSS selector that breaks when they reskin.
+#   title_predicate altnews.in and factly.in publish neither. Their verdict
+#                   lives in the headline's predicate ("... Is AI-Generated",
+#                   "Old Video Falsely Shared as ..."), which is inference, not
+#                   extraction, and deserves its own measured error rate rather
+#                   than being bolted on next to structured data.
+publishers:
+  boomlive.in:
+    name: BOOM
+    tier: claimreview
+    languages: [en]
+  thequint.com:
+    name: The Quint WebQoof
+    tier: claimreview
+    languages: [en]
+    # WebQoof returns `itemReviewed.name` as a JSON *array* rather than a
+    # string. Handled in code; noted here because it looks like a bug when you
+    # first see it in the output.
+    claim_may_be_list: true
+  vishvasnews.com:
+    name: Vishvas News
+    tier: claimreview
+    # Claims come back in Devanagari, so this path produces Hindi supervision
+    # and not merely Hindi text. That is the point of the India retarget.
+    languages: [hi, en]
+  factcrescendo.com:
+    name: Fact Crescendo
+    tier: rss_tag
+    languages: [hi, en]
+
+# ---------------------------------------------------------------------------
+# Verdict -> label
+# ---------------------------------------------------------------------------
+# BINARY, WITH THE MIDDLE DROPPED. Matched deliberately to `misinfo`'s existing
+# LIAR mapping in configs/models.yaml, which drops `half-true` with the note
+# that forcing it to one side "manufactures label noise the metrics cannot
+# see". Same reasoning, same consequence: Laya, the roberta-base fine-tune and
+# the TF-IDF baseline all end up trained against one label definition, so the
+# head-to-head comparison is about the models rather than about their labels.
+#
+# Matching is case-insensitive on the publisher's rating string, after
+# collapsing whitespace and stripping punctuation.
+#
+# `drop` is an explicit outcome, never a silent skip: dropped rows are counted
+# and reported per rating, because the count is the cost of this decision and
+# it has to be visible to be reconsidered. See the yield warning below.
+ratings:
+  "false": "false"
+  "fake": "false"
+  "mostly false": "false"
+  "altered": "false"
+  "digitally altered": "false"
+  "morphed": "false"
+  "fabricated": "false"
+  "scripted": "false"
+  "staged": "false"
+  "ai generated": "false"
+  "ai-generated": "false"
+  "hoax": "false"
+  "misattributed": "false"
+  "no evidence": "false"
+
+  "true": "true"
+  "correct": "true"
+  "verified": "true"
+  "mostly true": "true"
+  "accurate": "true"
+
+  # The middle. Each of these is a real editorial judgement that a binary
+  # label cannot carry, so none of them is forced to a side.
+  "half true": "drop"
+  "half-true": "drop"
+  "partly false": "drop"
+  "partly true": "drop"
+  "partially false": "drop"
+  "mixture": "drop"
+  "unverified": "drop"
+  "satire": "drop"
+  # MISLEADING and MISSING CONTEXT are the two that cost the most, and the two
+  # most worth arguing about. In Indian fact-checking they usually mark real
+  # footage carried by a false caption -- which is the single most common form
+  # of misinformation in this corpus, and arguably "false" in substance.
+  #
+  # They are dropped anyway, for one reason: the claim text a publisher records
+  # for these is often a description of the *media* rather than the assertion
+  # being made about it, so a model trained on them learns to classify captions
+  # of real events as false. That is a worse failure than a smaller dataset.
+  #
+  # This is the setting to revisit first if yield is too low, and the extractor
+  # prints the per-rating counts precisely so that decision is informed.
+  "misleading": "drop"
+  "missing context": "drop"
+  "misleading claim": "drop"
+
+# An unseen rating is NEVER quietly dropped or guessed at. It is counted,
+# logged, and reported by `ingest.cli factchecks --report`, because a publisher
+# adding a vocabulary term is exactly the change that would otherwise shrink
+# the dataset without anyone noticing.
+on_unknown_rating: report
+
+# ---------------------------------------------------------------------------
+# Fetching
+# ---------------------------------------------------------------------------
+# Tier-1 extraction needs the article HTML, which the news adapter does not
+# keep. Same politeness rules as `news_rss.fulltext`: robots.txt honoured, a
+# descriptive User-Agent, a delay between requests, and a per-domain give-up
+# after repeated failure.
+fetch:
+  max_articles: 200
+  request_delay_seconds: 1.0
+  timeout_seconds: 30
+  max_consecutive_failures_per_domain: 3
+  # Articles are immutable once published and a verdict does not change, so a
+  # fetched page is cached on disk and never re-fetched. This also keeps a
+  # rerun from hammering a publisher who is doing us a favour.
+  cache: true
