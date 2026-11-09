@@ -320,7 +320,8 @@ the columns `part` (`val`, `test`, `claims`, `corpus_title`, `corpus_text`), `id
 `lang`, `label` (0 or 1 for `val` and `test`, null for the rest), `score`
 (P(misinformation), null when the model gave no score), `source_detail` and
 `skip_reason`. The harness refuses a file that does not match, and it refuses when
-the models do not have the same `test` ids.
+the models do not have the same `test` ids, the same `claims` ids, or the same
+`corpus_title` and `corpus_text` ids.
 
 ```bash
 python -m modeling.cli freeze-factchecks          # once; commit configs/factcheck_eval_manifest.csv
@@ -330,8 +331,19 @@ python -m modeling.cli evaluate-factchecks scores/ --model-version laya=v0.1.0
 Each model gets its own threshold from its own `val` rows at precision 0.85. The
 output is `artifacts/eval/factcheck/<label>/factcheck_eval.json` and `.md`. Without
 the manifest, the report says "evaluation set not frozen". With it, any changed or
-missing claim stops the run. Results are on the claims that publishers chose to
-debunk, and on nothing else.
+missing claim stops the run. The manifest has the columns `record_id`, `url`,
+`claim_sha256` and `verdict`. A change of the verdict of a frozen claim also stops the
+run. The harness refuses an old manifest that has no `verdict` column. Rebuild it on
+purpose and record why. Results are on the claims that publishers chose to debunk, and
+on nothing else.
+
+`laya_multi_base` is a control. It is the zero-shot base checkpoint. The report keeps its
+numbers as a baseline. The report always shows "do not ship" and "FAIL (control)" for it.
+
+The `corpus_text` flag rates and lifts are not like for like across model families. Laya
+scores long text with `predict_long`, which takes the maximum over windows. The roberta
+classifier truncates the text at 256 tokens. The report shows a notice beside each of these
+values. `corpus_title` is the primary figure.
 
 **6e. Run steps 4 to 6 with one script.**
 `scripts/run_comparison.py` runs the stages in order. It writes only to the
@@ -342,7 +354,7 @@ directory in `--out`. The default is `data/comparison`, which Git ignores.
 | `prepare` | Build the frame and the split. Stop if the split is not the split of step 4. Write `train.jsonl`, `val.jsonl`, the TF-IDF file and the split ids. The test split does not go to a training file. |
 | `train-misinfo` | Fine-tune roberta with `train_module`. Save the macro-F1 on the test split. |
 | `train-laya --which en` or `multilingual` | Call `laya.train.finetune` as in step 5. The base checkpoint is the revision in `configs/models.yaml`. |
-| `score` | Write one `<model>.parquet` for each of the five models. |
+| `score` | Write one `<model>.parquet` for each of the five models, and one `<model>.provenance.json` beside it. |
 | `evaluate` | Run the harness of step 6d. Print the path of the report. |
 | `all` | Run the stages in order. Stop at the first failure. |
 
@@ -361,6 +373,19 @@ Then do the full run:
 
 A stage that has output is skipped. If a run stops, run the same command again.
 Add `--force` to repeat a stage.
+
+The first `score` run freezes the ids of the claims and of the corpus rows in
+`score_inputs.parquet`. Each later `score` run uses these ids. The run stops if a frozen
+row is gone or its text changed. Use `--refreeze` to freeze the new rows. Then score every
+model again.
+
+The provenance file of a score file holds the hash of the split, the identity of the
+checkpoint, the hash of the frozen inputs, and the model version. `score` does not reuse a
+score file when one of these differs from the current state. `evaluate` refuses such a file
+and prints the reason. `evaluate` reads only the models in `--models`. It takes the
+versions from the provenance files. `score` and `evaluate` also refuse a `misinfo`
+checkpoint whose `config.json` does not have `model_type` `roberta`. This stops a silent
+fall back to `distilbert-base-uncased`.
 
 Other users can use the GPU at the same time. Each stage that uses the GPU reads
 the free memory from `nvidia-smi` before it starts. The script never stops
