@@ -1,16 +1,26 @@
 # Model card — stance classifier
 
-**Module:** `modeling/text/stance_clf.py` · **Version:** `v0.2.0`
+**Module:** `modeling/text/stance_clf.py` · **Version:** `v0.3.0`
 **Output:** `record_scores.stance`, `record_scores.stance_conf` — **null until a
-checkpoint is mounted**
+checkpoint is registered**
 
 ---
 
 ## Status: the training path is complete and verified; the real fine-tune is GPU work
 
-`stance` and `stance_conf` are still written as **null**, which the contract
-permits and Phase 4 renders as "not assessed". An untrained model producing
-confident stance labels would be worse than an empty column.
+`stance` and `stance_conf` are still written as **null** until a checkpoint is
+registered, which the contract permits and Phase 4 renders as "not assessed". An
+untrained model producing confident stance labels would be worse than an empty
+column.
+
+**Scoring stage (v0.3.0).** With a registered checkpoint, `_stance_stage` scores
+each record against the representative claim of its narrative and writes `stance`
+and `stance_conf`. A record that is not scored gets a `stance:<reason>` entry in
+`skip_reasons`: `empty_text`, `text_too_short`, `unsupported_language` (stance is
+English only), `no_narrative`, `no_claim_text`, `claim_unsupported_language` and
+`is_claim`. A checkpoint whose `id2label` does not name the four classes exactly
+once is refused (`label_orientation_unresolved`) and the columns stay null. The
+stage is covered with a fake model only. No real checkpoint has scored a corpus.
 
 **What changed.** The trainer is no longer a stub. `modeling/training.py`
 registers a real `stance` path — load → group-split → baselines → fine-tune →
@@ -100,20 +110,23 @@ representative post of the record's narrative (Module A2), so stance is only
 computable for records that belong to a cluster. Records in the noise bucket get
 null for a second, independent reason.
 
-**The group key is the article body, never the pair.** FNC-1's ~50k train pairs
-share only ~1.7k bodies, so a pair-level split puts the same body text on both
-sides and every metric goes up. The test set is not resampled at all: it is
-FNC-1's own `competition_test`, whose bodies are disjoint from train by
-construction, reproduced with `domain_holdout(domain_col="official_split")`.
-Train/val are then group-split by `body_id`.
+**The group key is the headline (the claim).** FNC-1's ~50k train pairs carry only
+~1.6k distinct headlines, each against many bodies. A body-grouped split put all
+1466 validation headlines in train as well, measured on the pinned download, so
+train and val are split by `claim_id`, a hash of the lowercased headline. The test
+set is not resampled: it is FNC-1's own `competition_test`. It shares no bodies
+with train, but it shares 10 headlines (156 train rows), and those rows are
+purged from train with `domain_holdout(purge_col="claim_id")`. Measured split on
+the pinned download: 43,909 train, 5,907 val, 25,413 test pairs.
 
-Note that this path deliberately does **not** dedupe before splitting, unlike
-misinfo. In FNC-1 one body legitimately appears against many different
-headlines; near-duplicate collapse on `text` would delete most of the corpus.
+**Known residual leak.** The headline/body graph is one connected component, so
+headlines and bodies cannot both be kept disjoint between train and val. Headlines
+are disjoint. Some article bodies occur on both sides, against different
+headlines. Test is disjoint from train and val in both.
 
-(The same reasoning applied to SemEval's five-train/one-unseen-target structure,
-which is why the group key was originally described as the claim/target. FNC-1
-is what is on disk, and the body is its equivalent.)
+This path deliberately does **not** dedupe before splitting, unlike misinfo. In
+FNC-1 one body legitimately appears against many different headlines;
+near-duplicate collapse on `text` would delete most of the corpus.
 
 **`unrelated` is unattested in SemEval.** Its NONE class conflates "mentions the
 target without taking a side" (discuss) with "unrelated". The loader maps NONE →
