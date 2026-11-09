@@ -74,9 +74,8 @@ test-api: ## Run the suite including the Postgres-backed API tests
 		docker run -d --rm --name ni-test-pg -e POSTGRES_USER=narrative \
 			-e POSTGRES_PASSWORD=test -e POSTGRES_DB=narrative_test -e TZ=UTC \
 			-p 127.0.0.1:55433:5432 pgvector/pgvector:pg16 >/dev/null
-	@until docker exec ni-test-pg pg_isready -U narrative >/dev/null 2>&1; do sleep 1; done
-	@docker exec ni-test-pg psql -qU narrative -d narrative_test \
-		-c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null
+	@until docker exec ni-test-pg pg_isready -U narrative -d narrative_test >/dev/null 2>&1; do sleep 1; done
+	@docker exec -i ni-test-pg psql -q -v ON_ERROR_STOP=1 -U narrative -d narrative_test < docker/postgres-init/01-extensions.sql >/dev/null
 	TEST_DATABASE_URL=postgresql+psycopg://narrative:test@127.0.0.1:55433/narrative_test \
 		$(BIN)/pytest
 

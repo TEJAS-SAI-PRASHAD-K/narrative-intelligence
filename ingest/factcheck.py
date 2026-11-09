@@ -29,11 +29,14 @@ author of this repo cared about exactly that distinction.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+import os
 import re
+import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -57,6 +60,10 @@ class Tier(str, Enum):
     RSS_TAG = "rss_tag"
 
 
+#: robots.txt statuses that mean "no rules published".
+_ROBOTS_ABSENT_STATUSES = frozenset({404, 410})
+
+
 class DropReason(str, Enum):
     """Why a candidate produced no row. Every one is counted, never silent."""
 
@@ -76,6 +83,21 @@ class DropReason(str, Enum):
     RATING_IS_MIDDLE = "rating_is_middle"
     #: The rating is not in the map at all. A vocabulary change, not a middle.
     RATING_UNKNOWN = "rating_unknown"
+    #: An RSS-tier record whose tags hold no term from the rating map.
+    NO_VERDICT_TAG = "no_verdict_tag"
+    #: The per-run article budget was spent before this record was fetched.
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    #: This publisher's domain hit its consecutive-failure limit, so it is no
+    #: longer fetched this run. The failures themselves were counted as
+    #: FETCH_FAILED; this counts the records skipped because of them.
+    DOMAIN_GIVEN_UP = "domain_given_up"
+    #: The corpus held this record id more than once; only the newest is kept.
+    DUPLICATE_RECORD = "duplicate_record"
+    #: A corpus record with no id. A verdict is keyed on it, so it cannot be stored.
+    NO_RECORD_ID = "no_record_id"
+    #: A JSON-LD block nested deeper than the JSON parser can read. The page is
+    #: kept in the cache, so without a count it would fail the same way each run.
+    JSONLD_TOO_DEEP = "jsonld_too_deep"
 
 
 @dataclass
@@ -117,18 +139,27 @@ _JSONLD_RE = re.compile(
 )
 
 
-def jsonld_blocks(html: str) -> Iterator[Any]:
+def jsonld_blocks(html: str, on_too_deep: Callable[[], None] | None = None) -> Iterator[Any]:
     """Every parseable JSON-LD block on a page.
 
     Malformed blocks are skipped rather than raising: publishers ship trailing
     commas and raw newlines inside strings, and one bad block on a page must not
     cost the good one next to it.
+
+    A block nested past the interpreter's recursion limit raises
+    ``RecursionError`` from the JSON parser, which is not a ``ValueError``. It
+    is skipped like any other bad block and reported through ``on_too_deep``;
+    retrying with newlines replaced cannot help, so the block is abandoned.
     """
     for match in _JSONLD_RE.finditer(html or ""):
         raw = match.group(1).strip()
         for candidate in (raw, raw.replace("\n", " ")):
             try:
                 yield json.loads(candidate)
+                break
+            except RecursionError:
+                if on_too_deep is not None:
+                    on_too_deep()
                 break
             except ValueError:
                 continue
@@ -141,14 +172,18 @@ def walk_jsonld(node: Any) -> Iterator[dict]:
     inside a list, or nested under the article node, and which one varies by
     publisher and by CMS version. Walking everything is cheaper than four
     per-publisher paths that each break separately.
+
+    The walk uses an explicit stack, in document order, so nesting depth is
+    bounded by memory rather than by the interpreter's recursion limit.
     """
-    if isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from walk_jsonld(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from walk_jsonld(value)
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            yield current
+            stack.extend(reversed(list(current.values())))
+        elif isinstance(current, list):
+            stack.extend(reversed(current))
 
 
 def _types(node: dict) -> list[str]:
@@ -156,11 +191,13 @@ def _types(node: dict) -> list[str]:
     return [str(v) for v in (value if isinstance(value, list) else [value]) if v]
 
 
-def find_claim_reviews(html: str) -> list[dict]:
+def find_claim_reviews(
+    html: str, on_too_deep: Callable[[], None] | None = None
+) -> list[dict]:
     """ClaimReview nodes on a page, in document order."""
     return [
         node
-        for block in jsonld_blocks(html)
+        for block in jsonld_blocks(html, on_too_deep)
         for node in walk_jsonld(block)
         if "ClaimReview" in _types(node)
     ]
@@ -288,15 +325,19 @@ class FactCheckExtractor:
                 self.drop(DropReason.NO_CLAIM_TEXT, url)
                 return None
             return self._build(record, claim, str(tag), label, Tier.RSS_TAG)
+        self.drop(DropReason.NO_VERDICT_TAG, url)
         return None
 
     # --- tier 1: ClaimReview --------------------------------------------
     def from_html(self, record: dict, html: str) -> FactCheck | None:
         url = record.get("url") or ""
-        reviews = find_claim_reviews(html)
+        too_deep: list[int] = []
+        reviews = find_claim_reviews(html, on_too_deep=lambda: too_deep.append(1))
         if not reviews:
-            self.drop(DropReason.NO_CLAIMREVIEW, url)
+            self.drop(DropReason.JSONLD_TOO_DEEP if too_deep else DropReason.NO_CLAIMREVIEW, url)
             return None
+        if too_deep:
+            log.warning("skipped %d JSON-LD blocks nested too deep on %s", len(too_deep), url)
         for review in reviews:
             claim, rating = claim_and_rating(review)
             if not rating:
@@ -349,18 +390,24 @@ class FactCheckExtractor:
         Cached permanently and never revalidated: an article is immutable once
         published and a verdict does not change. That also keeps a rerun from
         hammering publishers who are doing this project a favour.
+
+        A cached page is returned before the budget and domain-limit checks, so
+        it costs no budget. It is used without a new robots check: the robots
+        check ran when the page was first fetched.
         """
         config = self.config.get("fetch") or {}
+        cache_path = self._cache_path(url) if config.get("cache", True) else None
+        if cache_path and cache_path.exists():
+            return cache_path.read_text(encoding="utf-8", errors="replace")
+
         if self._budget <= 0:
+            self.drop(DropReason.BUDGET_EXHAUSTED, url)
             return None
         domain = resolve_domain(url) or "unknown"
         limit = int(config.get("max_consecutive_failures_per_domain", 3))
         if self._fetch_failures.get(domain, 0) >= limit:
+            self.drop(DropReason.DOMAIN_GIVEN_UP, url)
             return None
-
-        cache_path = self._cache_path(url) if config.get("cache", True) else None
-        if cache_path and cache_path.exists():
-            return cache_path.read_text(encoding="utf-8", errors="replace")
 
         allowed, reason = self._robots_allows(url)
         if not allowed:
@@ -407,6 +454,8 @@ class FactCheckExtractor:
         across four publishers whose robots.txt in fact permits all of them --
         every one of those was `read()` failing, not a publisher saying no.
 
+        Status rule: 200 is parsed; 404 and 410 mean no rules are published
+        and allow; every other status, and any network error, is unreachable.
         An unreachable robots.txt still means no fetch: unknown is not
         permission. But it reports ROBOTS_UNREACHABLE rather than
         ROBOTS_DISALLOWED, so a bad network cannot be mistaken for a ban.
@@ -425,12 +474,21 @@ class FactCheckExtractor:
                 )
                 if response.status_code == 200:
                     parser = RobotFileParser()
-                    parser.parse(response.text.splitlines())
-                elif 400 <= response.status_code < 500:
-                    # No robots.txt at all is "crawl permitted" per the
-                    # standard, and is not the same as one we could not read.
+                    # utf-8-sig drops a leading byte-order mark, which would
+                    # otherwise glue itself to the first directive and hide it.
+                    body = response.content.decode("utf-8-sig", errors="replace")
+                    parser.parse(body.splitlines())
+                elif response.status_code in _ROBOTS_ABSENT_STATUSES:
+                    # Only 404 and 410 say "no robots.txt here", which the
+                    # standard reads as crawl permitted. Any other status
+                    # (401, 403, 429, other 4xx, 5xx) tells us
+                    # nothing about the publisher's rules, so the parser
+                    # stays None and the host is unreachable. Redirects never
+                    # reach this point: requests follows them.
                     parser = RobotFileParser()
                     parser.parse([])
+                else:
+                    log.debug("robots.txt for %s returned %s", host, response.status_code)
             except Exception as exc:
                 log.debug("robots.txt unreachable for %s: %s", host, exc)
             self._robots[host] = parser
@@ -458,13 +516,19 @@ class FactCheckExtractor:
             if not url:
                 self.drop(DropReason.NO_URL, str(record.get("id")))
                 continue
+            if not record.get("id"):
+                self.drop(DropReason.NO_RECORD_ID, url)
+                continue
 
             tier = publisher.get("tier")
             if tier == Tier.RSS_TAG.value:
                 result = self.from_rss_tags(record, record.get("tags") or [])
             elif tier == Tier.CLAIMREVIEW.value:
                 html = self.fetch_html(url)
-                result = self.from_html(record, html) if html else None
+                # fetch_html counts every reason it returns None for, so only
+                # a page that came back (even an empty one) is parsed here, and
+                # an empty page is counted by from_html as having no markup.
+                result = self.from_html(record, html) if html is not None else None
             else:
                 self.drop(DropReason.NO_PUBLISHER_CONFIG, f"{domain}: tier={tier!r}")
                 continue
@@ -510,7 +574,36 @@ def FACTCHECK_SCHEMA():  # noqa: N802 - matches ingest/store.py's naming
     )
 
 
-def records_from_corpus(frame: Any, publishers: Iterable[str]) -> Iterator[dict]:
+def _newest_row_positions(frame: Any, allowed: set[str]) -> dict[str, int]:
+    """Position of the newest row for each repeated id among ``allowed`` publishers.
+
+    Recency is ``ingested_at``, the time the store took the row in. ``timestamp``
+    is the article's publication time and is the same for every copy of it. A
+    row with no ``ingested_at`` counts as older than any row that has one; when
+    the column is absent or null for every copy, the first copy wins.
+    """
+    has_ingested = "ingested_at" in getattr(frame, "columns", ())
+    best: dict[str, tuple[int, Any]] = {}
+    for position, (_, row) in enumerate(frame.iterrows()):
+        if row.get("source_detail") not in allowed:
+            continue
+        record_id = row.get("id")
+        if not record_id:
+            continue
+        stamp = row.get("ingested_at") if has_ingested else None
+        if stamp is not None and stamp != stamp:  # NaT or NaN
+            stamp = None
+        held = best.get(record_id)
+        if held is None or (stamp is not None and (held[1] is None or stamp > held[1])):
+            best[record_id] = (position, stamp)
+    return {record_id: position for record_id, (position, _) in best.items()}
+
+
+def records_from_corpus(
+    frame: Any,
+    publishers: Iterable[str],
+    on_duplicate: Callable[[str], None],
+) -> Iterator[dict]:
     """Project corpus rows into the flat dicts the extractor consumes.
 
     ``url``, ``title`` and ``tags`` live inside the ``raw`` blob rather than in
@@ -518,10 +611,21 @@ def records_from_corpus(frame: Any, publishers: Iterable[str]) -> Iterator[dict]
     list of terms or as one comma-joined string depending on the feed, and both
     are flattened -- Fact Crescendo's verdict is a term inside that list, so
     getting this wrong silently loses the whole tier-2 path.
+
+    Each id is yielded once, and the newest copy wins (see
+    ``_newest_row_positions``): the store can return the same id twice, and a
+    feed that revises an article's tags later can add the verdict term to the
+    newer copy only. ``on_duplicate`` is required and is called with the id of
+    every older copy that is skipped, so no caller can drop duplicates uncounted.
     """
     allowed = set(publishers)
-    for _, row in frame.iterrows():
+    newest = _newest_row_positions(frame, allowed)
+    for position, (_, row) in enumerate(frame.iterrows()):
         if row.get("source_detail") not in allowed:
+            continue
+        record_id = row.get("id")
+        if record_id and newest[record_id] != position:
+            on_duplicate(str(record_id))
             continue
         raw = row.get("raw")
         if isinstance(raw, str):
@@ -543,15 +647,52 @@ def records_from_corpus(frame: Any, publishers: Iterable[str]) -> Iterator[dict]
         }
 
 
+#: The one output file. Fixed so that a rerun updates it rather than adding a
+#: sibling that every reader would have to know to combine.
+FACTCHECKS_FILENAME = "factchecks.parquet"
+
+
+def _read_rows(path: Path) -> list[dict[str, Any]]:
+    """Rows of one side-artifact file. A corrupt file raises rather than being
+    skipped: overwriting it with a merge that omits it would lose its rows."""
+    import pyarrow.parquet as pq
+
+    return pq.read_table(path).to_pylist()
+
+
+#: Lock file taken by every writer. A dot-file, so dataset readers skip it.
+_LOCK_FILENAME = ".factchecks.lock"
+
+#: Subdirectory that receives merged legacy files. The underscore prefix makes
+#: pyarrow's dataset discovery skip it, so a directory read sees each row once.
+_LEGACY_DIRNAME = "_legacy"
+
+
 def write_factchecks(
     verdicts: list[FactCheck], settings: Settings | None = None
 ) -> Path | None:
-    """Write the side artifact. One Parquet file per run, never partitioned.
+    """Merge ``verdicts`` into ``data/factchecks/factchecks.parquet``.
 
-    Not partitioned by date on purpose: these rows are keyed on the article they
-    annotate, not on their own timestamp, and a reader always wants all of them
-    to join against the corpus. Partitioning would buy nothing and cost a
-    predicate on every read.
+    The file is keyed on ``record_id``: these rows annotate an article, not a
+    run, so a rerun must replace a row rather than repeat it. When a
+    ``record_id`` is present more than once the row with the latest
+    ``extracted_at`` wins (ISO-8601 UTC strings sort chronologically), and a
+    tie goes to the later source, which is the new run.
+
+    The whole read, merge and replace runs under an exclusive ``flock`` on a
+    lock file in the output directory, so overlapping runs take turns and the
+    second one sees the first one's rows instead of overwriting them.
+
+    Files named ``factchecks-<timestamp>.parquet`` are from an earlier layout
+    that wrote one file per run. They are read as the oldest source so their
+    rows are not lost. After the merged file is in place they are moved, not
+    deleted, into ``_legacy/``: left beside the main file, a directory read
+    would return every one of their rows twice. Pyarrow skips paths that start
+    with an underscore, so ``_legacy/`` is invisible to readers.
+
+    Not partitioned by date on purpose: a reader always wants all of them to
+    join against the corpus, and partitioning would cost a predicate on every
+    read.
     """
     if not verdicts:
         return None
@@ -561,16 +702,58 @@ def write_factchecks(
     settings = settings or get_settings()
     out_dir = settings.data_dir / "factchecks"
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    path = out_dir / f"factchecks-{stamp}.parquet"
-    # Explicit schema, matching ingest/store.py's corpus schema. Inference is
-    # not an option here: `claim_simhash` is an unsigned 64-bit value, pyarrow
-    # infers int64, and anything above 2**63 raises
-    # "OverflowError: Python int too large to convert to C long" -- on roughly
-    # half of all simhashes, i.e. intermittently and for no visible reason.
-    table = pa.Table.from_pylist([v.as_row() for v in verdicts], schema=FACTCHECK_SCHEMA())
-    pq.write_table(table, path, compression="zstd")
-    log.info("wrote %d verdicts to %s", len(verdicts), path)
+    path = out_dir / FACTCHECKS_FILENAME
+
+    with open(out_dir / _LOCK_FILENAME, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        legacy_files = sorted(out_dir.glob("factchecks-*.parquet"))
+        sources: list[Iterable[dict[str, Any]]] = [_read_rows(legacy) for legacy in legacy_files]
+        if path.exists():
+            sources.append(_read_rows(path))
+        sources.append(v.as_row() for v in verdicts)
+
+        merged: dict[str, dict[str, Any]] = {}
+        for rows in sources:
+            for row in rows:
+                current = merged.get(row["record_id"])
+                if current is None or (row["extracted_at"] or "") >= (
+                    current["extracted_at"] or ""
+                ):
+                    merged[row["record_id"]] = row
+
+        # Explicit schema, matching ingest/store.py's corpus schema. Inference
+        # is not an option here: `claim_simhash` is an unsigned 64-bit value,
+        # pyarrow infers int64, and anything above 2**63 raises
+        # "OverflowError: Python int too large to convert to C long" -- on
+        # roughly half of all simhashes, i.e. intermittently and for no visible
+        # reason.
+        table = pa.Table.from_pylist(list(merged.values()), schema=FACTCHECK_SCHEMA())
+
+        # Write beside the target and rename: os.replace is atomic on one
+        # filesystem, so a crash leaves the old file or the new one, never
+        # half. The fsync makes the bytes durable before the rename can be.
+        fd, tmp_name = tempfile.mkstemp(dir=out_dir, prefix=".factchecks-", suffix=".tmp")
+        os.close(fd)
+        try:
+            pq.write_table(table, tmp_name, compression="zstd")
+            with open(tmp_name, "rb") as written:
+                os.fsync(written.fileno())
+            # mkstemp creates the file private to this user; the artifact is shared data.
+            os.chmod(tmp_name, 0o644)
+            os.replace(tmp_name, path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+
+        if legacy_files:
+            archive = out_dir / _LEGACY_DIRNAME
+            archive.mkdir(exist_ok=True)
+            for legacy in legacy_files:
+                destination = archive / legacy.name
+                if destination.exists():
+                    destination = archive / f"{legacy.stem}-{time.time_ns()}{legacy.suffix}"
+                os.replace(legacy, destination)
+    log.info("wrote %d verdicts (%d new this run) to %s", len(merged), len(verdicts), path)
     return path
 
 

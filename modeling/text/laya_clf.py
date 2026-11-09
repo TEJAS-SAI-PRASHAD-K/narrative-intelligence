@@ -282,6 +282,8 @@ class LayaTrainingExporter:
 
     def __init__(self, scorer: LayaScorer | None = None):
         self.scorer = scorer or LayaScorer()
+        #: Rows the last :meth:`export` call skipped, by reason code.
+        self.skipped: dict[str, int] = {}
 
     def row(self, text: str, is_misinformation: bool) -> dict[str, Any]:
         return {
@@ -295,6 +297,10 @@ class LayaTrainingExporter:
 
         ``label_column`` is read with the benchmark convention this project
         already uses: truthy / ``1`` means misinformation. See liar.py.
+
+        A row with blank text (``empty_text``) or a missing label
+        (``null_label``) is skipped. Skips are counted per reason in
+        ``self.skipped``, which each call resets, and logged at warning level.
         """
         import json as _json
         from pathlib import Path as _Path
@@ -302,10 +308,12 @@ class LayaTrainingExporter:
         out = _Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         written = 0
+        skipped = {"empty_text": 0, "null_label": 0}
         with out.open("w", encoding="utf-8") as handle:
             for record in frame.itertuples():
                 text = (getattr(record, "text", "") or "").strip()
                 if not text:
+                    skipped["empty_text"] += 1
                     continue
                 label = getattr(record, label_column, None)
                 # `label != label` is the NaN test. pandas stores a missing
@@ -314,11 +322,15 @@ class LayaTrainingExporter:
                 # unlabelled row must be skipped, never coerced -- guessing a
                 # class here would put fabricated labels in the training set.
                 if label is None or label != label:
+                    skipped["null_label"] += 1
                     continue
                 handle.write(
                     _json.dumps(self.row(text, bool(int(label))), ensure_ascii=False) + "\n"
                 )
                 written += 1
+        self.skipped = {reason: n for reason, n in skipped.items() if n}
+        if self.skipped:
+            log.warning("skipped rows exporting laya training data to %s: %s", out, self.skipped)
         log.info("wrote %d laya training rows to %s", written, out)
         return written
 

@@ -8,6 +8,8 @@ rather than a logic error.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +22,7 @@ from ingest.factcheck import (
     find_claim_reviews,
     label_distribution,
     normalize_rating,
+    records_from_corpus,
     write_factchecks,
 )
 
@@ -249,13 +252,14 @@ class TestRssTagTier:
         assert verdict.tier == Tier.RSS_TAG.value
         assert verdict.claim_lang == "hi"
 
-    def test_tags_with_no_verdict_yield_nothing_quietly(self, extractor):
+    def test_tags_with_no_verdict_yield_nothing_and_are_counted(self, extractor):
         record = {
             "id": "news:x",
             "url": "https://factcrescendo.com/x/",
             "source_detail": "factcrescendo.com",
         }
         assert extractor.from_rss_tags(record, ["Politics", "यूपी"]) is None
+        assert extractor.dropped == {DropReason.NO_VERDICT_TAG.value: 1}
 
     def test_a_middle_verdict_in_the_tags_still_drops(self, extractor):
         record = {
@@ -289,7 +293,19 @@ class TestRobotsHandling:
     def test_a_real_disallow_is_reported_as_one(self, extractor, monkeypatch):
         class Response:
             status_code = 200
-            text = "User-agent: *\nDisallow: /fact-check/\n"
+            content = b"User-agent: *\nDisallow: /fact-check/\n"
+
+        import requests
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: Response())
+        allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        assert allowed is False
+        assert reason == DropReason.ROBOTS_DISALLOWED
+
+    def test_a_byte_order_mark_does_not_hide_the_first_directive(self, extractor, monkeypatch):
+        class Response:
+            status_code = 200
+            content = b"\xef\xbb\xbfUser-agent: *\nDisallow: /"
 
         import requests
 
@@ -302,7 +318,7 @@ class TestRobotsHandling:
         """404 means no rules, which the standard reads as allow."""
         class Response:
             status_code = 404
-            text = ""
+            content = b""
 
         import requests
 
@@ -310,6 +326,139 @@ class TestRobotsHandling:
         allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
         assert allowed is True
         assert reason is None
+
+    @pytest.fixture
+    def robots_get(self, monkeypatch):
+        import requests
+
+        calls: list[str] = []
+        status = {"code": 404}
+
+        class Response:
+            content = b""
+
+            def __init__(self, code):
+                self.status_code = code
+
+        def fake_get(url, *a, **k):
+            calls.append(url)
+            return Response(status["code"])
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        return calls, status
+
+    @pytest.mark.parametrize("code", [404, 410])
+    def test_no_published_rules_allows(self, extractor, robots_get, code):
+        robots_get[1]["code"] = code
+        allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        assert (allowed, reason) == (True, None)
+
+    @pytest.mark.parametrize("code", [403, 429, 503])
+    def test_any_other_status_is_unreachable(self, extractor, robots_get, code):
+        robots_get[1]["code"] = code
+        allowed, reason = extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        assert allowed is False
+        assert reason == DropReason.ROBOTS_UNREACHABLE
+
+    def test_unreachable_status_drops_with_the_unreachable_code(self, extractor, robots_get):
+        robots_get[1]["code"] = 403
+        assert extractor.fetch_html(BOOM_URL) is None
+        assert extractor.dropped == {DropReason.ROBOTS_UNREACHABLE.value: 1}
+
+    def test_one_robots_request_per_host(self, extractor, robots_get):
+        calls, _ = robots_get
+        extractor._robots_allows("https://www.boomlive.in/fact-check/x")
+        extractor._robots_allows("https://www.boomlive.in/fact-check/y")
+        assert calls == ["https://www.boomlive.in/robots.txt"]
+
+
+class TestPoisonedPage:
+    URL_BAD = "https://www.boomlive.in/fact-check/bad"
+    URL_GOOD = "https://www.boomlive.in/fact-check/good"
+
+    def _cache(self, extractor, url, html):
+        path = extractor._cache_path(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+
+    def test_deeply_nested_jsonld_is_counted_and_the_batch_continues(self, extractor):
+        bad = (
+            '<script type="application/ld+json">' + "[" * 100_000 + "</script>"
+        )
+        self._cache(extractor, self.URL_BAD, bad)
+        self._cache(extractor, self.URL_GOOD, BOOM_HTML)
+        records = [
+            {"id": "news:bad", "url": self.URL_BAD, "source_detail": "boomlive.in"},
+            {"id": "news:good", "url": self.URL_GOOD, "source_detail": "boomlive.in"},
+        ]
+        verdicts = list(extractor.run(records))
+        assert [v.record_id for v in verdicts] == ["news:good"]
+        assert extractor.dropped[DropReason.JSONLD_TOO_DEEP.value] == 1
+        assert DropReason.NO_CLAIMREVIEW.value not in extractor.dropped
+        # A rerun over the same cached page behaves the same, not worse.
+        assert list(extractor.run(records[:1])) == []
+
+    def test_a_page_with_only_too_deep_blocks_is_counted_once(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        deep = '<script type="application/ld+json">' + "[" * 100_000 + "</script>"
+        self._cache(extractor, self.URL_BAD, deep + deep)
+        records = [{"id": "news:bad", "url": self.URL_BAD, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.JSONLD_TOO_DEEP.value: 1}
+
+    def test_a_too_deep_block_beside_a_claimreview_yields_a_verdict_and_a_warning(
+        self, extractor, monkeypatch, caplog
+    ):
+        _no_network(monkeypatch)
+        deep = '<script type="application/ld+json">' + "[" * 100_000 + "</script>"
+        self._cache(extractor, self.URL_BAD, BOOM_HTML.replace("<head>", "<head>" + deep, 1))
+        records = [{"id": "news:bad", "url": self.URL_BAD, "source_detail": "boomlive.in"}]
+        with caplog.at_level(logging.WARNING, logger="ingest.factcheck"):
+            verdicts = list(extractor.run(records))
+        assert [v.record_id for v in verdicts] == ["news:bad"]
+        assert DropReason.JSONLD_TOO_DEEP.value not in extractor.dropped
+        assert any("nested too deep" in r.getMessage() for r in caplog.records)
+
+    def test_walk_jsonld_survives_nesting_past_the_recursion_limit(self):
+        from ingest.factcheck import walk_jsonld
+
+        node: dict = {"@type": "ClaimReview"}
+        for _ in range(5_000):
+            node = {"child": [node]}
+        assert any(n.get("@type") == "ClaimReview" for n in walk_jsonld(node))
+
+    def test_walk_jsonld_keeps_document_order(self):
+        from ingest.factcheck import walk_jsonld
+
+        tree = {"n": 1, "a": [{"n": 2}, {"n": 3, "k": {"n": 4}}], "b": {"n": 5}}
+        assert [d.get("n") for d in walk_jsonld(tree)] == [1, 2, 3, 4, 5]
+
+
+class TestFetchCache:
+    def test_a_cache_hit_is_returned_after_the_budget_is_spent(self, extractor):
+        cache_path = extractor._cache_path(BOOM_URL)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("<html>cached</html>", encoding="utf-8")
+        extractor._budget = 0
+        assert extractor.fetch_html(BOOM_URL) == "<html>cached</html>"
+        assert extractor._budget == 0
+        assert extractor.dropped == {}
+
+    def test_a_cache_hit_is_returned_for_a_domain_that_gave_up(self, extractor):
+        cache_path = extractor._cache_path(BOOM_URL)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("<html>cached</html>", encoding="utf-8")
+        extractor._fetch_failures["boomlive.in"] = 3
+        assert extractor.fetch_html(BOOM_URL) == "<html>cached</html>"
+        assert extractor.dropped == {}
+
+    def test_a_cache_hit_does_not_change_the_budget_count(self, extractor):
+        cache_path = extractor._cache_path(BOOM_URL)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("<html>cached</html>", encoding="utf-8")
+        extractor._budget = 5
+        extractor.fetch_html(BOOM_URL)
+        assert extractor._budget == 5
 
 
 class TestDriver:
@@ -322,6 +471,101 @@ class TestDriver:
         records = [{"id": "news:x", "url": "", "source_detail": "boomlive.in"}]
         assert list(extractor.run(records)) == []
         assert extractor.dropped[DropReason.NO_URL.value] == 1
+
+    def test_a_record_with_no_id_is_skipped_and_counted(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        records = [{"id": "", "url": BOOM_URL, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.NO_RECORD_ID.value: 1}
+
+
+BOOM_URL = "https://www.boomlive.in/fact-check/x"
+
+
+def _no_network(monkeypatch):
+    """Make any real HTTP call fail the test instead of reaching the network."""
+    import requests
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("unexpected network call")
+
+    monkeypatch.setattr(requests, "get", refuse)
+
+
+class TestDriverTiers:
+    def test_run_yields_one_verdict_per_tier(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        # A cache hit stands in for the fetch on the claimreview tier.
+        cache = extractor._cache_path(BOOM_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text(BOOM_HTML, encoding="utf-8")
+        records = [
+            {"id": "news:a", "url": BOOM_URL, "source_detail": "boomlive.in"},
+            {
+                "id": "news:b",
+                "url": "https://factcrescendo.com/b/",
+                "source_detail": "factcrescendo.com",
+                "title": "a headline",
+                "tags": ["Fake", "Politics"],
+            },
+        ]
+        verdicts = list(extractor.run(records))
+        assert [(v.record_id, v.tier, v.label) for v in verdicts] == [
+            ("news:a", Tier.CLAIMREVIEW.value, "false"),
+            ("news:b", Tier.RSS_TAG.value, "false"),
+        ]
+        assert extractor.dropped == {}
+
+    def test_an_empty_page_is_counted_not_lost(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        cache = extractor._cache_path(BOOM_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("", encoding="utf-8")
+        records = [{"id": "news:a", "url": BOOM_URL, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.NO_CLAIMREVIEW.value: 1}
+
+
+class TestFetchHtml:
+    def test_a_cache_hit_needs_no_network_and_no_budget(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        cache = extractor._cache_path(BOOM_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("<html>cached</html>", encoding="utf-8")
+        before = extractor._budget
+        assert extractor.fetch_html(BOOM_URL) == "<html>cached</html>"
+        assert extractor._budget == before
+        assert extractor.dropped == {}
+
+    def test_a_spent_budget_is_counted_per_record(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        extractor._budget = 0
+        records = [
+            {"id": f"news:{i}", "url": f"{BOOM_URL}{i}", "source_detail": "boomlive.in"}
+            for i in range(2)
+        ]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.BUDGET_EXHAUSTED.value: 2}
+
+    def test_a_domain_at_its_failure_limit_is_counted(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        extractor._fetch_failures["boomlive.in"] = 3
+        assert extractor.fetch_html(BOOM_URL) is None
+        assert extractor.dropped == {DropReason.DOMAIN_GIVEN_UP.value: 1}
+
+    def test_an_ordinary_failure_is_counted_once_under_its_own_code(
+        self, extractor, monkeypatch
+    ):
+        import requests
+
+        def boom(*args, **kwargs):
+            raise OSError("down")
+
+        monkeypatch.setattr(extractor, "_robots_allows", lambda url: (True, None))
+        monkeypatch.setattr(requests, "get", boom)
+        records = [{"id": "news:a", "url": BOOM_URL, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.FETCH_FAILED.value: 1}
 
 
 class TestSideArtifact:
@@ -362,6 +606,326 @@ class TestSideArtifact:
         from ingest.config import Settings
 
         assert write_factchecks([], Settings(data_dir=tmp_path)) is None
+
+    def test_the_artifact_is_readable_by_others_not_just_the_writer(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import stat
+
+        from ingest.config import Settings
+
+        path = write_factchecks([self._verdict(1)], Settings(data_dir=tmp_path))
+        assert path is not None
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+class TestRecordsFromCorpus:
+    def _frame(self, rows):
+        pd = pytest.importorskip("pandas")
+        return pd.DataFrame(rows)
+
+    def test_tags_are_flattened_and_raw_may_be_a_json_string(self):
+        import json
+
+        frame = self._frame(
+            [
+                {
+                    "id": "news:a",
+                    "source_detail": "factcrescendo.com",
+                    "text": "body",
+                    "raw": {"url": "https://f/a", "title": "T", "tags": ["False, Politics", "UP"]},
+                },
+                {
+                    "id": "news:b",
+                    "source_detail": "factcrescendo.com",
+                    "text": "body",
+                    "raw": json.dumps({"url": "https://f/b", "tags": ["Fake"]}),
+                },
+                {"id": "news:c", "source_detail": "other.com", "text": "x", "raw": {}},
+            ]
+        )
+        rows = list(records_from_corpus(frame, ["factcrescendo.com"], on_duplicate=lambda _: None))
+        assert [r["id"] for r in rows] == ["news:a", "news:b"]
+        assert rows[0]["tags"] == ["False", "Politics", "UP"]
+        assert rows[0]["url"] == "https://f/a"
+        assert rows[1]["tags"] == ["Fake"]
+
+    def test_a_repeated_id_is_yielded_once_and_reported(self):
+        frame = self._frame(
+            [
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "first", "raw": {}},
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "second", "raw": {}},
+            ]
+        )
+        repeats: list[str] = []
+        rows = list(records_from_corpus(frame, ["boomlive.in"], on_duplicate=repeats.append))
+        assert [r["text"] for r in rows] == ["first"]
+        assert repeats == ["news:a"]
+
+    def test_on_duplicate_is_required(self):
+        with pytest.raises(TypeError):
+            list(records_from_corpus(self._frame([]), ["boomlive.in"]))
+
+    def test_the_newest_copy_wins_so_a_revised_tag_list_gives_a_verdict(self, extractor):
+        pd = pytest.importorskip("pandas")
+        frame = pd.DataFrame(
+            [
+                {
+                    "id": "news:a",
+                    "source_detail": "factcrescendo.com",
+                    "text": "old",
+                    "ingested_at": pd.Timestamp("2026-01-01", tz="UTC"),
+                    "raw": {"url": "https://f/a", "title": "T", "tags": ["Politics"]},
+                },
+                {
+                    "id": "news:a",
+                    "source_detail": "factcrescendo.com",
+                    "text": "new",
+                    "ingested_at": pd.Timestamp("2026-02-01", tz="UTC"),
+                    "raw": {"url": "https://f/a", "title": "T", "tags": ["Politics", "False"]},
+                },
+            ]
+        )
+        repeats: list[str] = []
+        rows = list(
+            records_from_corpus(frame, ["factcrescendo.com"], on_duplicate=repeats.append)
+        )
+        assert [r["text"] for r in rows] == ["new"]
+        assert repeats == ["news:a"]
+        verdicts = list(extractor.run(rows))
+        assert [v.label for v in verdicts] == ["false"]
+
+    def test_a_null_recency_falls_back_to_file_order(self):
+        pd = pytest.importorskip("pandas")
+        frame = pd.DataFrame(
+            [
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "first",
+                 "ingested_at": pd.NaT, "raw": {}},
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "second",
+                 "ingested_at": pd.NaT, "raw": {}},
+            ]
+        )
+        rows = list(records_from_corpus(frame, ["boomlive.in"], on_duplicate=lambda _: None))
+        assert [r["text"] for r in rows] == ["first"]
+
+
+class TestWriteIsIdempotent:
+    def _verdict(self, record_id, simhash=1, extracted_at="2026-01-01T00:00:00+00:00"):
+        return FactCheck(
+            record_id=record_id,
+            url="u",
+            domain="boomlive.in",
+            publisher="BOOM",
+            tier=Tier.CLAIMREVIEW.value,
+            claim="c",
+            claim_lang="en",
+            rating_raw="False",
+            label="false",
+            claim_simhash=simhash,
+            extracted_at=extracted_at,
+        )
+
+    def test_two_overlapping_runs_give_one_file_and_the_newer_row_wins(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        big = 2**63 + 5
+        write_factchecks(
+            [self._verdict("news:a", 1), self._verdict("news:b", 2)], settings
+        )
+        newer = self._verdict("news:b", big, extracted_at="2026-02-01T00:00:00+00:00")
+        path = write_factchecks([newer, self._verdict("news:c", 3)], settings)
+
+        files = sorted(
+            p.name for p in (tmp_path / "factchecks").iterdir() if not p.name.startswith(".")
+        )
+        assert files == ["factchecks.parquet"]
+        table = pq.read_table(path)
+        ids = table.column("record_id").to_pylist()
+        assert sorted(ids) == ["news:a", "news:b", "news:c"]
+        by_id = {r["record_id"]: r for r in table.to_pylist()}
+        assert by_id["news:b"]["claim_simhash"] == big
+
+    def test_an_older_row_does_not_replace_a_newer_one(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        write_factchecks(
+            [self._verdict("news:a", 9, extracted_at="2026-03-01T00:00:00+00:00")], settings
+        )
+        path = write_factchecks([self._verdict("news:a", 1)], settings)
+        assert pq.read_table(path).column("claim_simhash").to_pylist() == [9]
+
+    def test_earlier_timestamped_files_are_merged(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+        from ingest.factcheck import FACTCHECK_SCHEMA
+
+        out = tmp_path / "factchecks"
+        out.mkdir()
+        legacy = out / "factchecks-20260101T000000.parquet"
+        table = pa.Table.from_pylist(
+            [self._verdict("news:old").as_row()], schema=FACTCHECK_SCHEMA()
+        )
+        pq.write_table(table, legacy)
+
+        path = write_factchecks([self._verdict("news:new")], Settings(data_dir=tmp_path))
+        assert sorted(pq.read_table(path).column("record_id").to_pylist()) == [
+            "news:new",
+            "news:old",
+        ]
+
+    def _legacy_file(self, out, name, verdict):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from ingest.factcheck import FACTCHECK_SCHEMA
+
+        out.mkdir(exist_ok=True)
+        pq.write_table(
+            pa.Table.from_pylist([verdict.as_row()], schema=FACTCHECK_SCHEMA()), out / name
+        )
+        return out / name
+
+    def test_merged_legacy_files_move_to_an_ignored_subdirectory(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pandas as pd
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        out = tmp_path / "factchecks"
+        legacy = self._legacy_file(
+            out, "factchecks-20260101T000000.parquet", self._verdict("news:old", 7)
+        )
+        original = legacy.read_bytes()
+        settings = Settings(data_dir=tmp_path)
+
+        write_factchecks([self._verdict("news:new")], settings)
+        assert not legacy.exists()
+        assert (out / "_legacy" / legacy.name).read_bytes() == original
+        frame = pd.read_parquet(out)
+        assert sorted(frame["record_id"]) == ["news:new", "news:old"]
+        assert not frame["record_id"].duplicated().any()
+
+        # A second run neither fails nor re-merges the archived file.
+        path = write_factchecks([self._verdict("news:other")], settings)
+        assert sorted(pq.read_table(path).column("record_id").to_pylist()) == [
+            "news:new",
+            "news:old",
+            "news:other",
+        ]
+        assert [p.name for p in (out / "_legacy").iterdir()] == [legacy.name]
+
+    def test_a_legacy_file_is_the_oldest_source_on_a_timestamp_tie(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        out = tmp_path / "factchecks"
+        settings = Settings(data_dir=tmp_path)
+        write_factchecks([self._verdict("news:a", 2)], settings)
+        self._legacy_file(out, "factchecks-20260101T000000.parquet", self._verdict("news:a", 1))
+        path = write_factchecks([self._verdict("news:z", 5)], settings)
+        by_id = {r["record_id"]: r for r in pq.read_table(path).to_pylist()}
+        assert by_id["news:a"]["claim_simhash"] == 2
+
+    def test_a_tie_on_extracted_at_goes_to_the_later_source(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        write_factchecks([self._verdict("news:a", 1)], settings)
+        path = write_factchecks([self._verdict("news:a", 2)], settings)
+        assert pq.read_table(path).column("claim_simhash").to_pylist() == [2]
+
+    def test_a_failed_write_leaves_the_previous_file_and_no_temporary(
+        self, tmp_path, monkeypatch
+    ):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        path = write_factchecks([self._verdict("news:a", 1)], settings)
+        before = path.read_bytes()
+
+        def half_write(table, where, **kwargs):
+            Path(where).write_bytes(b"PAR1 truncated")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pq, "write_table", half_write)
+        with pytest.raises(OSError, match="disk full"):
+            write_factchecks([self._verdict("news:b", 2)], settings)
+        assert path.read_bytes() == before
+        assert sorted(p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")) == []
+
+    def test_the_temporary_file_is_synced_before_the_rename(self, tmp_path, monkeypatch):
+        pytest.importorskip("pyarrow")
+        from ingest.config import Settings
+
+        events: list[str] = []
+        real_replace = os.replace
+        monkeypatch.setattr(os, "fsync", lambda fd: events.append("fsync"))
+        monkeypatch.setattr(
+            os, "replace", lambda a, b: (events.append("replace"), real_replace(a, b))[1]
+        )
+        write_factchecks([self._verdict("news:a")], Settings(data_dir=tmp_path))
+        assert events[:2] == ["fsync", "replace"]
+
+    def test_a_second_writer_waits_for_the_first_and_both_sets_of_rows_survive(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import fcntl
+        import threading
+        import time
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+        from ingest.factcheck import FACTCHECK_SCHEMA
+
+        settings = Settings(data_dir=tmp_path)
+        out = tmp_path / "factchecks"
+        out.mkdir()
+        target = out / "factchecks.parquet"
+        done = threading.Event()
+
+        def second_writer():
+            write_factchecks([self._verdict("news:b")], settings)
+            done.set()
+
+        # This thread plays the first writer, which holds the lock for its whole run.
+        with open(out / ".factchecks.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            thread = threading.Thread(target=second_writer)
+            thread.start()
+            time.sleep(0.5)
+            assert not done.is_set(), "second writer did not wait for the lock"
+            pq.write_table(
+                pa.Table.from_pylist(
+                    [self._verdict("news:a").as_row()], schema=FACTCHECK_SCHEMA()
+                ),
+                target,
+            )
+        thread.join(timeout=30)
+        assert done.is_set()
+        assert sorted(pq.read_table(target).column("record_id").to_pylist()) == [
+            "news:a",
+            "news:b",
+        ]
 
 
 class TestSingleClassWarning:

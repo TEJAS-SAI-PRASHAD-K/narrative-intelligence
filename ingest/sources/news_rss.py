@@ -271,7 +271,6 @@ class NewsRssSource(BaseSource):
             return None
 
         if not self._robots_allows(url):
-            self.note("robots_disallowed", url)
             return None
 
         self._fulltext_budget -= 1
@@ -318,6 +317,8 @@ class NewsRssSource(BaseSource):
         Measured on the fact-check feeds: 53 articles reported as disallowed
         across four publishers whose robots.txt permits all of them.
 
+        Status rule: 200 is parsed; 404 and 410 mean no rules are published
+        and allow; every other status, and any network error, is unreachable.
         An unreachable robots.txt still blocks the fetch, because unknown is not
         permission, but it is counted separately so a flaky network cannot be
         mistaken for a publisher's policy.
@@ -330,23 +331,36 @@ class NewsRssSource(BaseSource):
                 response = self.http().get(f"{host}/robots.txt")
                 if response.status_code == 200:
                     parser = RobotFileParser()
-                    parser.parse(response.text.splitlines())
-                elif 400 <= response.status_code < 500:
-                    # No robots.txt is "crawl permitted" per the standard, and
-                    # is not the same as one that could not be read.
+                    # utf-8-sig drops a leading byte-order mark, which would
+                    # otherwise glue itself to the first directive and hide it.
+                    body = response.content.decode("utf-8-sig", errors="replace")
+                    parser.parse(body.splitlines())
+                elif response.status_code in (404, 410):
+                    # Only 404 and 410 say "no robots.txt here", which the
+                    # standard reads as crawl permitted. Any other status
+                    # (401, 403, 429, other 4xx, 5xx) tells us
+                    # nothing about the publisher's rules, so the host is
+                    # unreachable. Redirects never reach this point: the
+                    # session follows them.
                     parser = RobotFileParser()
                     parser.parse([])
+                else:
+                    self.log.debug("robots.txt for %s returned %s", host, response.status_code)
             except Exception as exc:
-                self.note("robots_unreachable", f"{host}: {type(exc).__name__}")
                 self.log.debug("robots.txt unreachable for %s: %s", host, exc)
             self._robots[host] = parser
         parser = self._robots[host]
         if parser is None:
+            self.note("robots_unreachable", f"{host}: {url}")
             return False
         try:
-            return parser.can_fetch(self.settings.user_agent, url)
+            if parser.can_fetch(self.settings.user_agent, url):
+                return True
         except Exception:  # pragma: no cover - malformed robots.txt
+            self.note("robots_unreachable", f"{host}: {url}")
             return False
+        self.note("robots_disallowed", url)
+        return False
 
 
 # --- module helpers -------------------------------------------------------
