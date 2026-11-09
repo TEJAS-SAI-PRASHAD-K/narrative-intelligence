@@ -1464,3 +1464,25 @@ def test_the_full_demo_flow_runs_end_to_end_with_fakes(
     assert list(out.rglob("factcheck_eval.md"))
     assert not (rc.REPO_ROOT / "data" / "comparison_demo").exists()
     assert not (rc.REPO_ROOT / "data" / "comparison").exists()
+
+
+def test_a_loader_rewrite_of_the_tokenizer_config_keeps_the_checkpoint_identity(tmp_path):
+    (tmp_path / "tokenizer").mkdir()
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    (tmp_path / "tokenizer" / "tokenizer.json").write_text("{}")
+    (tmp_path / "tokenizer" / "tokenizer_config.json").write_text('{"backend": "tokenizers"}')
+    before = rc.directory_identity(tmp_path)
+
+    (tmp_path / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    assert rc.directory_identity(tmp_path) == before
+
+    (tmp_path / "tokenizer" / "tokenizer.json").write_text('{"vocab": 1}')
+    assert rc.directory_identity(tmp_path) != before
+
+
+def test_a_root_level_tokenizer_config_stays_in_the_checkpoint_identity(tmp_path):
+    (tmp_path / "tokenizer_config.json").write_text("{}")
+    before = rc.directory_identity(tmp_path)
+
+    (tmp_path / "tokenizer_config.json").write_text('{"model_max_length": 512}')
+    assert rc.directory_identity(tmp_path) != before
