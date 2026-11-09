@@ -581,3 +581,56 @@ def test_hindi_gate_with_no_hindi_score_fails_with_the_reason():
     gate = result["hindi_gate"]["m"]
     assert gate["pass"] is False and gate["n_hindi_claims_scored"] == 0
     assert gate["lift_ci_low"] is None
+
+
+# ---------------------------------------------------------------------------
+# Control models: reported as a baseline, never as a candidate to ship
+# ---------------------------------------------------------------------------
+def control_result(name="laya_multi_base", **kwargs):
+    claims, titles, texts = hindi_rows(HINDI_MIN_CLAIMS)
+    # A candidate that is perfect on test while the baseline is inverted: it clears the
+    # ship rule, and with 50 Hindi claims at lift 10 it clears the Hindi gate as well.
+    rows = PERFECT_VAL + claims + titles + texts
+    models = {
+        "tfidf": model("tfidf", rows + labelled_set(40, False)),
+        name: model(name, rows + labelled_set(40, True)),
+    }
+    return run(models, universe=universe([c["id"] for c in claims]), **kwargs)
+
+
+def test_the_zero_shot_control_is_never_shippable_whatever_its_numbers():
+    result = control_result()
+    comparison = result["comparisons"]["laya_multi_base"]
+    assert comparison["difference"]["ci_low"] > 0  # the rule would have shipped it
+    assert comparison["ship_by_numbers"] is True
+    assert comparison["ship"] is False and comparison["control"] is True
+    assert "control model" in comparison["reason"]
+    gate = result["hindi_gate"]["laya_multi_base"]
+    assert gate["pass_by_numbers"] is True
+    assert gate["pass"] is False and gate["control"] is True
+    # The numbers stay in the report as a baseline.
+    assert gate["lift"] == pytest.approx(10.0)
+    assert result["models"]["laya_multi_base"]["test"]["macro_f1"]["value"] == 1.0
+    assert result["controls"] == ["laya_multi_base"]
+
+
+def test_the_report_says_do_not_ship_and_fail_control_for_the_control():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    text = render_markdown(control_result())
+    assert "**do not ship (control)**" in text
+    assert "**FAIL (control)**" in text
+    assert "laya_multi_base (control)" in text
+
+
+def test_a_model_that_is_not_a_control_still_ships_on_the_same_numbers():
+    result = control_result(name="laya_multi")
+    assert result["comparisons"]["laya_multi"]["ship"] is True
+    assert "control" not in result["comparisons"]["laya_multi"]
+    assert result["hindi_gate"]["laya_multi"]["pass"] is True
+    assert result["controls"] == []
+
+
+def test_the_baseline_cannot_be_a_control():
+    with pytest.raises(EvalInputError, match="control"):
+        control_result(controls=["tfidf"])

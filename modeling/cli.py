@@ -354,7 +354,7 @@ def evaluate_factchecks(
     malformed, the test splits differ, or the frozen evaluation set has changed.
     """
     _bootstrap(verbose)
-    from modeling.eval.factcheck_eval import EvalInputError, run_comparison
+    from modeling.eval.factcheck_eval import EvalInputError, gate_text, run_comparison
 
     versions: dict[str, str] = {}
     for item in model_version or []:
@@ -384,7 +384,7 @@ def evaluate_factchecks(
             f"{name}: {'ship' if comparison['ship'] else 'do not ship'} - {comparison['reason']}"
         )
     for name, gate in result["hindi_gate"].items():
-        console.print(f"{name}: Hindi gate {'PASS' if gate['pass'] else 'FAIL'} - {gate['reason']}")
+        console.print(f"{name}: Hindi gate {gate_text(gate)} - {gate['reason']}")
     for path in paths:
         console.print(f"wrote {path}")
 

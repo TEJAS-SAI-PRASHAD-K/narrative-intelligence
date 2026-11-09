@@ -1353,7 +1353,7 @@ def stage_evaluate(ctx: Context) -> None:
             EXIT_FAILED,
             f"[evaluate] no score file for {missing} in {ctx.scores_dir}. Run the score stage.",
         )
-    from modeling.eval.factcheck_eval import EvalInputError, run_comparison
+    from modeling.eval.factcheck_eval import EvalInputError, gate_text, run_comparison
 
     description = split_info["description"]
     split_text = f"[DEMO] {description}" if ctx.demo else description
@@ -1378,7 +1378,7 @@ def stage_evaluate(ctx: Context) -> None:
         verdict = "ship" if comparison["ship"] else "do not ship"
         ctx.say(f"[evaluate] {name}: {verdict} - {comparison['reason']}")
     for name, gate in result["hindi_gate"].items():
-        ctx.say(f"[evaluate] {name}: Hindi gate {'PASS' if gate['pass'] else 'FAIL'}")
+        ctx.say(f"[evaluate] {name}: Hindi gate {gate_text(gate)}")
     for path in paths:
         ctx.say(f"[evaluate] report: {path}")
 

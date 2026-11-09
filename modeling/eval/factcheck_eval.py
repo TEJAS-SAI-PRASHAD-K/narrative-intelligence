@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -551,6 +552,14 @@ def freeze_manifest_from_data(
 # Statistics
 # ---------------------------------------------------------------------------
 DEFAULT_BASELINE = "tfidf"
+#: Models that are a reference point and never a candidate. The zero-shot base
+#: checkpoint is measured so that the fine-tuned models have something to beat,
+#: and a number that clears the ship rule for it must not read as a model to ship.
+CONTROL_MODELS = frozenset({"laya_multi_base"})
+CONTROL_REASON = (
+    "control model, not a candidate: its numbers are a baseline for the fine-tuned models "
+    "and it is never shipped"
+)
 DEFAULT_PRECISION_TARGET = 0.85
 #: Resamples for every interval in this module.
 DEFAULT_N_BOOTSTRAP = 2000
@@ -1094,6 +1103,39 @@ def hindi_gate(model: str, cell: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def apply_control(
+    comparison: dict[str, Any] | None = None, gate: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Force a control model's decision to "do not ship" or "FAIL (control)".
+
+    The numbers stay in the record. ``by_numbers`` keeps what the rule would have
+    decided without the control marker, so the baseline remains readable.
+    """
+    if comparison is not None:
+        return {
+            **comparison,
+            "control": True,
+            "ship_by_numbers": comparison["ship"],
+            "ship": False,
+            "reason": f"{CONTROL_REASON}. By the numbers alone: {comparison['reason']}",
+        }
+    assert gate is not None
+    return {
+        **gate,
+        "control": True,
+        "pass_by_numbers": gate["pass"],
+        "pass": False,
+        "reason": f"{CONTROL_REASON}. By the numbers alone: {gate['reason']}",
+    }
+
+
+def gate_text(gate: dict[str, Any]) -> str:
+    """``PASS``, ``FAIL`` or ``FAIL (control)``."""
+    if gate.get("control"):
+        return "FAIL (control)"
+    return "PASS" if gate["pass"] else "FAIL"
+
+
 def check_claim_languages(models: dict[str, ModelScores]) -> None:
     """Refuse when two models give one claim id different languages.
 
@@ -1124,6 +1166,7 @@ def evaluate(
     seed: int | None = None,
     versions: dict[str, str] | None = None,
     split_description: str | None = None,
+    controls: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Run the whole comparison and return a JSON-ready result.
 
@@ -1140,6 +1183,9 @@ def evaluate(
         )
     if not publishers:
         raise EvalInputError("no fact-check publishers given; refusing to compute a flag rate")
+    controls = CONTROL_MODELS if controls is None else frozenset(controls)
+    if baseline in controls:
+        raise EvalInputError(f"baseline model {baseline!r} is marked as a control model")
     check_shared_test_split(models)
     check_claim_languages(models)
     versions = versions or {}
@@ -1148,6 +1194,8 @@ def evaluate(
     notices: list[str] = []
     if not universe.frozen:
         notices.append(NOT_FROZEN_NOTICE)
+    for name in sorted(set(models) & controls):
+        notices.append(f"{name}: {CONTROL_REASON}")
     for name, scores in models.items():
         if scores.ignored_columns:
             notices.append(f"{name}: ignored unknown column(s) {scores.ignored_columns}")
@@ -1184,6 +1232,7 @@ def evaluate(
 
         model_out[name] = {
             "version": versions.get(name),
+            "control": name in controls,
             "input": {
                 "file": scores.path.name if scores.path else None,
                 "sha256": scores.sha256,
@@ -1216,6 +1265,10 @@ def evaluate(
         for name in ordered
         if name != baseline
     }
+    comparisons = {
+        name: apply_control(comparison) if name in controls else comparison
+        for name, comparison in comparisons.items()
+    }
     for name, comparison in comparisons.items():
         if comparison.get("n_left_out"):
             notices.append(
@@ -1223,6 +1276,11 @@ def evaluate(
                 f"and {baseline}; the paired comparison uses the {comparison['n_paired']} rows "
                 "both scored"
             )
+
+    hindi_gates = {}
+    for name in ordered:
+        gate = hindi_gate(name, cells[name].get("hi"))
+        hindi_gates[name] = apply_control(gate=gate) if name in controls else gate
 
     n_val = {name: ops[name]["n_val_rows"] for name in ordered}
     n_test = len(models[baseline].part("test"))
@@ -1255,7 +1313,8 @@ def evaluate(
         "models": model_out,
         "comparisons": comparisons,
         "cells": cells,
-        "hindi_gate": {name: hindi_gate(name, cells[name].get("hi")) for name in ordered},
+        "controls": sorted(set(ordered) & controls),
+        "hindi_gate": hindi_gates,
     }
 
 
@@ -1341,7 +1400,8 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
         else:
             op_cells = f"no operating point: {_escape(op['reason'])} | n/a | n/a | n/a"
         lines.append(
-            f"| {name} | {info['version'] or 'not supplied'} | {op_cells} | "
+            f"| {name}{' (control)' if info.get('control') else ''} | "
+            f"{info['version'] or 'not supplied'} | {op_cells} | "
             f"{op['n_val_scored']}/{op['n_val_rows']} | {test['n_scored']}/{test['n_test_rows']} |"
         )
     lines.append("")
@@ -1376,7 +1436,8 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
         lines.append(
             f"| {name} | {_interval_text(comparison.get('difference'))} | "
             f"{comparison.get('n_paired', 'n/a')} | {comparison.get('n_left_out', 'n/a')} | "
-            f"**{'ship' if comparison['ship'] else 'do not ship'}** | "
+            f"**{'ship' if comparison['ship'] else 'do not ship'}"
+            f"{' (control)' if comparison.get('control') else ''}** | "
             f"{_escape(comparison['reason'])} |"
         )
     lines += [
@@ -1435,7 +1496,7 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
         lines.append(
             f"| {name} | {gate['n_hindi_claims_scored']} of {gate['n_hindi_claims_rows']} | "
             f"{_interval_text(interval) if gate['lift'] is not None else 'no value'} | "
-            f"**{'PASS' if gate['pass'] else 'FAIL'}** | {_escape(gate['reason'])} |"
+            f"**{gate_text(gate)}** | {_escape(gate['reason'])} |"
         )
     lines.append("")
 
@@ -1532,6 +1593,7 @@ def run_comparison(
     label: str = "comparison",
     settings: Any = None,
     write: bool = True,
+    controls: Collection[str] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Load, verify, evaluate and write. Any refusal raises before a file is written.
 
@@ -1553,6 +1615,7 @@ def run_comparison(
         seed=seed,
         versions=versions,
         split_description=split_description,
+        controls=controls,
     )
     paths = write_factcheck_report(result, label=label, settings=settings) if write else []
     return result, paths
