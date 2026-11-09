@@ -435,3 +435,64 @@ def test_fine_tune_leaves_a_checkpoint_after_the_first_epoch(monkeypatch, tmp_pa
     saved = torch.load(out / "weights.pt")
     for name, tensor in snapshots[0].items():
         assert torch.equal(saved[name], tensor), name
+
+
+def test_fine_tune_refuses_an_empty_validation_set(monkeypatch, tmp_path):
+    classifier = StanceClassifier()
+    monkeypatch.setattr(
+        classifier, "_load_base", lambda *a, **k: pytest.fail("loaded a model before refusing")
+    )
+    pairs = [("claim", "post")] * 4
+    out = tmp_path / "ckpt"
+    with pytest.raises(ValueError, match="validation"):
+        classifier.fine_tune(pairs, np.zeros(4, dtype=int), [], np.zeros(0, dtype=int),
+                             output_dir=out, epochs=1)
+    assert not out.exists()
+
+
+def test_fine_tune_never_picks_a_non_finite_epoch_as_best(monkeypatch, tmp_path):
+    import json
+
+    # Epoch one is NaN; epochs two and three are finite and three is worse.
+    classifier = StanceClassifier()
+    classifier.gradient_checkpointing = False
+    classifier.batch_size = 2
+    model = _TinyHead.build()
+    monkeypatch.setattr(
+        classifier, "_load_base", lambda name, num_labels=None: (_TinyTokenizer(), model)
+    )
+    rows = iter([np.nan, 0.5, 0.0])
+
+    def fake_probabilities(model_, tokenizer, pairs, device):
+        p = next(rows)
+        return np.tile([p] + [(1 - p) / 3] * 3, (len(pairs), 1))
+
+    monkeypatch.setattr(classifier, "_raw_probabilities", fake_probabilities)
+    pairs = [(f"claim {i}", f"post {i}") for i in range(6)]
+    labels = np.zeros(6, dtype=int)
+    out = tmp_path / "ckpt"
+    result = classifier.fine_tune(pairs, labels, pairs[:2], labels[:2], output_dir=out, epochs=3)
+    assert result.metadata["best_epoch"] == 2
+    assert json.loads((out / "best_epoch.json").read_text())["epoch"] == 2
+
+
+def test_fine_tune_refuses_when_no_epoch_has_a_finite_loss(monkeypatch, tmp_path):
+    classifier = StanceClassifier()
+    classifier.gradient_checkpointing = False
+    classifier.batch_size = 2
+    model = _TinyHead.build()
+    monkeypatch.setattr(
+        classifier, "_load_base", lambda name, num_labels=None: (_TinyTokenizer(), model)
+    )
+    monkeypatch.setattr(
+        classifier,
+        "_raw_probabilities",
+        lambda m, t, pairs, d: np.full((len(pairs), 4), np.nan),
+    )
+    pairs = [(f"claim {i}", f"post {i}") for i in range(6)]
+    labels = np.zeros(6, dtype=int)
+    out = tmp_path / "ckpt"
+    with pytest.raises(RuntimeError, match="finite"):
+        classifier.fine_tune(pairs, labels, pairs[:2], labels[:2], output_dir=out, epochs=2)
+    assert not (out / "best_epoch.json").exists()
+    assert not (out / "training.json").exists()

@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -238,6 +239,12 @@ class StanceClassifier:
         import torch
         from torch.utils.data import DataLoader
 
+        if len(val_pairs) == 0:
+            raise ValueError(
+                "fine_tune needs a non-empty validation set: the validation loss selects "
+                "the checkpoint, and with none no epoch can be chosen or saved."
+            )
+
         model_name = base_model or self.base_model
         device = self.settings.resolve_device()
         n_epochs = epochs if epochs is not None else self.epochs
@@ -318,9 +325,16 @@ class StanceClassifier:
             )
             log.info("epoch %d/%d: %s", epoch + 1, n_epochs, history[-1])
 
-            # Save only on improvement. Epoch one always improves, so a
-            # checkpoint exists before anything can go wrong.
-            if val_loss < best_val:
+            # Save only on improvement. The first finite epoch always improves,
+            # so a checkpoint exists before anything can go wrong. A NaN or
+            # infinite loss is never an improvement and never the best epoch.
+            if not math.isfinite(val_loss):
+                log.warning(
+                    "epoch %d: validation loss is %s; this epoch cannot be the best",
+                    epoch + 1,
+                    val_loss,
+                )
+            elif val_loss < best_val:
                 best_val, best_epoch = val_loss, epoch + 1
                 model.save_pretrained(output_dir)
                 tokenizer.save_pretrained(output_dir)
@@ -334,11 +348,16 @@ class StanceClassifier:
                     for name, tensor in model.state_dict().items()
                 }
 
-        if best_state is not None:
-            # Later scoring in this run must use the weights that were saved,
-            # not whatever the last epoch left behind.
-            model.load_state_dict(best_state)
-            log.info("restored the best epoch (%d, val_log_loss %.4f)", best_epoch, best_val)
+        if best_state is None:
+            raise RuntimeError(
+                f"no epoch produced a finite validation loss in {n_epochs} epochs, so no "
+                f"checkpoint was written to {output_dir}. Check the learning rate and the "
+                "validation labels; do not register this directory."
+            )
+        # Later scoring in this run must use the weights that were saved,
+        # not whatever the last epoch left behind.
+        model.load_state_dict(best_state)
+        log.info("restored the best epoch (%d, val_log_loss %.4f)", best_epoch, best_val)
 
         self._model, self._tokenizer = model, tokenizer
         self._zero_shot = False
