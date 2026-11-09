@@ -241,6 +241,35 @@ def test_misinfo_skip_reason_keeps_the_aux_reasons_and_is_idempotent(
     ]
 
 
+def test_rerunning_the_aux_stage_keeps_the_misinfo_skip_reasons(settings, monkeypatch, tmp_path):
+    ctx = _misinfo_ctx(tmp_path, settings, monkeypatch)
+    _fake_aux(monkeypatch)
+    import modeling.aux as aux
+
+    real = aux.run_aux_pass
+    monkeypatch.setattr(
+        aux,
+        "run_aux_pass",
+        lambda records, authors, settings=None: real(
+            records, authors, settings=settings, scorers=["toxicity", "sentiment", "emotion"]
+        ),
+    )
+    S._misinfo_stage(ctx)
+    before = ctx.store.read("record_scores").set_index("record_id")
+    assert list(before.loc["r:hi", "skip_reasons"]) == ["misinfo:unsupported_language"]
+
+    S._aux_stage(ctx)
+
+    after = ctx.store.read("record_scores").set_index("record_id")
+    assert list(after.loc["r:hi", "skip_reasons"]) == [
+        "toxicity:unsupported_language",
+        "sentiment:unsupported_language",
+        "emotion:unsupported_language",
+        "misinfo:unsupported_language",
+    ]
+    assert not after.loc["r:en", "skip_reasons"].tolist()
+
+
 def test_misinfo_stage_dry_run_writes_nothing_but_reports_the_skip(
     settings, monkeypatch, tmp_path
 ):

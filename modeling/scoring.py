@@ -133,6 +133,7 @@ def _aux_stage(ctx: StageContext) -> list[dict[str, Any]]:
             }
         ]
 
+    frame = _keep_misinfo_skips(frame, ctx.store.read("record_scores"))
     result = ctx.store.write("record_scores", frame, known_keys=ctx.known_record_ids or None)
     ctx.store.update_manifest(
         table="record_scores",
@@ -385,6 +386,27 @@ def _text_skip_reason(
     if not settings.language_allowed(module, lang):
         return SkipReason.UNSUPPORTED_LANGUAGE
     return None
+
+
+def _keep_misinfo_skips(frame: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
+    """Carry the ``misinfo:<reason>`` entries on disk into a fresh aux frame.
+
+    ``skip_reasons`` is one list per record, and a merge write replaces the list.
+    The aux pass knows nothing about the misinfo stage, so a rerun of the aux
+    stage would erase the reasons that the misinfo stage recorded.
+    """
+    if not len(existing) or "skip_reasons" not in existing.columns:
+        return frame
+    prior = {
+        str(rid): [r for r in (str(x) for x in as_list(value)) if r.startswith("misinfo:")]
+        for rid, value in zip(existing["record_id"], existing["skip_reasons"], strict=True)
+    }
+    out = frame.copy()
+    out["skip_reasons"] = [
+        [*(str(r) for r in as_list(reasons)), *prior.get(str(rid), [])]
+        for rid, reasons in zip(out["record_id"], out["skip_reasons"], strict=True)
+    ]
+    return out
 
 
 def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
