@@ -20,6 +20,7 @@ from ingest.factcheck import (
     find_claim_reviews,
     label_distribution,
     normalize_rating,
+    records_from_corpus,
     write_factchecks,
 )
 
@@ -452,6 +453,125 @@ class TestSideArtifact:
         from ingest.config import Settings
 
         assert write_factchecks([], Settings(data_dir=tmp_path)) is None
+
+
+class TestRecordsFromCorpus:
+    def _frame(self, rows):
+        pd = pytest.importorskip("pandas")
+        return pd.DataFrame(rows)
+
+    def test_tags_are_flattened_and_raw_may_be_a_json_string(self):
+        import json
+
+        frame = self._frame(
+            [
+                {
+                    "id": "news:a",
+                    "source_detail": "factcrescendo.com",
+                    "text": "body",
+                    "raw": {"url": "https://f/a", "title": "T", "tags": ["False, Politics", "UP"]},
+                },
+                {
+                    "id": "news:b",
+                    "source_detail": "factcrescendo.com",
+                    "text": "body",
+                    "raw": json.dumps({"url": "https://f/b", "tags": ["Fake"]}),
+                },
+                {"id": "news:c", "source_detail": "other.com", "text": "x", "raw": {}},
+            ]
+        )
+        rows = list(records_from_corpus(frame, ["factcrescendo.com"]))
+        assert [r["id"] for r in rows] == ["news:a", "news:b"]
+        assert rows[0]["tags"] == ["False", "Politics", "UP"]
+        assert rows[0]["url"] == "https://f/a"
+        assert rows[1]["tags"] == ["Fake"]
+
+    def test_a_repeated_id_is_yielded_once_and_reported(self):
+        frame = self._frame(
+            [
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "first", "raw": {}},
+                {"id": "news:a", "source_detail": "boomlive.in", "text": "second", "raw": {}},
+            ]
+        )
+        repeats: list[str] = []
+        rows = list(records_from_corpus(frame, ["boomlive.in"], on_duplicate=repeats.append))
+        assert [r["text"] for r in rows] == ["first"]
+        assert repeats == ["news:a"]
+
+
+class TestWriteIsIdempotent:
+    def _verdict(self, record_id, simhash=1, extracted_at="2026-01-01T00:00:00+00:00"):
+        return FactCheck(
+            record_id=record_id,
+            url="u",
+            domain="boomlive.in",
+            publisher="BOOM",
+            tier=Tier.CLAIMREVIEW.value,
+            claim="c",
+            claim_lang="en",
+            rating_raw="False",
+            label="false",
+            claim_simhash=simhash,
+            extracted_at=extracted_at,
+        )
+
+    def test_two_overlapping_runs_give_one_file_and_the_newer_row_wins(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        big = 2**63 + 5
+        write_factchecks(
+            [self._verdict("news:a", 1), self._verdict("news:b", 2)], settings
+        )
+        newer = self._verdict("news:b", big, extracted_at="2026-02-01T00:00:00+00:00")
+        path = write_factchecks([newer, self._verdict("news:c", 3)], settings)
+
+        files = sorted(p.name for p in (tmp_path / "factchecks").iterdir())
+        assert files == ["factchecks.parquet"]
+        table = pq.read_table(path)
+        ids = table.column("record_id").to_pylist()
+        assert sorted(ids) == ["news:a", "news:b", "news:c"]
+        by_id = {r["record_id"]: r for r in table.to_pylist()}
+        assert by_id["news:b"]["claim_simhash"] == big
+
+    def test_an_older_row_does_not_replace_a_newer_one(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        write_factchecks(
+            [self._verdict("news:a", 9, extracted_at="2026-03-01T00:00:00+00:00")], settings
+        )
+        path = write_factchecks([self._verdict("news:a", 1)], settings)
+        assert pq.read_table(path).column("claim_simhash").to_pylist() == [9]
+
+    def test_earlier_timestamped_files_are_merged_and_left_in_place(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+        from ingest.factcheck import FACTCHECK_SCHEMA
+
+        out = tmp_path / "factchecks"
+        out.mkdir()
+        legacy = out / "factchecks-20260101T000000.parquet"
+        table = pa.Table.from_pylist(
+            [self._verdict("news:old").as_row()], schema=FACTCHECK_SCHEMA()
+        )
+        pq.write_table(table, legacy)
+
+        path = write_factchecks([self._verdict("news:new")], Settings(data_dir=tmp_path))
+        assert sorted(pq.read_table(path).column("record_id").to_pylist()) == [
+            "news:new",
+            "news:old",
+        ]
+        assert legacy.exists()
 
 
 class TestSingleClassWarning:

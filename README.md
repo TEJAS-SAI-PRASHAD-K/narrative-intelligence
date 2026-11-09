@@ -445,7 +445,7 @@ them.
 ## Fact-check supervision: read this before training anything on it
 
 `python -m ingest.cli factchecks` extracts published verdicts into
-`data/factchecks/` as a side artifact keyed on `record_id` — the same pattern GDELT's
+`data/factchecks/factchecks.parquet` (updated in place on each run) as a side artifact keyed on `record_id` — the same pattern GDELT's
 `mentions` uses, and for the mirror-image reason: a verdict is an annotation on a news
 article, not a post of its own.
 

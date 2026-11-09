@@ -31,9 +31,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -526,7 +528,11 @@ def FACTCHECK_SCHEMA():  # noqa: N802 - matches ingest/store.py's naming
     )
 
 
-def records_from_corpus(frame: Any, publishers: Iterable[str]) -> Iterator[dict]:
+def records_from_corpus(
+    frame: Any,
+    publishers: Iterable[str],
+    on_duplicate: Callable[[str], None] | None = None,
+) -> Iterator[dict]:
     """Project corpus rows into the flat dicts the extractor consumes.
 
     ``url``, ``title`` and ``tags`` live inside the ``raw`` blob rather than in
@@ -534,11 +540,24 @@ def records_from_corpus(frame: Any, publishers: Iterable[str]) -> Iterator[dict]
     list of terms or as one comma-joined string depending on the feed, and both
     are flattened -- Fact Crescendo's verdict is a term inside that list, so
     getting this wrong silently loses the whole tier-2 path.
+
+    Each id is yielded once, first occurrence wins: the store can return the
+    same id twice, and a repeat would otherwise be fetched and written twice.
+    ``on_duplicate`` is called with the id of every repeat that is skipped, so
+    the caller can count it.
     """
     allowed = set(publishers)
+    seen: set[str] = set()
     for _, row in frame.iterrows():
         if row.get("source_detail") not in allowed:
             continue
+        record_id = row.get("id")
+        if record_id:
+            if record_id in seen:
+                if on_duplicate is not None:
+                    on_duplicate(str(record_id))
+                continue
+            seen.add(record_id)
         raw = row.get("raw")
         if isinstance(raw, str):
             try:
@@ -559,15 +578,38 @@ def records_from_corpus(frame: Any, publishers: Iterable[str]) -> Iterator[dict]
         }
 
 
+#: The one output file. Fixed so that a rerun updates it rather than adding a
+#: sibling that every reader would have to know to combine.
+FACTCHECKS_FILENAME = "factchecks.parquet"
+
+
+def _read_rows(path: Path) -> list[dict[str, Any]]:
+    """Rows of one side-artifact file. A corrupt file raises rather than being
+    skipped: overwriting it with a merge that omits it would lose its rows."""
+    import pyarrow.parquet as pq
+
+    return pq.read_table(path).to_pylist()
+
+
 def write_factchecks(
     verdicts: list[FactCheck], settings: Settings | None = None
 ) -> Path | None:
-    """Write the side artifact. One Parquet file per run, never partitioned.
+    """Merge ``verdicts`` into ``data/factchecks/factchecks.parquet``.
 
-    Not partitioned by date on purpose: these rows are keyed on the article they
-    annotate, not on their own timestamp, and a reader always wants all of them
-    to join against the corpus. Partitioning would buy nothing and cost a
-    predicate on every read.
+    The file is keyed on ``record_id``: these rows annotate an article, not a
+    run, so a rerun must replace a row rather than repeat it. When a
+    ``record_id`` is present more than once the row with the latest
+    ``extracted_at`` wins (ISO-8601 UTC strings sort chronologically), and a
+    tie goes to the later source, which is the new run.
+
+    Files named ``factchecks-<timestamp>.parquet`` are from an earlier layout
+    that wrote one file per run. They are read as the oldest source so their
+    rows are not lost, and they are left on disk; because ``extracted_at``
+    decides every conflict, merging them again on each run changes nothing.
+
+    Not partitioned by date on purpose: a reader always wants all of them to
+    join against the corpus, and partitioning would cost a predicate on every
+    read.
     """
     if not verdicts:
         return None
@@ -577,16 +619,40 @@ def write_factchecks(
     settings = settings or get_settings()
     out_dir = settings.data_dir / "factchecks"
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    path = out_dir / f"factchecks-{stamp}.parquet"
+    path = out_dir / FACTCHECKS_FILENAME
+
+    sources: list[Iterable[dict[str, Any]]] = [
+        _read_rows(legacy) for legacy in sorted(out_dir.glob("factchecks-*.parquet"))
+    ]
+    if path.exists():
+        sources.append(_read_rows(path))
+    sources.append(v.as_row() for v in verdicts)
+
+    merged: dict[str, dict[str, Any]] = {}
+    for rows in sources:
+        for row in rows:
+            current = merged.get(row["record_id"])
+            if current is None or (row["extracted_at"] or "") >= (current["extracted_at"] or ""):
+                merged[row["record_id"]] = row
+
     # Explicit schema, matching ingest/store.py's corpus schema. Inference is
     # not an option here: `claim_simhash` is an unsigned 64-bit value, pyarrow
     # infers int64, and anything above 2**63 raises
     # "OverflowError: Python int too large to convert to C long" -- on roughly
     # half of all simhashes, i.e. intermittently and for no visible reason.
-    table = pa.Table.from_pylist([v.as_row() for v in verdicts], schema=FACTCHECK_SCHEMA())
-    pq.write_table(table, path, compression="zstd")
-    log.info("wrote %d verdicts to %s", len(verdicts), path)
+    table = pa.Table.from_pylist(list(merged.values()), schema=FACTCHECK_SCHEMA())
+
+    # Write beside the target and rename: os.replace is atomic on one
+    # filesystem, so a crash leaves the old file or the new one, never half.
+    fd, tmp_name = tempfile.mkstemp(dir=out_dir, prefix=".factchecks-", suffix=".tmp")
+    os.close(fd)
+    try:
+        pq.write_table(table, tmp_name, compression="zstd")
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    log.info("wrote %d verdicts (%d new this run) to %s", len(merged), len(verdicts), path)
     return path
 
 

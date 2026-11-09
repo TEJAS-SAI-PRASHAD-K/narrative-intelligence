@@ -192,6 +192,7 @@ def factchecks(
     rather than a new source.
     """
     from ingest.factcheck import (
+        DropReason,
         FactCheckExtractor,
         label_distribution,
         records_from_corpus,
@@ -210,7 +211,15 @@ def factchecks(
         console.print("[red]configs/factcheck.yaml has no publishers configured.")
         raise typer.Exit(code=1)
 
-    records = list(records_from_corpus(frame, extractor.publishers))
+    records = list(
+        records_from_corpus(
+            frame,
+            extractor.publishers,
+            on_duplicate=lambda record_id: extractor.drop(
+                DropReason.DUPLICATE_RECORD, record_id
+            ),
+        )
+    )
     console.print(f"eligible records: {len(records):,} from {len(extractor.publishers)} publishers")
 
     verdicts = []
