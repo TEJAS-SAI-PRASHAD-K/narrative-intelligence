@@ -10,7 +10,7 @@
 # bumping `version` below, which is written onto every row the run produces --
 # that is how a stale score is detectable rather than merely suspected.
 
-version: fusion-v1.0.0
+version: fusion-v1.1.0
 
 # ---------------------------------------------------------------------------
 # Normalization
@@ -58,7 +58,7 @@ narrative_severity:
   negative_sentiment: 0.15
 
 coordination:
-  bot_like_ratio: 0.35
+  coordinated_author_ratio: 0.35
   co_post_similarity_density: 0.25
   temporal_burstiness: 0.25
   cohort_concentration: 0.15
@@ -82,6 +82,15 @@ priority:
 # "what counts as bot-like" has one answer across the whole system.
 thresholds:
   bot_like: 0.60
+  # `authors.coordination_score` is the mean of three terms, each in [0, 1]:
+  # community size on a log scale against the largest community, mean edge
+  # weight against the strongest edge, and the share of the author's own posts
+  # that took part in an edge (modeling/accounts/coordination.py). 0.5 is the
+  # score of an author whose three terms average the middle of their scales.
+  # It is a round midpoint of that scale, not a value tuned on labelled data.
+  # A score equal to the threshold is not above it. Only authors that have an
+  # edge in the coordination graph carry a score at all.
+  coordination_score_threshold: 0.50
   toxic: 0.60
   anomalous: 0.70
   # 0.99, not 0.50, and that is not a typo.

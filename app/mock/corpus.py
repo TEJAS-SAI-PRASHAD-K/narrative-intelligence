@@ -547,7 +547,7 @@ def corpus() -> MockCorpus:
             "compass_risk": rng.choice(("high", "medium", "low")),
             "negative_sentiment": negative,
             "fusion_score": fusion,
-            "scoring_version": "fusion-v1.0.0",
+            "scoring_version": "fusion-v1.1.0",
             "computed_at": DEMO_NOW - timedelta(hours=3),
             "missing": missing,
         }

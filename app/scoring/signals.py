@@ -60,11 +60,19 @@ SELECT
     count(DISTINCT a.author_id) FILTER (WHERE a.bot_score > :bot_threshold)::float
       / NULLIF(count(DISTINCT a.author_id) FILTER (WHERE a.bot_score IS NOT NULL), 0)
         AS bot_like_ratio,
+    -- Same shape as the bot ratio. Only authors the coordination detector put
+    -- in its graph carry a score, so the denominator is the scored authors and
+    -- the result is NULL, never 0, when none of a narrative's authors has one.
+    count(DISTINCT a.author_id) FILTER (WHERE a.coordination_score > :coordination_threshold)::float
+      / NULLIF(count(DISTINCT a.author_id) FILTER (WHERE a.coordination_score IS NOT NULL), 0)
+        AS coordinated_author_ratio,
     count(DISTINCT a.author_id) FILTER (
         WHERE a.handle IS NULL OR a.author_id LIKE '%%__deleted__'
     )::float / NULLIF(count(DISTINCT a.author_id), 0)          AS anonymous_ratio,
     count(DISTINCT a.author_id)                                 AS member_authors,
-    count(DISTINCT a.author_id) FILTER (WHERE a.bot_score IS NOT NULL) AS scorable_authors
+    count(DISTINCT a.author_id) FILTER (WHERE a.bot_score IS NOT NULL) AS scorable_authors,
+    count(DISTINCT a.author_id) FILTER (WHERE a.coordination_score IS NOT NULL)
+        AS coordination_scored_authors
 FROM narrative_posts np
 JOIN posts p ON p.id = np.post_id
 JOIN authors a ON a.author_id = p.author_id AND a.project_id = :project_id
@@ -182,6 +190,7 @@ def collect(
     params = {
         "project_id": project_id,
         "bot_threshold": float(thresholds.get("bot_like", 0.6)),
+        "coordination_threshold": float(thresholds.get("coordination_score_threshold", 0.5)),
         "deepfake_threshold": float(thresholds.get("deepfake", 0.5)),
         "burst_multiple": float(thresholds.get("burst_multiple", 3.0)),
     }
@@ -205,9 +214,11 @@ def collect(
     for row in session.execute(text(_AUTHOR_SIGNALS), params):
         item = entry(row.narrative_id)
         item.bot_like_ratio = _f(row.bot_like_ratio)
+        item.coordinated_author_ratio = _f(row.coordinated_author_ratio)
         item.anonymous_author_ratio = _f(row.anonymous_ratio)
         item.inputs["member_authors"] = row.member_authors
         item.inputs["bot_scorable_authors"] = row.scorable_authors
+        item.inputs["coordination_scored_authors"] = row.coordination_scored_authors
 
     for row in session.execute(text(_COORDINATION_DENSITY), params):
         entry(row.narrative_id).co_post_similarity_density = _f(row.density)
@@ -235,7 +246,7 @@ def populations(signals: dict[str, NarrativeSignals]) -> dict[str, list[float | 
         "misinfo_likelihood_agg",
         "toxicity",
         "negative_sentiment",
-        "bot_like_ratio",
+        "coordinated_author_ratio",
         "co_post_similarity_density",
         "temporal_burstiness",
         "cohort_concentration",

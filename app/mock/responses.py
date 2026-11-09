@@ -1099,10 +1099,10 @@ def narrative_score(narrative: MockNarrative):
             (
                 "coordination",
                 (
-                    "g(bot_like_ratio, co_post_similarity_density, temporal_burstiness, "
+                    "g(coordinated_author_ratio, co_post_similarity_density, temporal_burstiness, "
                     "cohort_concentration)"
                 ),
-                {"bot_like_ratio": card["bot_like"], "anomalous": card["anomalous"]},
+                {"temporal_burstiness": card["anomalous"]},
             ),
             (
                 "authenticity",

@@ -43,8 +43,8 @@ COMPONENT_DEFINITIONS = {
         "mean toxicity and the share of negative sentiment."
     ),
     "coordination": (
-        "How inauthentically it spread: the share of member authors scoring "
-        "bot-like, the density of near-duplicate co-posting between them, how "
+        "How inauthentically it spread: the share of member authors with a high "
+        "coordination score, the density of near-duplicate co-posting between them, how "
         "bursty its timeline is against its own mean, and how concentrated its "
         "authors are in a single cohort."
     ),
@@ -68,10 +68,11 @@ SUB_DEFINITIONS = {
     ),
     "toxicity": "Mean toxicity over member posts the toxicity model scored.",
     "negative_sentiment": "Share of scored member posts classified negative.",
-    "bot_like_ratio": (
-        "Share of member authors above the bot threshold, over the authors the "
-        "bot classifier could score. Outlet 'authors' on news sources are "
-        "excluded rather than counted as human."
+    "coordinated_author_ratio": (
+        "Share of member authors whose coordination score is above the "
+        "threshold, over the authors that have a coordination score. Authors "
+        "outside the coordination graph have no score and are excluded rather "
+        "than counted as uncoordinated."
     ),
     "co_post_similarity_density": (
         "Density of co-posting-similarity edges among member authors, against a "
@@ -111,7 +112,10 @@ class NarrativeSignals:
     toxicity: float | None = None
     negative_sentiment: float | None = None
 
+    #: Collected and persisted but not a fusion input: the bot classifier does
+    #: not generalize, so the coordination component does not read it.
     bot_like_ratio: float | None = None
+    coordinated_author_ratio: float | None = None
     co_post_similarity_density: float | None = None
     temporal_burstiness: float | None = None
     cohort_concentration: float | None = None
@@ -198,7 +202,9 @@ def fusion_score(
         "negative_sentiment": normalizers.get("negative_sentiment")(signals.negative_sentiment),
     }
     coordination_parts = {
-        "bot_like_ratio": normalizers.get("bot_like_ratio")(signals.bot_like_ratio),
+        "coordinated_author_ratio": normalizers.get("coordinated_author_ratio")(
+            signals.coordinated_author_ratio
+        ),
         "co_post_similarity_density": normalizers.get("co_post_similarity_density")(
             signals.co_post_similarity_density
         ),
