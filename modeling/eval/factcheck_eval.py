@@ -242,12 +242,24 @@ def load_score_file(path: Path, name: str | None = None) -> ModelScores:
     return scores
 
 
-def load_score_dir(directory: Path) -> dict[str, ModelScores]:
-    """Every ``*.parquet`` in a directory, keyed by file stem, in name order."""
+def load_score_dir(
+    directory: Path, names: Collection[str] | None = None
+) -> dict[str, ModelScores]:
+    """The ``*.parquet`` files of a directory, keyed by file stem, in name order.
+
+    With ``names``, only those models are loaded and a missing file is an error.
+    A leftover file for any other model stays out of the comparison.
+    """
     directory = Path(directory)
     if not directory.is_dir():
         raise EvalInputError(f"{directory} is not a directory")
-    files = sorted(directory.glob("*.parquet"))
+    if names is not None:
+        absent = sorted(n for n in names if not (directory / f"{n}.parquet").is_file())
+        if absent:
+            raise EvalInputError(f"no score file for {absent} in {directory}")
+        files = sorted(directory / f"{n}.parquet" for n in set(names))
+    else:
+        files = sorted(directory.glob("*.parquet"))
     if not files:
         raise EvalInputError(f"no <model>.parquet files in {directory}")
     return {file.stem: load_score_file(file) for file in files}
@@ -1641,16 +1653,20 @@ def run_comparison(
     settings: Any = None,
     write: bool = True,
     controls: Collection[str] | None = None,
+    models: dict[str, ModelScores] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Load, verify, evaluate and write. Any refusal raises before a file is written.
 
     The manifest check runs while the claim set is built, before any statistic,
-    so a changed evaluation set stops the run with nothing written.
+    so a changed evaluation set stops the run with nothing written. ``models``
+    supplies score files that the caller has loaded and checked, and then
+    ``score_dir`` is not read.
     """
     from modeling.config import get_settings
 
     settings = settings or get_settings()
-    models = load_score_dir(score_dir)
+    if models is None:
+        models = load_score_dir(score_dir)
     universe = load_claim_universe(data_dir or settings.data_dir, manifest_path)
     result = evaluate(
         models,

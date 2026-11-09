@@ -206,3 +206,17 @@ def test_evaluate_refuses_models_scored_on_different_corpus_rows():
             n_bootstrap=20,
             seed=1,
         )
+
+
+def test_load_score_dir_loads_only_the_named_models(tmp_path):
+    write(tmp_path / "tfidf.parquet", good_rows())
+    write(tmp_path / "leftover.parquet", good_rows())
+    assert sorted(load_score_dir(tmp_path)) == ["leftover", "tfidf"]
+    assert sorted(load_score_dir(tmp_path, names=["tfidf"])) == ["tfidf"]
+
+
+def test_load_score_dir_refuses_a_named_model_with_no_file(tmp_path):
+    write(tmp_path / "tfidf.parquet", good_rows())
+    with pytest.raises(EvalInputError, match=r"no score file for \['cand'\]"):
+        load_score_dir(tmp_path, names=["tfidf", "cand"])
+
