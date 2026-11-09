@@ -23,11 +23,19 @@ embed:
   # Hindi narratives cluster by shared Latin tokens, names and URLs. The
   # multilingual alternative below exists to test that.
   languages: ["*"]
-  # CPU-viable default. bge-base is better and needs a GPU for bulk embedding;
-  # the dimension is read from the loaded model, never hardcoded, because
-  # Phase 4's pgvector column width depends on it.
+  # CPU-viable default, English-trained. It stays the default until the
+  # alternative below is compared on the GPU host:
+  #   python -m modeling.cli compare-embedder
   model_name: sentence-transformers/all-MiniLM-L6-v2
+  # Width of the pgvector column. The embedder reads the width from the loaded
+  # model and refuses to load one that differs, so a wrong model fails at load.
+  vector_dim: 384
+  # To switch, put a name from this list in `model_name` and bump `version`,
+  # because every stored vector and narrative centroid comes from the old model.
   alternatives:
+    # 384-dim, 50+ languages including Hindi: the same column width, no migration.
+    - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+    # 768-dim. Refused at load while vector_dim is 384; needs a column migration.
     - BAAI/bge-base-en-v1.5
   batch_size: 64
   max_seq_length: 256      # tokens; long articles are title + head, see embed.py
