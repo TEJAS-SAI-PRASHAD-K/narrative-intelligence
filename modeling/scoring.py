@@ -55,6 +55,9 @@ class StageContext:
     #: needs community_id and coordination_score. The dependency is why
     #: configs/scoring.yaml orders coordination before accounts.
     coordination: Any = None
+    #: Overrides ``embed.model_name`` for the cluster stage. Only the embedder
+    #: comparison sets it, together with a store of its own.
+    embed_model: str | None = None
 
     def note(self, message: str) -> str:
         return f"[demo] {message}" if self.demo else message
@@ -157,7 +160,7 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
     if len(records) < 2:
         return [{"stage": "cluster", "note": ctx.note("too few records to cluster")}]
 
-    embedder = Embedder(ctx.settings)
+    embedder = Embedder(ctx.settings, model_name=ctx.embed_model)
     if not embedder.load():
         return [
             {
@@ -194,6 +197,9 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
     versions = {
         "embed": str(module_config("embed").get("version")),
+        # The name as well as the version: changing `embed.model_name` without
+        # bumping the version would otherwise leave stale centroids unmarked.
+        "embed_model": embedder.model_name,
         "cluster": str(module_config("cluster").get("version")),
     }
     now = utcnow_local()
@@ -270,6 +276,7 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
         extra={
             "is_demo": ctx.demo,
             "embedding_dim": embeddings.dim,
+            "embed_model": embedder.model_name,
             "diagnostics": result.diagnostics,
             "transitions": {k: len(v) for k, v in result.transitions.items()},
         },
@@ -981,8 +988,14 @@ def run_stages(
     limit: int | None = None,
     dry_run: bool = False,
     settings: ModelingSettings | None = None,
+    store: ScoredStore | None = None,
+    embed_model: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the named stages over the corpus and return a per-stage summary."""
+    """Run the named stages over the corpus and return a per-stage summary.
+
+    ``store`` and ``embed_model`` exist for the embedder comparison, which runs
+    the cluster stage with another model into a store of its own.
+    """
     settings = settings or get_settings()
     settings.ensure_dirs()
     config = scoring_config()
@@ -1013,7 +1026,8 @@ def run_stages(
     ctx = StageContext(
         settings=settings,
         reader=reader,
-        store=_store_for(demo, settings),
+        store=store or _store_for(demo, settings),
+        embed_model=embed_model,
         records=records,
         authors=authors,
         demo=demo,

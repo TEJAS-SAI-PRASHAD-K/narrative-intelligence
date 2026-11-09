@@ -422,6 +422,47 @@ def ablate(
     console.print(result.render())
 
 
+@app.command(name="compare-embedder")
+def compare_embedder_command(
+    model: str = typer.Option(
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        help="Embedder to compare with the one in configs/models.yaml.",
+    ),
+    out: Path | None = typer.Option(
+        None, help="Output directory. Default: artifacts/eval/embedder/<model>."
+    ),
+    demo: bool = typer.Option(False, "--demo"),
+    sources: str | None = typer.Option(None, help="Comma-separated source filter."),
+    limit: int | None = typer.Option(None),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Cluster with another embedder and print the checks and ablation beside the default.
+
+    Writes only under --out. It never touches data/scored, the shared scored
+    manifest or artifacts/eval/ablation, and it does not change the default model.
+    """
+    _bootstrap(verbose)
+    from modeling.eval.embedder_compare import compare_embedder
+    from modeling.text.embed import EmbeddingDimensionMismatch
+
+    try:
+        result = compare_embedder(
+            model,
+            demo=demo,
+            out_dir=out,
+            sources=[s.strip() for s in sources.split(",")] if sources else None,
+            limit=limit,
+        )
+    except (EmbeddingDimensionMismatch, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    for path in result.written:
+        console.print(f"wrote {path}", soft_wrap=True, highlight=False)
+    if not result.clustered:
+        console.print("[red]the alternative produced no narratives; see comparison.md[/red]")
+        raise typer.Exit(code=1)
+
+
 @app.command(name="sample-for-labelling")
 def sample_for_labelling(
     what: str = typer.Argument(..., help="misinfo | narratives"),
