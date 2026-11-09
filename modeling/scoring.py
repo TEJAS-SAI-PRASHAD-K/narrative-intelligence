@@ -542,6 +542,7 @@ def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
         }
     versions = {"stance": checkpoint_stamp("stance", version, checkpoint)}
     rows = []
+    retract: dict[tuple[str, ...], set[str]] = {}
     for row, reason in zip(ctx.records.itertuples(index=False), reasons, strict=True):
         record_id = str(row.id)
         kept = [r for r in prior.get(record_id, []) if not r.startswith("stance:")]
@@ -561,11 +562,17 @@ def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 skip_reasons=[*kept, f"stance:{reason}"],
                 model_versions={},
             )
+            # The merge unions version maps, so a stamp from an earlier scored
+            # run would survive and `already_scored` would still return this row.
+            retract[(record_id,)] = {"stance"}
         entry["scored_at"] = utcnow_local()
         rows.append(entry)
 
     result = ctx.store.write(
-        "record_scores", pd.DataFrame(rows), known_keys=ctx.known_record_ids or None
+        "record_scores",
+        pd.DataFrame(rows),
+        known_keys=ctx.known_record_ids or None,
+        drop_model_versions=retract,
     )
     return [
         {

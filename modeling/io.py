@@ -597,8 +597,15 @@ class ScoredStore:
         *,
         known_keys: set[str] | None = None,
         merge: bool = True,
+        drop_model_versions: dict[tuple[str, ...], set[str]] | None = None,
     ) -> dict[str, int]:
         """Write (or merge into) a scored table.
+
+        ``drop_model_versions`` maps a row key to scorer names whose entry is
+        removed from that row's ``model_versions`` after the union. It is how a
+        scorer that stops claiming a row (a record it now skips) retracts its
+        stamp; without it the union keeps the old stamp forever. Omitted, the
+        merge is unchanged.
 
         Returns ``{"written", "updated", "unchanged"}``. When nothing changed,
         no file is touched at all -- that is the acceptance criterion "rerunning
@@ -664,6 +671,14 @@ class ScoredStore:
                         **_as_version_dict(row.get("model_versions")),
                     }
                 row = candidate
+            retracted = (drop_model_versions or {}).get(key)
+            if retracted and "model_versions" in incoming_columns:
+                row = dict(row)
+                row["model_versions"] = {
+                    k: v
+                    for k, v in _as_version_dict(row.get("model_versions")).items()
+                    if k not in retracted
+                }
             if prior is None:
                 merged[key] = row
                 written += 1

@@ -312,3 +312,23 @@ def test_corpus_reader_reads_the_real_corpus_when_present():
     assert {"id", "source", "text", "timestamp", "author_id"} <= set(frame.columns)
     # Deterministic order is what makes two scoring runs byte-identical.
     assert frame["id"].tolist() == sorted(frame["id"].tolist())
+
+
+def test_merge_keeps_version_keys_unless_the_caller_names_them_for_removal(store):
+    ids = ["reddit:a"]
+    store.write(
+        "record_scores",
+        make_record_scores(ids, versions={"toxicity": "v0.1.0", "stance": "v0.3.0"}),
+        known_keys=set(ids),
+    )
+    store.write("record_scores", make_record_scores(ids, versions={}), known_keys=set(ids))
+    assert store.already_scored("record_scores", {"stance": "v0.3.0"}) == {("reddit:a",)}
+
+    store.write(
+        "record_scores",
+        make_record_scores(ids, versions={}),
+        known_keys=set(ids),
+        drop_model_versions={("reddit:a",): {"stance"}},
+    )
+    assert store.already_scored("record_scores", {"stance": "v0.3.0"}) == set()
+    assert store.already_scored("record_scores", {"toxicity": "v0.1.0"}) == {("reddit:a",)}

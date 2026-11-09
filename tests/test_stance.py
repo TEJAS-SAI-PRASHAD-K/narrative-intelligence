@@ -496,3 +496,36 @@ def test_fine_tune_refuses_when_no_epoch_has_a_finite_loss(monkeypatch, tmp_path
         classifier.fine_tune(pairs, labels, pairs[:2], labels[:2], output_dir=out, epochs=2)
     assert not (out / "best_epoch.json").exists()
     assert not (out / "training.json").exists()
+
+
+def test_a_record_skipped_after_being_scored_loses_its_stance_version(
+    settings, monkeypatch, tmp_path
+):
+    ctx = _ctx(tmp_path, settings, checkpoint=True, monkeypatch=monkeypatch)
+    S._stance_stage(ctx)
+    scored = ctx.store.read("record_scores").set_index("record_id")
+    stamp = dict(scored.loc["r:en", "model_versions"])
+    assert "stance" in stamp
+    # Another scorer's stamp on the same row must survive the retraction.
+    ctx.store.write(
+        "record_scores",
+        pd.DataFrame(
+            [{"record_id": "r:en", "source": "news", "model_versions": {"toxicity": "v0.1.0"}}]
+        ),
+    )
+    assert ("r:en",) in ctx.store.already_scored("record_scores", {"stance": stamp["stance"]})
+
+    # The record leaves its narrative, so the next run skips it.
+    ctx.store.write(
+        "narrative_membership",
+        ctx.store.read("narrative_membership").query("record_id != 'r:en'"),
+        merge=False,
+    )
+    S._stance_stage(ctx)
+
+    table = ctx.store.read("record_scores").set_index("record_id")
+    versions = dict(table.loc["r:en", "model_versions"])
+    assert "stance" not in versions
+    assert versions["toxicity"] == "v0.1.0"
+    assert list(table.loc["r:en", "skip_reasons"]) == ["stance:no_narrative"]
+    assert ("r:en",) not in ctx.store.already_scored("record_scores", {"stance": stamp["stance"]})
