@@ -112,8 +112,10 @@ the next.
    benchmark, so a zero-shot number is a baseline to report, never a model to
    ship.
 
-4. **Build the three-way evaluation harness.** This is the deliverable and it
-   does not exist yet. Score the fact-check evaluation set with Laya, with the
+4. **Build the three-way evaluation harness.** The harness is written
+   (`modeling/eval/factcheck_eval.py`, `modeling.cli evaluate-factchecks`) and reads
+   precomputed scores. The scoring step that writes its input files is not written.
+   Score the fact-check evaluation set with Laya, with the
    roberta-base fine-tune and with TF-IDF plus logistic regression, on identical
    group-aware splits, and report them side by side. Details in step 6 of the
    fine-tune runbook.

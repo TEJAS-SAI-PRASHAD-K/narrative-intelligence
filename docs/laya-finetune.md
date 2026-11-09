@@ -22,10 +22,10 @@ result.
 | `data/benchmarks/` | `make benchmarks` supplies LIAR (zip, unattended), the CoAID repository clone, and the FakeNewsNet repository clone. The FakeNewsNet clone has the label CSVs and the crawler, not article text. Each download is pinned to a commit or checksum, and a mismatch stops the script. (`make benchmarks` also fetches FNC-1 into `stance/`; it is not used here.) Checksums go in `data/benchmarks/manifest.json` |
 | The fine-tune | not run |
 | Scoring integration | `modeling/scoring.py` has **no Laya stage**. `LayaScorer.checkpoint_for` returns the directory set in `configs/models.yaml` under `laya.finetuned_checkpoints.<lang>`, and the base checkpoint when that key is null. A path that does not exist skips the record with `checkpoint_missing`. The fine-tuned directory is reachable from the scorer, not yet from `modeling/scoring.py` |
-| The eval harness for the three-way comparison | **not written** — see step 6 |
+| The eval harness for the three-way comparison | written: `modeling/eval/factcheck_eval.py`, run with `python -m modeling.cli evaluate-factchecks` (step 6d). It reads scores that are already computed. The code that produces the score files (6a) is **not written** |
 
-Everything up to step 5 is runnable now. Step 6 is the part that still needs
-code, and it is the part that produces the result.
+Everything up to step 5 is runnable now. Step 6 produces the result. The harness
+exists. The scoring code that feeds it does not.
 
 ---
 
@@ -314,6 +314,24 @@ TF-IDF cannot score the Hindi subset at all; that asymmetry *is* the result, and
 Reuse `modeling/eval/metrics.py` for the confidence intervals rather than
 writing new ones, and `modeling/eval/report.py` for the artifact layout, so the
 output lands next to the existing model cards in the shape the repo already uses.
+
+**6d. Run the harness.** Put one `<model>.parquet` per model in a directory, with
+the columns `part` (`val`, `test`, `claims`, `corpus_title`, `corpus_text`), `id`,
+`lang`, `label` (0 or 1 for `val` and `test`, null for the rest), `score`
+(P(misinformation), null when the model gave no score), `source_detail` and
+`skip_reason`. The harness refuses a file that does not match, and it refuses when
+the models do not have the same `test` ids.
+
+```bash
+python -m modeling.cli freeze-factchecks          # once; commit configs/factcheck_eval_manifest.csv
+python -m modeling.cli evaluate-factchecks scores/ --model-version laya=v0.1.0
+```
+
+Each model gets its own threshold from its own `val` rows at precision 0.85. The
+output is `artifacts/eval/factcheck/<label>/factcheck_eval.json` and `.md`. Without
+the manifest, the report says "evaluation set not frozen". With it, any changed or
+missing claim stops the run. Results are on the claims that publishers chose to
+debunk, and on nothing else.
 
 ---
 
