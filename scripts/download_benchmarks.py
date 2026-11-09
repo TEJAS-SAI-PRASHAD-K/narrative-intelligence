@@ -9,7 +9,8 @@ Every download is pinned. A git benchmark is checked out at an exact commit, not
 at whatever the default branch holds today, and its tree is compared with a pinned
 ``sha256-tree``. LIAR's zip is compared with a pinned sha256. On a mismatch the
 script stops with a non-zero exit: the bad download is removed (or, if it was
-already on disk, renamed to ``*.rejected``) and no manifest entry is written, so
+already on disk, moved to ``_rejected/`` under the benchmarks directory) and no
+manifest entry is written, so
 a changed upstream never passes as the dataset the numbers were measured on. To
 adopt a new upstream on purpose, change the pin in ``BENCHMARKS`` in the same
 commit that explains why.
@@ -168,13 +169,26 @@ def sha256_tree(root: Path) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _reject(path: Path) -> Path:
-    """Move ``path`` aside so a loader cannot find it under its real name."""
-    rejected = path.with_name(path.name + ".rejected")
-    if rejected.exists():
-        shutil.rmtree(rejected) if rejected.is_dir() else rejected.unlink()
-    path.rename(rejected)
-    return rejected
+REJECTED_DIRNAME = "_rejected"
+
+
+def _reject(path: Path, root: Path, key: str) -> Path:
+    """Move ``path`` out of its slot into ``<root>/_rejected/<key>-<timestamp>``.
+
+    A rename inside the slot is not enough: loaders glob their slot recursively
+    and would still read the rejected files as data. No loader reads ``_rejected/``
+    because each one starts from its own slot under ``root``. A rejected file is
+    placed inside the timestamped directory, a rejected directory becomes it.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    destination = root / REJECTED_DIRNAME / f"{key}-{stamp}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_dir():
+        shutil.move(str(path), str(destination))
+    else:
+        destination.mkdir()
+        shutil.move(str(path), str(destination / path.name))
+    return destination
 
 
 def _mismatch(what: str, expected: str, actual: str) -> ChecksumMismatch:
@@ -200,7 +214,9 @@ def download_zip(benchmark: Benchmark, target: Path) -> dict:
 
     actual = sha256_file(archive)
     if benchmark.checksum and actual != benchmark.checksum:
-        rejected = _reject(archive)
+        rejected = _reject(archive, target.parent, benchmark.key)
+        # An earlier extraction came from an archive that is no longer trusted.
+        shutil.rmtree(target / "extracted", ignore_errors=True)
         raise _mismatch(f"{benchmark.key} archive sha256 (moved to {rejected})",
                         benchmark.checksum, actual)
 
@@ -290,7 +306,7 @@ def clone_repo(benchmark: Benchmark, target: Path) -> dict:
         problem = _mismatch(f"{benchmark.key} sha256-tree", benchmark.checksum, digest)
     if problem is not None:
         if candidate == destination:
-            rejected = _reject(candidate)
+            rejected = _reject(candidate, target.parent, benchmark.key)
         else:
             shutil.rmtree(candidate, ignore_errors=True)
             rejected = None

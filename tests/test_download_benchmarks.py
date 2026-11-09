@@ -138,7 +138,8 @@ def test_existing_clone_that_was_edited_is_quarantined(upstream, tmp_path):
     with pytest.raises(db.ChecksumMismatch, match="rejected"):
         db.clone_repo(bench(url, first, checksum), target)
     assert not (target / "data-repo").exists()
-    assert (target / "data-repo.rejected" / "labels.csv").exists()
+    kept = list((tmp_path / "_rejected").glob("demo-*/labels.csv"))
+    assert len(kept) == 1
 
 
 def test_existing_clone_at_the_wrong_commit_is_quarantined(upstream, tmp_path):
@@ -197,7 +198,7 @@ def test_zip_mismatch_is_removed_and_never_extracted(stub_zip, tmp_path):
         db.download_zip(zip_bench("0" * 64), tmp_path / "z")
     assert not (tmp_path / "z" / "z.zip").exists()
     assert not (tmp_path / "z" / "extracted").exists()
-    assert (tmp_path / "z" / "z.zip.rejected").exists()
+    assert len(list((tmp_path / "_rejected").glob("z-*/z.zip"))) == 1
 
 
 def test_main_exits_nonzero_on_mismatch_and_writes_no_manifest_entry(
@@ -223,3 +224,75 @@ def test_main_exits_nonzero_on_mismatch_and_writes_no_manifest_entry(
     manifest = json.loads((FakeSettings.benchmarks_dir / "manifest.json").read_text())
     assert "demo" not in manifest
     assert not (FakeSettings.benchmarks_dir / "demo" / "data-repo").exists()
+
+
+# --- a rejected download must not stay readable as data ------------------------
+
+
+def test_rejected_coaid_clone_is_no_longer_found_by_its_loader(tmp_path, monkeypatch):
+    from ingest.config import Settings
+    from modeling.datasets.base import DatasetUnavailable
+    from modeling.datasets.coaid import CoAID
+
+    root = tmp_path / "benchmarks"
+    slot = root / "coaid"
+    clone = slot / "CoAID" / "05-01-2020"
+    clone.mkdir(parents=True)
+    (clone / "NewsFakeCOVID-19.csv").write_text("a\n1\n", encoding="utf-8")
+
+    monkeypatch.setattr("modeling.datasets.base.get_settings", lambda: Settings(data_dir=tmp_path))
+    dataset = CoAID()
+    dataset.validate(dataset.default_path())  # present before the rejection
+
+    db._reject(slot / "CoAID", root, "coaid")
+
+    with pytest.raises(DatasetUnavailable):
+        dataset.validate(dataset.default_path())
+    assert list((root / "_rejected").glob("coaid-*/05-01-2020/NewsFakeCOVID-19.csv"))
+
+
+def test_rejected_fnc1_clone_is_no_longer_resolved(tmp_path):
+    from modeling.datasets.fnc1 import FNC1
+
+    root = tmp_path / "benchmarks"
+    slot = root / "stance"
+    clone = slot / "fnc-1"
+    clone.mkdir(parents=True)
+    for name in ("train_stances.csv", "train_bodies.csv"):
+        (clone / name).write_text("x\n", encoding="utf-8")
+    dataset = FNC1()
+    assert dataset._resolve_dir(slot) == clone
+
+    db._reject(clone, root, "fnc1")
+
+    assert not (dataset._resolve_dir(slot) / "train_stances.csv").exists()
+
+
+def test_rejected_liar_archive_also_removes_the_earlier_extraction(stub_zip, tmp_path):
+    import hashlib
+
+    from modeling.datasets.base import DatasetUnavailable
+    from modeling.datasets.liar import Liar
+
+    slot = tmp_path / "benchmarks" / "liar"
+    good = hashlib.sha256(stub_zip).hexdigest()
+    bench_ok = db.Benchmark(
+        key="liar", label="l", url="https://example.invalid/l.zip", kind="zip",
+        notes="", citation="", checksum=good,
+    )  # fmt: skip
+    db.download_zip(bench_ok, slot)
+    extracted = slot / "extracted"
+    for name in ("train.tsv", "valid.tsv", "test.tsv"):
+        (extracted / name).write_text("x\n", encoding="utf-8")
+    Liar().validate(slot)  # the earlier extraction is readable
+
+    bench_bad = db.Benchmark(
+        key="liar", label="l", url=bench_ok.url, kind="zip", notes="", citation="",
+        checksum="0" * 64,
+    )  # fmt: skip
+    with pytest.raises(db.ChecksumMismatch):
+        db.download_zip(bench_bad, slot)
+
+    assert not extracted.exists()
+    with pytest.raises(DatasetUnavailable):
+        Liar().validate(slot)
