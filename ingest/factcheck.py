@@ -29,6 +29,7 @@ author of this repo cared about exactly that distinction.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -658,6 +659,14 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
     return pq.read_table(path).to_pylist()
 
 
+#: Lock file taken by every writer. A dot-file, so dataset readers skip it.
+_LOCK_FILENAME = ".factchecks.lock"
+
+#: Subdirectory that receives merged legacy files. The underscore prefix makes
+#: pyarrow's dataset discovery skip it, so a directory read sees each row once.
+_LEGACY_DIRNAME = "_legacy"
+
+
 def write_factchecks(
     verdicts: list[FactCheck], settings: Settings | None = None
 ) -> Path | None:
@@ -669,10 +678,16 @@ def write_factchecks(
     ``extracted_at`` wins (ISO-8601 UTC strings sort chronologically), and a
     tie goes to the later source, which is the new run.
 
+    The whole read, merge and replace runs under an exclusive ``flock`` on a
+    lock file in the output directory, so overlapping runs take turns and the
+    second one sees the first one's rows instead of overwriting them.
+
     Files named ``factchecks-<timestamp>.parquet`` are from an earlier layout
     that wrote one file per run. They are read as the oldest source so their
-    rows are not lost, and they are left on disk; because ``extracted_at``
-    decides every conflict, merging them again on each run changes nothing.
+    rows are not lost. After the merged file is in place they are moved, not
+    deleted, into ``_legacy/``: left beside the main file, a directory read
+    would return every one of their rows twice. Pyarrow skips paths that start
+    with an underscore, so ``_legacy/`` is invisible to readers.
 
     Not partitioned by date on purpose: a reader always wants all of them to
     join against the corpus, and partitioning would cost a predicate on every
@@ -688,39 +703,55 @@ def write_factchecks(
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / FACTCHECKS_FILENAME
 
-    sources: list[Iterable[dict[str, Any]]] = [
-        _read_rows(legacy) for legacy in sorted(out_dir.glob("factchecks-*.parquet"))
-    ]
-    if path.exists():
-        sources.append(_read_rows(path))
-    sources.append(v.as_row() for v in verdicts)
+    with open(out_dir / _LOCK_FILENAME, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        legacy_files = sorted(out_dir.glob("factchecks-*.parquet"))
+        sources: list[Iterable[dict[str, Any]]] = [_read_rows(legacy) for legacy in legacy_files]
+        if path.exists():
+            sources.append(_read_rows(path))
+        sources.append(v.as_row() for v in verdicts)
 
-    merged: dict[str, dict[str, Any]] = {}
-    for rows in sources:
-        for row in rows:
-            current = merged.get(row["record_id"])
-            if current is None or (row["extracted_at"] or "") >= (current["extracted_at"] or ""):
-                merged[row["record_id"]] = row
+        merged: dict[str, dict[str, Any]] = {}
+        for rows in sources:
+            for row in rows:
+                current = merged.get(row["record_id"])
+                if current is None or (row["extracted_at"] or "") >= (
+                    current["extracted_at"] or ""
+                ):
+                    merged[row["record_id"]] = row
 
-    # Explicit schema, matching ingest/store.py's corpus schema. Inference is
-    # not an option here: `claim_simhash` is an unsigned 64-bit value, pyarrow
-    # infers int64, and anything above 2**63 raises
-    # "OverflowError: Python int too large to convert to C long" -- on roughly
-    # half of all simhashes, i.e. intermittently and for no visible reason.
-    table = pa.Table.from_pylist(list(merged.values()), schema=FACTCHECK_SCHEMA())
+        # Explicit schema, matching ingest/store.py's corpus schema. Inference
+        # is not an option here: `claim_simhash` is an unsigned 64-bit value,
+        # pyarrow infers int64, and anything above 2**63 raises
+        # "OverflowError: Python int too large to convert to C long" -- on
+        # roughly half of all simhashes, i.e. intermittently and for no visible
+        # reason.
+        table = pa.Table.from_pylist(list(merged.values()), schema=FACTCHECK_SCHEMA())
 
-    # Write beside the target and rename: os.replace is atomic on one
-    # filesystem, so a crash leaves the old file or the new one, never half.
-    fd, tmp_name = tempfile.mkstemp(dir=out_dir, prefix=".factchecks-", suffix=".tmp")
-    os.close(fd)
-    try:
-        pq.write_table(table, tmp_name, compression="zstd")
-        # mkstemp creates the file private to this user; the artifact is shared data.
-        os.chmod(tmp_name, 0o644)
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+        # Write beside the target and rename: os.replace is atomic on one
+        # filesystem, so a crash leaves the old file or the new one, never
+        # half. The fsync makes the bytes durable before the rename can be.
+        fd, tmp_name = tempfile.mkstemp(dir=out_dir, prefix=".factchecks-", suffix=".tmp")
+        os.close(fd)
+        try:
+            pq.write_table(table, tmp_name, compression="zstd")
+            with open(tmp_name, "rb") as written:
+                os.fsync(written.fileno())
+            # mkstemp creates the file private to this user; the artifact is shared data.
+            os.chmod(tmp_name, 0o644)
+            os.replace(tmp_name, path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+
+        if legacy_files:
+            archive = out_dir / _LEGACY_DIRNAME
+            archive.mkdir(exist_ok=True)
+            for legacy in legacy_files:
+                destination = archive / legacy.name
+                if destination.exists():
+                    destination = archive / f"{legacy.stem}-{time.time_ns()}{legacy.suffix}"
+                os.replace(legacy, destination)
     log.info("wrote %d verdicts (%d new this run) to %s", len(merged), len(verdicts), path)
     return path
 

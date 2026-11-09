@@ -8,6 +8,8 @@ rather than a logic error.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 import pytest
 
@@ -420,6 +422,14 @@ class TestFetchCache:
         assert extractor._budget == 0
         assert extractor.dropped == {}
 
+    def test_a_cache_hit_is_returned_for_a_domain_that_gave_up(self, extractor):
+        cache_path = extractor._cache_path(BOOM_URL)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("<html>cached</html>", encoding="utf-8")
+        extractor._fetch_failures["boomlive.in"] = 3
+        assert extractor.fetch_html(BOOM_URL) == "<html>cached</html>"
+        assert extractor.dropped == {}
+
     def test_a_cache_hit_does_not_change_the_budget_count(self, extractor):
         cache_path = extractor._cache_path(BOOM_URL)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -706,7 +716,9 @@ class TestWriteIsIdempotent:
         newer = self._verdict("news:b", big, extracted_at="2026-02-01T00:00:00+00:00")
         path = write_factchecks([newer, self._verdict("news:c", 3)], settings)
 
-        files = sorted(p.name for p in (tmp_path / "factchecks").iterdir())
+        files = sorted(
+            p.name for p in (tmp_path / "factchecks").iterdir() if not p.name.startswith(".")
+        )
         assert files == ["factchecks.parquet"]
         table = pq.read_table(path)
         ids = table.column("record_id").to_pylist()
@@ -727,7 +739,7 @@ class TestWriteIsIdempotent:
         path = write_factchecks([self._verdict("news:a", 1)], settings)
         assert pq.read_table(path).column("claim_simhash").to_pylist() == [9]
 
-    def test_earlier_timestamped_files_are_merged_and_left_in_place(self, tmp_path):
+    def test_earlier_timestamped_files_are_merged(self, tmp_path):
         pytest.importorskip("pyarrow")
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -748,7 +760,150 @@ class TestWriteIsIdempotent:
             "news:new",
             "news:old",
         ]
-        assert legacy.exists()
+
+    def _legacy_file(self, out, name, verdict):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from ingest.factcheck import FACTCHECK_SCHEMA
+
+        out.mkdir(exist_ok=True)
+        pq.write_table(
+            pa.Table.from_pylist([verdict.as_row()], schema=FACTCHECK_SCHEMA()), out / name
+        )
+        return out / name
+
+    def test_merged_legacy_files_move_to_an_ignored_subdirectory(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pandas as pd
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        out = tmp_path / "factchecks"
+        legacy = self._legacy_file(
+            out, "factchecks-20260101T000000.parquet", self._verdict("news:old", 7)
+        )
+        original = legacy.read_bytes()
+        settings = Settings(data_dir=tmp_path)
+
+        write_factchecks([self._verdict("news:new")], settings)
+        assert not legacy.exists()
+        assert (out / "_legacy" / legacy.name).read_bytes() == original
+        frame = pd.read_parquet(out)
+        assert sorted(frame["record_id"]) == ["news:new", "news:old"]
+        assert not frame["record_id"].duplicated().any()
+
+        # A second run neither fails nor re-merges the archived file.
+        path = write_factchecks([self._verdict("news:other")], settings)
+        assert sorted(pq.read_table(path).column("record_id").to_pylist()) == [
+            "news:new",
+            "news:old",
+            "news:other",
+        ]
+        assert [p.name for p in (out / "_legacy").iterdir()] == [legacy.name]
+
+    def test_a_legacy_file_is_the_oldest_source_on_a_timestamp_tie(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        out = tmp_path / "factchecks"
+        settings = Settings(data_dir=tmp_path)
+        write_factchecks([self._verdict("news:a", 2)], settings)
+        self._legacy_file(out, "factchecks-20260101T000000.parquet", self._verdict("news:a", 1))
+        path = write_factchecks([self._verdict("news:z", 5)], settings)
+        by_id = {r["record_id"]: r for r in pq.read_table(path).to_pylist()}
+        assert by_id["news:a"]["claim_simhash"] == 2
+
+    def test_a_tie_on_extracted_at_goes_to_the_later_source(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        write_factchecks([self._verdict("news:a", 1)], settings)
+        path = write_factchecks([self._verdict("news:a", 2)], settings)
+        assert pq.read_table(path).column("claim_simhash").to_pylist() == [2]
+
+    def test_a_failed_write_leaves_the_previous_file_and_no_temporary(
+        self, tmp_path, monkeypatch
+    ):
+        pytest.importorskip("pyarrow")
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+
+        settings = Settings(data_dir=tmp_path)
+        path = write_factchecks([self._verdict("news:a", 1)], settings)
+        before = path.read_bytes()
+
+        def half_write(table, where, **kwargs):
+            Path(where).write_bytes(b"PAR1 truncated")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pq, "write_table", half_write)
+        with pytest.raises(OSError, match="disk full"):
+            write_factchecks([self._verdict("news:b", 2)], settings)
+        assert path.read_bytes() == before
+        assert sorted(p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")) == []
+
+    def test_the_temporary_file_is_synced_before_the_rename(self, tmp_path, monkeypatch):
+        pytest.importorskip("pyarrow")
+        from ingest.config import Settings
+
+        events: list[str] = []
+        real_replace = os.replace
+        monkeypatch.setattr(os, "fsync", lambda fd: events.append("fsync"))
+        monkeypatch.setattr(
+            os, "replace", lambda a, b: (events.append("replace"), real_replace(a, b))[1]
+        )
+        write_factchecks([self._verdict("news:a")], Settings(data_dir=tmp_path))
+        assert events[:2] == ["fsync", "replace"]
+
+    def test_a_second_writer_waits_for_the_first_and_both_sets_of_rows_survive(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import fcntl
+        import threading
+        import time
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from ingest.config import Settings
+        from ingest.factcheck import FACTCHECK_SCHEMA
+
+        settings = Settings(data_dir=tmp_path)
+        out = tmp_path / "factchecks"
+        out.mkdir()
+        target = out / "factchecks.parquet"
+        done = threading.Event()
+
+        def second_writer():
+            write_factchecks([self._verdict("news:b")], settings)
+            done.set()
+
+        # This thread plays the first writer, which holds the lock for its whole run.
+        with open(out / ".factchecks.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            thread = threading.Thread(target=second_writer)
+            thread.start()
+            time.sleep(0.5)
+            assert not done.is_set(), "second writer did not wait for the lock"
+            pq.write_table(
+                pa.Table.from_pylist(
+                    [self._verdict("news:a").as_row()], schema=FACTCHECK_SCHEMA()
+                ),
+                target,
+            )
+        thread.join(timeout=30)
+        assert done.is_set()
+        assert sorted(pq.read_table(target).column("record_id").to_pylist()) == [
+            "news:a",
+            "news:b",
+        ]
 
 
 class TestSingleClassWarning:
