@@ -249,13 +249,14 @@ class TestRssTagTier:
         assert verdict.tier == Tier.RSS_TAG.value
         assert verdict.claim_lang == "hi"
 
-    def test_tags_with_no_verdict_yield_nothing_quietly(self, extractor):
+    def test_tags_with_no_verdict_yield_nothing_and_are_counted(self, extractor):
         record = {
             "id": "news:x",
             "url": "https://factcrescendo.com/x/",
             "source_detail": "factcrescendo.com",
         }
         assert extractor.from_rss_tags(record, ["Politics", "यूपी"]) is None
+        assert extractor.dropped == {DropReason.NO_VERDICT_TAG.value: 1}
 
     def test_a_middle_verdict_in_the_tags_still_drops(self, extractor):
         record = {
@@ -322,6 +323,95 @@ class TestDriver:
         records = [{"id": "news:x", "url": "", "source_detail": "boomlive.in"}]
         assert list(extractor.run(records)) == []
         assert extractor.dropped[DropReason.NO_URL.value] == 1
+
+
+BOOM_URL = "https://www.boomlive.in/fact-check/x"
+
+
+def _no_network(monkeypatch):
+    """Make any real HTTP call fail the test instead of reaching the network."""
+    import requests
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("unexpected network call")
+
+    monkeypatch.setattr(requests, "get", refuse)
+
+
+class TestDriverTiers:
+    def test_run_yields_one_verdict_per_tier(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        # A cache hit stands in for the fetch on the claimreview tier.
+        cache = extractor._cache_path(BOOM_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text(BOOM_HTML, encoding="utf-8")
+        records = [
+            {"id": "news:a", "url": BOOM_URL, "source_detail": "boomlive.in"},
+            {
+                "id": "news:b",
+                "url": "https://factcrescendo.com/b/",
+                "source_detail": "factcrescendo.com",
+                "title": "a headline",
+                "tags": ["Fake", "Politics"],
+            },
+        ]
+        verdicts = list(extractor.run(records))
+        assert [(v.record_id, v.tier, v.label) for v in verdicts] == [
+            ("news:a", Tier.CLAIMREVIEW.value, "false"),
+            ("news:b", Tier.RSS_TAG.value, "false"),
+        ]
+        assert extractor.dropped == {}
+
+    def test_an_empty_page_is_counted_not_lost(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        cache = extractor._cache_path(BOOM_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("", encoding="utf-8")
+        records = [{"id": "news:a", "url": BOOM_URL, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.NO_CLAIMREVIEW.value: 1}
+
+
+class TestFetchHtml:
+    def test_a_cache_hit_needs_no_network_and_no_budget(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        cache = extractor._cache_path(BOOM_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("<html>cached</html>", encoding="utf-8")
+        before = extractor._budget
+        assert extractor.fetch_html(BOOM_URL) == "<html>cached</html>"
+        assert extractor._budget == before
+        assert extractor.dropped == {}
+
+    def test_a_spent_budget_is_counted_per_record(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        extractor._budget = 0
+        records = [
+            {"id": f"news:{i}", "url": f"{BOOM_URL}{i}", "source_detail": "boomlive.in"}
+            for i in range(2)
+        ]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.BUDGET_EXHAUSTED.value: 2}
+
+    def test_a_domain_at_its_failure_limit_is_counted(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        extractor._fetch_failures["boomlive.in"] = 3
+        assert extractor.fetch_html(BOOM_URL) is None
+        assert extractor.dropped == {DropReason.DOMAIN_GIVEN_UP.value: 1}
+
+    def test_an_ordinary_failure_is_counted_once_under_its_own_code(
+        self, extractor, monkeypatch
+    ):
+        import requests
+
+        def boom(*args, **kwargs):
+            raise OSError("down")
+
+        monkeypatch.setattr(extractor, "_robots_allows", lambda url: (True, None))
+        monkeypatch.setattr(requests, "get", boom)
+        records = [{"id": "news:a", "url": BOOM_URL, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.FETCH_FAILED.value: 1}
 
 
 class TestSideArtifact:

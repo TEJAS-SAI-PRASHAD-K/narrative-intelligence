@@ -76,6 +76,16 @@ class DropReason(str, Enum):
     RATING_IS_MIDDLE = "rating_is_middle"
     #: The rating is not in the map at all. A vocabulary change, not a middle.
     RATING_UNKNOWN = "rating_unknown"
+    #: An RSS-tier record whose tags hold no term from the rating map.
+    NO_VERDICT_TAG = "no_verdict_tag"
+    #: The per-run article budget was spent before this record was fetched.
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    #: This publisher's domain hit its consecutive-failure limit, so it is no
+    #: longer fetched this run. The failures themselves were counted as
+    #: FETCH_FAILED; this counts the records skipped because of them.
+    DOMAIN_GIVEN_UP = "domain_given_up"
+    #: The corpus held this record id more than once; only the first is kept.
+    DUPLICATE_RECORD = "duplicate_record"
 
 
 @dataclass
@@ -288,6 +298,7 @@ class FactCheckExtractor:
                 self.drop(DropReason.NO_CLAIM_TEXT, url)
                 return None
             return self._build(record, claim, str(tag), label, Tier.RSS_TAG)
+        self.drop(DropReason.NO_VERDICT_TAG, url)
         return None
 
     # --- tier 1: ClaimReview --------------------------------------------
@@ -352,10 +363,12 @@ class FactCheckExtractor:
         """
         config = self.config.get("fetch") or {}
         if self._budget <= 0:
+            self.drop(DropReason.BUDGET_EXHAUSTED, url)
             return None
         domain = resolve_domain(url) or "unknown"
         limit = int(config.get("max_consecutive_failures_per_domain", 3))
         if self._fetch_failures.get(domain, 0) >= limit:
+            self.drop(DropReason.DOMAIN_GIVEN_UP, url)
             return None
 
         cache_path = self._cache_path(url) if config.get("cache", True) else None
@@ -464,7 +477,10 @@ class FactCheckExtractor:
                 result = self.from_rss_tags(record, record.get("tags") or [])
             elif tier == Tier.CLAIMREVIEW.value:
                 html = self.fetch_html(url)
-                result = self.from_html(record, html) if html else None
+                # fetch_html counts every reason it returns None for, so only
+                # a page that came back (even an empty one) is parsed here, and
+                # an empty page is counted by from_html as having no markup.
+                result = self.from_html(record, html) if html is not None else None
             else:
                 self.drop(DropReason.NO_PUBLISHER_CONFIG, f"{domain}: tier={tier!r}")
                 continue
