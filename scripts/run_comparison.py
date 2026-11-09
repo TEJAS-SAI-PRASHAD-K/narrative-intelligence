@@ -1040,6 +1040,10 @@ FROZEN_PARTS = ("claims", "corpus_title", "corpus_text")
 REQUIRED_MISINFO_BACKBONE = "roberta"
 #: Files whose bytes go into a checkpoint identity. All other files count by name and size.
 CHECKPOINT_CONFIG_FILES = ("config.json", "rl_agent_config.json")
+#: Laya's loader rewrites this file in place the first time it loads a saved checkpoint, so
+#: its size differs between the scoring run and the check before evaluation. The rewrite
+#: changes loader keys, not the vocabulary, and ``tokenizer/tokenizer.json`` stays in the listing.
+CHECKPOINT_LOADER_REWRITTEN = frozenset({"tokenizer/tokenizer_config.json"})
 
 
 def _text_sha256(value: Any) -> str:
@@ -1156,14 +1160,17 @@ def directory_identity(directory: Path) -> dict[str, Any] | None:
     """The name of a checkpoint directory and a hash of what it holds, or ``None`` if absent.
 
     The hash covers the file names with sizes and the bytes of the config files. It reads
-    no weights, so it is fast on a large checkpoint.
+    no weights, so it is fast on a large checkpoint. It leaves out the file that the Laya
+    loader rewrites, because loading a checkpoint must not change its identity.
     """
     if not directory.is_dir():
         return None
     listing = sorted(
-        (path.relative_to(directory).as_posix(), path.stat().st_size)
+        (relative, path.stat().st_size)
         for path in directory.rglob("*")
-        if path.is_file() and not path.name.endswith(".tmp")
+        if path.is_file()
+        and not path.name.endswith(".tmp")
+        and (relative := path.relative_to(directory).as_posix()) not in CHECKPOINT_LOADER_REWRITTEN
     )
     configs = {
         name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
