@@ -46,7 +46,7 @@ from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 from ingest.config import Settings, get_settings, load_yaml
-from ingest.normalize import clean_text, detect_lang, resolve_domain, simhash
+from ingest.normalize import WORD_CHARS, clean_text, detect_lang, resolve_domain, simhash
 
 log = logging.getLogger("ingest.factcheck")
 
@@ -244,7 +244,7 @@ def claim_and_rating(review: dict) -> tuple[str, str]:
 
 # --- rating normalization --------------------------------------------------
 
-_PUNCT = re.compile(r"[^\w\s]+", re.UNICODE)
+_PUNCT = re.compile(rf"[^{WORD_CHARS}\s]+", re.UNICODE)
 _WS = re.compile(r"\s+")
 
 
