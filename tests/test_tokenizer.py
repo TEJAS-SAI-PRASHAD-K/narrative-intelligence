@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ingest.factcheck import normalize_rating
-from ingest.normalize import _WORD_RE, simhash
+from ingest.normalize import _WORD_RE, extract_hashtags, simhash
 
 # Expected values computed on the code before the tokenizer change, when
 # `_WORD_RE` was `\w+`. English has no combining marks, so none of them may move.
@@ -56,3 +56,16 @@ def test_hindi_simhash_is_nonzero_for_marked_words():
 def test_rating_key_keeps_hindi_words_whole_and_drops_punctuation():
     assert normalize_rating("झूठ!!") == "झूठ"
     assert normalize_rating("Half True!! (Mostly)") == "half true mostly"
+
+
+def test_hindi_hashtag_is_extracted_whole():
+    assert extract_hashtags("आज #भारत में बहस") == ["भारत"]
+
+
+def test_ascii_hashtag_with_digits_is_extracted_unchanged():
+    # extract_hashtags lowercases its output, so the expected value is the lowercase tag.
+    assert extract_hashtags("Watch this #Delhi2024 today") == ["delhi2024"]
+
+
+def test_danda_after_hindi_hashtag_is_not_part_of_the_tag():
+    assert extract_hashtags("यह सच है #भारत। वह झूठ है") == ["भारत"]
