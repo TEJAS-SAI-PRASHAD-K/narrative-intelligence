@@ -9,8 +9,10 @@ import pytest
 
 from modeling.eval.factcheck_eval import (
     EvalInputError,
+    InputsMismatch,
     ScoreFileError,
     SplitMismatch,
+    check_shared_inputs,
     check_shared_test_split,
     load_score_dir,
     load_score_file,
@@ -158,3 +160,49 @@ def test_identical_test_ids_pass_even_with_other_rows_different():
     extra = good_rows() + [row("claims", "c2", score=0.5)]
     b = validate_frame(pd.DataFrame(extra, columns=COLUMNS), "b")
     check_shared_test_split({"a": a, "b": b})
+
+
+def inputs_rows():
+    return good_rows() + [row("corpus_text", "x1", score=0.2, source="example.com")]
+
+
+@pytest.mark.parametrize(
+    "part, dropped", [("claims", "c1"), ("corpus_title", "k1"), ("corpus_text", "x1")]
+)
+def test_models_that_scored_different_claim_or_corpus_rows_refuse(part, dropped):
+    a = validate_frame(pd.DataFrame(inputs_rows(), columns=COLUMNS), "a")
+    kept = [r for r in inputs_rows() if not (r["part"] == part and r["id"] == dropped)]
+    b = validate_frame(pd.DataFrame(kept, columns=COLUMNS), "b")
+    with pytest.raises(InputsMismatch, match=f"same {part} rows"):
+        check_shared_inputs({"a": a, "b": b})
+
+
+def test_models_that_scored_other_corpus_ids_of_the_same_size_refuse():
+    a = validate_frame(pd.DataFrame(inputs_rows(), columns=COLUMNS), "a")
+    swapped = [{**r, "id": "k9"} if r["id"] == "k1" else r for r in inputs_rows()]
+    b = validate_frame(pd.DataFrame(swapped, columns=COLUMNS), "b")
+    with pytest.raises(InputsMismatch, match=r"only in b: \['k9'\]"):
+        check_shared_inputs({"a": a, "b": b})
+
+
+def test_models_with_the_same_claim_and_corpus_ids_pass():
+    a = validate_frame(pd.DataFrame(inputs_rows(), columns=COLUMNS), "a")
+    b = validate_frame(pd.DataFrame(reversed(inputs_rows()), columns=COLUMNS), "b")
+    check_shared_inputs({"a": a, "b": b})
+
+
+def test_evaluate_refuses_models_scored_on_different_corpus_rows():
+    from modeling.eval.factcheck_eval import ClaimUniverse, evaluate
+
+    a = validate_frame(pd.DataFrame(inputs_rows(), columns=COLUMNS), "tfidf")
+    kept = [r for r in inputs_rows() if r["id"] != "k1"]
+    b = validate_frame(pd.DataFrame(kept, columns=COLUMNS), "cand")
+    universe = ClaimUniverse(eval_ids=frozenset({"c1"}), excluded={}, frozen=False)
+    with pytest.raises(InputsMismatch):
+        evaluate(
+            {"tfidf": a, "cand": b},
+            universe=universe,
+            publishers=frozenset({"x.example"}),
+            n_bootstrap=20,
+            seed=1,
+        )

@@ -72,6 +72,10 @@ class SplitMismatch(EvalInputError):
     """The models do not share the same ``test`` rows."""
 
 
+class InputsMismatch(EvalInputError):
+    """The models were not scored on the same claim rows or the same corpus rows."""
+
+
 class ManifestMismatch(EvalInputError):
     """The frozen evaluation set on disk and the current fact-check rows disagree."""
 
@@ -272,6 +276,33 @@ def check_shared_test_split(models: dict[str, ModelScores]) -> None:
             raise SplitMismatch(
                 f"models {reference_name!r} and {name!r} give different labels "
                 "for the same test ids"
+            )
+
+
+#: Parts that carry no label, so a model cannot show a difference in rows through them.
+SHARED_INPUT_PARTS = ("claims", "corpus_title", "corpus_text")
+
+
+def check_shared_inputs(models: dict[str, ModelScores]) -> None:
+    """Refuse unless every model scored the same claim ids and the same corpus ids.
+
+    A flag rate on a corpus that one model saw in full and another saw in part is
+    not a comparison, and a lift divides by it. The test rows have their own check.
+    """
+    reference_name = next(iter(models))
+    for part in SHARED_INPUT_PARTS:
+        reference = set(models[reference_name].part(part)["id"])
+        for name, scores in models.items():
+            ids = set(scores.part(part)["id"])
+            if ids == reference:
+                continue
+            only_here = sorted(ids - reference)[:3]
+            only_there = sorted(reference - ids)[:3]
+            raise InputsMismatch(
+                f"models {reference_name!r} and {name!r} were not scored on the same {part} "
+                f"rows ({len(reference)} vs {len(ids)} ids; only in {name}: {only_here}, "
+                f"only in {reference_name}: {only_there}). Score every model from the same "
+                "frozen inputs."
             )
 
 
@@ -1196,6 +1227,7 @@ def evaluate(
     if baseline in controls:
         raise EvalInputError(f"baseline model {baseline!r} is marked as a control model")
     check_shared_test_split(models)
+    check_shared_inputs(models)
     check_claim_languages(models)
     versions = versions or {}
     ordered = sorted(models)
