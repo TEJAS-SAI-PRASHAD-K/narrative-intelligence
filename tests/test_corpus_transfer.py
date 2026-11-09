@@ -80,7 +80,7 @@ class TestSampleCommand:
         class S:
             artifacts_dir = tmp_path / "artifacts"
             seed = 0
-            language_allowed = staticmethod(allow_en)
+            language_allowed = staticmethod(lambda module, lang: module == "misinfo" and allow_en(lang))
 
         monkeypatch.setattr(modeling_cli, "get_settings", lambda: S)
         monkeypatch.setattr(modeling_cli, "_bootstrap", lambda verbose=False: None)
@@ -250,7 +250,7 @@ class TestEvaluateCommand:
         class S:
             artifacts_dir = tmp_path / "artifacts"
             seed = 0
-            language_allowed = staticmethod(allow_en)
+            language_allowed = staticmethod(lambda module, lang: module == "misinfo" and allow_en(lang))
 
         monkeypatch.setattr(modeling_cli, "get_settings", lambda: S)
         monkeypatch.setattr(modeling_cli, "_bootstrap", lambda verbose=False: None)

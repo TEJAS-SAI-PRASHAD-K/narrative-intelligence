@@ -299,7 +299,7 @@ def evaluate(
     transfer = evaluate_transfer(
         read_label_sheet(path),
         ScoredStore(settings).read("record_scores"),
-        language_allowed=settings.language_allowed,
+        language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
         model_version=str(module_config("misinfo").get("version", "v0.0.0-unset")),
         threshold=module_config("misinfo").get("decision_threshold"),
         seed=settings.seed,
@@ -543,7 +543,7 @@ def sample_for_labelling(
         built = build_sample(
             records,
             n=n,
-            language_allowed=settings.language_allowed,
+            language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
             lang=lang,
             seed=settings.seed,
         )
