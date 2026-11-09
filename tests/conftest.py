@@ -37,6 +37,19 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", guard)
 
 
+@pytest.fixture(autouse=True)
+def fresh_language_cache():
+    """The parsed language lists are cached per process; no test inherits another's."""
+    try:
+        from modeling.config import clear_language_cache
+    except ImportError:  # a light install without the modeling dependencies
+        yield
+        return
+    clear_language_cache()
+    yield
+    clear_language_cache()
+
+
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     """Settings pointed at a throwaway data dir, with no credentials."""

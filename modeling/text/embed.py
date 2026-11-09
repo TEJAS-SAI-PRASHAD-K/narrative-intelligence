@@ -2,14 +2,20 @@
 
 Default is ``sentence-transformers/all-MiniLM-L6-v2``: 384-dim, small enough to
 embed a corpus on a laptop CPU, good enough for clustering short social text.
-``BAAI/bge-base-en-v1.5`` (768-dim) is config-switchable and better, and needs a
-GPU for bulk work.
+``sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`` (384-dim, 50+
+languages including Hindi) is the named alternative for the English and Hindi
+corpus. It is selected by ``model_name`` in ``configs/models.yaml`` or by the
+``model_name`` argument, and the default stays until the two are compared with
+``python -m modeling.cli compare-embedder``.
 
 Three properties this module is responsible for.
 
-**The dimension is read from the model, never hardcoded.** Phase 4's pgvector
-column width depends on it, and a hardcoded 384 that silently disagrees with a
-768-dim checkpoint is a migration failure discovered in production.
+**The dimension is read from the model, then checked against ``vector_dim``.**
+Phase 4's pgvector column is 384 wide. The width is read from the loaded model so
+it is never guessed, and :func:`check_dimension` raises at load when it differs
+from the configured ``vector_dim``. A 768-dim checkpoint such as
+``BAAI/bge-base-en-v1.5`` therefore fails loudly here, before one vector is
+written, and not as a migration failure discovered in production.
 
 **Embeddings are cached by ``(model_name, model_version, sha256(text))``.**
 Re-embedding a corpus because a plotting line changed is a wasted afternoon,
@@ -181,6 +187,37 @@ class EmbeddingCache:
         log.debug("embedding cache flushed: %d total vectors", len(self._keys))
 
 
+class EmbeddingDimensionMismatch(ValueError):
+    """The loaded model's vector width is not the configured ``vector_dim``."""
+
+
+def check_dimension(model_name: str, actual: int, expected: int | None) -> None:
+    """Refuse a model whose vectors do not fit the vector column.
+
+    ``expected`` is ``vector_dim`` in ``configs/models.yaml``. When it is absent
+    the check cannot run, and that is an error as well: a missing width is how a
+    wrong model gets through.
+    """
+    if expected is None:
+        raise EmbeddingDimensionMismatch(
+            "configs/models.yaml has no `embed.vector_dim`; set it to the width of the "
+            "vector column (384) so a wrong model is refused at load."
+        )
+    if int(actual) != int(expected):
+        raise EmbeddingDimensionMismatch(
+            f"{model_name} produces {int(actual)}-dim vectors but the vector column is "
+            f"{int(expected)}-dim. Use a {int(expected)}-dim model, or migrate the column "
+            "and change `embed.vector_dim` together."
+        )
+
+
+def _load_sentence_transformer(model_name: str, device: str, local_only: bool):
+    """The one place the weights are loaded, so tests can replace it."""
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name, device=device, local_files_only=local_only)
+
+
 class Embedder:
     """Batched sentence-transformer wrapper with caching and truncation policy."""
 
@@ -198,36 +235,40 @@ class Embedder:
         self._cache: EmbeddingCache | None = None
         self._dim: int | None = None
         self._load_attempted = False
+        self._load_error: Exception | None = None
+        vector_dim = self.config.get("vector_dim")
+        self.vector_dim = int(vector_dim) if vector_dim is not None else None
 
     # --- model -----------------------------------------------------------
     def load(self) -> bool:
         if self._load_attempted:
+            if self._load_error is not None:
+                raise self._load_error
             return self._model is not None
         self._load_attempted = True
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError:
-            log.error("sentence-transformers is not installed; install the 'modeling' extra")
-            return False
-
         device = self.settings.resolve_device()
         for local_only in (True, False):
             try:
-                self._model = SentenceTransformer(
-                    self.model_name,
-                    device="cpu" if device == "mps" else device,
-                    local_files_only=local_only,
+                self._model = _load_sentence_transformer(
+                    self.model_name, "cpu" if device == "mps" else device, local_only
                 )
                 break
+            except ImportError:
+                log.error("sentence-transformers is not installed; install the 'modeling' extra")
+                return False
             except Exception as exc:
                 if local_only:
                     continue
                 log.error("could not load %s: %s", self.model_name, exc)
                 return False
         self._model.max_seq_length = self.max_seq_length
-        # Read the dimension from the model. Never hardcode it: Phase 4's
-        # pgvector column width is derived from this number.
+        # Read the dimension from the model, then hold it to the vector column.
         self._dim = int(self._model.get_sentence_embedding_dimension())
+        try:
+            check_dimension(self.model_name, self._dim, self.vector_dim)
+        except EmbeddingDimensionMismatch as exc:
+            self._model, self._dim, self._load_error = None, None, exc
+            raise
         log.info(
             "embedder: %s (%d-dim, max_seq_length=%d, device=%s)",
             self.model_name,

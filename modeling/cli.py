@@ -262,14 +262,54 @@ def evaluate(
     module: str = typer.Argument(..., help="Module to evaluate."),
     data: Path | None = typer.Option(None, help="Local benchmark path."),
     demo: bool = typer.Option(False, "--demo"),
+    sample: Path | None = typer.Option(
+        None,
+        help="misinfo only: the hand-labelled sample CSV. "
+        "Default artifacts/hand_labels/misinfo_corpus_sample.csv.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
-    """Evaluate a trained module without retraining it."""
+    """Evaluate a trained module without retraining it.
+
+    For ``misinfo`` the output ends with a corpus-transfer section computed from the
+    hand-labelled sample. It says so when no sample exists, and refuses to compute
+    metrics while fewer than MIN_LABELLED_ROWS rows carry a label. Exits 1 on refusal.
+    """
     _bootstrap(verbose)
     from modeling.training import evaluate_module
 
     result = evaluate_module(module, data_path=data, demo=demo)
     console.print(f"\n[bold]{module}[/] {result.headline()}")
+    if module != "misinfo":
+        return
+
+    from modeling.config import module_config
+    from modeling.eval.corpus_transfer import evaluate_transfer, read_label_sheet
+    from modeling.io import ScoredStore
+
+    settings = get_settings()
+    path = sample or settings.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv"
+    if not path.exists():
+        console.print(
+            f"\n[yellow]corpus transfer: NOT MEASURED[/] - no labelled sample at {path}. "
+            "Run `modeling sample-for-labelling misinfo`, label the `label` column by hand "
+            "(1 = misinformation-like, 0 = not), then rerun this command."
+        )
+        return
+    transfer = evaluate_transfer(
+        read_label_sheet(path),
+        ScoredStore(settings).read("record_scores"),
+        language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
+        model_version=str(module_config("misinfo").get("version", "v0.0.0-unset")),
+        threshold=module_config("misinfo").get("decision_threshold"),
+        seed=settings.seed,
+    )
+    benchmark = result.report.macro_f1.value if result.report is not None else None
+    console.print()
+    for line in transfer.render(benchmark_macro_f1=benchmark):
+        console.print(line, markup=False, highlight=False)
+    if not transfer.computed:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -290,6 +330,90 @@ def report(
         return
     for path in written:
         console.print(f"wrote {path}")
+
+
+@app.command(name="evaluate-factchecks")
+def evaluate_factchecks(
+    scores: Path = typer.Argument(..., help="Directory with one <model>.parquet per model."),
+    baseline: str = typer.Option("tfidf", help="Model the others are compared against."),
+    precision: float = typer.Option(0.85, help="Validation precision target for each threshold."),
+    n_bootstrap: int = typer.Option(2000, "--n-bootstrap", help="Resamples for every interval."),
+    model_version: list[str] = typer.Option(
+        None, "--model-version", help="name=version, repeatable. Recorded in the report."
+    ),
+    manifest: Path | None = typer.Option(
+        None, help="Frozen evaluation set CSV. Default configs/factcheck_eval_manifest.csv."
+    ),
+    split: str | None = typer.Option(None, help="How val and test were split, in one line."),
+    label: str = typer.Option("comparison", help="Output goes to artifacts/eval/factcheck/LABEL."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Three-way comparison on the Indian fact-check set, from precomputed scores.
+
+    Needs no model weights and no GPU. Exits 1 and writes nothing when an input is
+    malformed, the test splits differ, or the frozen evaluation set has changed.
+    """
+    _bootstrap(verbose)
+    from modeling.eval.factcheck_eval import EvalInputError, gate_text, run_comparison
+
+    versions: dict[str, str] = {}
+    for item in model_version or []:
+        name, sep, version = item.partition("=")
+        if not sep or not name or not version:
+            raise typer.BadParameter(f"--model-version needs name=version, got {item!r}")
+        versions[name] = version
+    try:
+        result, paths = run_comparison(
+            scores,
+            manifest_path=manifest,
+            baseline=baseline,
+            precision_target=precision,
+            n_bootstrap=n_bootstrap,
+            versions=versions,
+            split_description=split,
+            label=label,
+        )
+    except EvalInputError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not result["evaluation_set"]["frozen"]:
+        console.print("[bold yellow]evaluation set not frozen[/] (see the report)")
+    for name, comparison in result["comparisons"].items():
+        console.print(
+            f"{name}: {'ship' if comparison['ship'] else 'do not ship'} - {comparison['reason']}"
+        )
+    for name, gate in result["hindi_gate"].items():
+        console.print(f"{name}: Hindi gate {gate_text(gate)} - {gate['reason']}")
+    for path in paths:
+        console.print(f"wrote {path}")
+
+
+@app.command(name="freeze-factchecks")
+def freeze_factchecks(
+    out: Path | None = typer.Option(
+        None, help="Manifest path. Default configs/factcheck_eval_manifest.csv."
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Replace an existing manifest. Say why in the commit."
+    ),
+) -> None:
+    """Write the frozen evaluation set (record id, URL, claim SHA-256) from factchecks.parquet.
+
+    The claim text is hashed and never written. Commit the CSV. Refuses to replace an
+    existing manifest without --overwrite.
+    """
+    _bootstrap()
+    from modeling.eval.factcheck_eval import EvalInputError, freeze_manifest_from_data
+
+    try:
+        path, count = freeze_manifest_from_data(
+            get_settings().data_dir, out, overwrite=overwrite
+        )
+    except EvalInputError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"froze {count} known-false claims -> {path}")
 
 
 @app.command()
@@ -338,10 +462,54 @@ def ablate(
     console.print(result.render())
 
 
+@app.command(name="compare-embedder")
+def compare_embedder_command(
+    model: str = typer.Option(
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        help="Embedder to compare with the one in configs/models.yaml.",
+    ),
+    out: Path | None = typer.Option(
+        None, help="Output directory. Default: artifacts/eval/embedder/<model>."
+    ),
+    demo: bool = typer.Option(False, "--demo"),
+    sources: str | None = typer.Option(None, help="Comma-separated source filter."),
+    limit: int | None = typer.Option(None),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Cluster with another embedder and print the checks and ablation beside the default.
+
+    Writes only under --out. It never touches data/scored, the shared scored
+    manifest or artifacts/eval/ablation, and it does not change the default model.
+    """
+    _bootstrap(verbose)
+    from modeling.eval.embedder_compare import compare_embedder
+    from modeling.text.embed import EmbeddingDimensionMismatch
+
+    try:
+        result = compare_embedder(
+            model,
+            demo=demo,
+            out_dir=out,
+            sources=[s.strip() for s in sources.split(",")] if sources else None,
+            limit=limit,
+        )
+    except (EmbeddingDimensionMismatch, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    for path in result.written:
+        console.print(f"wrote {path}", soft_wrap=True, highlight=False)
+    if not result.clustered:
+        console.print("[red]the alternative produced no narratives; see comparison.md[/red]")
+        raise typer.Exit(code=1)
+
+
 @app.command(name="sample-for-labelling")
 def sample_for_labelling(
     what: str = typer.Argument(..., help="misinfo | narratives"),
     n: int = typer.Option(100, help="How many rows to sample."),
+    lang: str | None = typer.Option(
+        None, "--lang", help="misinfo only: restrict the sample to en or hi."
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Write a blank-label CSV for hand-labelling.
@@ -364,32 +532,35 @@ def sample_for_labelling(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if what == "misinfo":
+        from modeling.eval.corpus_transfer import SAMPLE_LANGUAGES, build_sample
+
+        if lang is not None and lang not in SAMPLE_LANGUAGES:
+            raise typer.BadParameter(f"--lang must be one of {', '.join(SAMPLE_LANGUAGES)}")
         records = CorpusReader(settings).records(columns=["id", "source", "text", "lang"])
         if not len(records):
             console.print("[red]no corpus on disk[/]")
             raise typer.Exit(code=1)
-        # Stratified by source so the sample is not all Reddit: the transfer gap
-        # is a per-platform question, and a single-source sample cannot see it.
-        per_source = max(1, n // records["source"].nunique())
-        sample = (
-            records.groupby("source", group_keys=False)
-            .apply(lambda g: g.sample(min(len(g), per_source), random_state=settings.seed))
-            .head(n)
+        built = build_sample(
+            records,
+            n=n,
+            language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
+            lang=lang,
+            seed=settings.seed,
         )
-        scores = ScoredStore(settings).read("record_scores")
-        if len(scores) and "misinfo_prob" in scores.columns:
-            sample = sample.merge(
-                scores[["record_id", "misinfo_prob"]].rename(
-                    columns={"misinfo_prob": "score"}
-                ),
-                left_on="id",
-                right_on="record_id",
-                how="left",
-            )
-        sample["label"] = ""  # 1 = misinformation-like, 0 = not
+        sample = built.frame
+        console.print(
+            f"pool {built.pool} records"
+            + (f" in lang={lang}" if lang else "")
+            + "; not sampled because the misinfo stage cannot score them: "
+            + (", ".join(f"{k}={v}" for k, v in sorted(built.excluded.items())) or "none")
+        )
+        if not len(sample):
+            console.print("[red]no scorable record in the pool; nothing to label[/]")
+            raise typer.Exit(code=1)
+        # No model score goes in the sheet: a labeller who sees one anchors on it.
+        # `evaluate misinfo` joins the scores from record_scores by id.
         path = target_dir / "misinfo_corpus_sample.csv"
-        columns = [c for c in ("id", "source", "lang", "text", "score", "label") if c in sample]
-        sample[columns].to_csv(path, index=False)
+        sample.to_csv(path, index=False)
     elif what == "narratives":
         narratives = ScoredStore(settings).read("narratives")
         if not len(narratives):

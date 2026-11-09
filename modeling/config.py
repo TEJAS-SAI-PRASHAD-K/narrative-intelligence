@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import random
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -61,13 +61,16 @@ class ModelingSettings(BaseSettings):
     device: str = "auto"
 
     # --- language policy -------------------------------------------------
-    #: v1 is English-only. Non-English text is *skipped with a reason code*,
-    #: never scored by an English model and reported as if it were valid.
-    #: See modeling/aux/*.py and the README limitations section.
+    #: Recorded in the run fingerprint only. It gates nothing: which languages a
+    #: module scores is the ``languages`` list under that module in
+    #: ``configs/models.yaml``, read by :meth:`language_allowed`. Text outside a
+    #: module's list is *skipped with a reason code*, never scored by a model
+    #: that cannot read it. See modeling/aux/*.py and the README limitations.
     languages: tuple[str, ...] = ("en",)
     #: When ``lang`` is None (common for short text), do we score it? Phase 1
-    #: leaves lang None rather than guessing; we treat None as "assume English"
-    #: only if this is True, and we record the assumption per row.
+    #: leaves lang None rather than guessing; a null is admitted to a module
+    #: only if this is True, and that assumption is recorded per row. A module
+    #: that lists ``*`` admits every record, null or not.
     score_unknown_language: bool = True
 
     # --- LLM (bounded use only; see modeling/text/summarize.py) ----------
@@ -186,16 +189,59 @@ class ModelingSettings(BaseSettings):
             return "mps"
         return "cpu"
 
-    def language_allowed(self, lang: str | None) -> bool:
-        """The one place the English-only policy is decided.
+    def language_allowed(self, module: str, lang: str | None) -> bool:
+        """The one place the per-module language policy is decided.
+
+        Reads ``languages`` under ``module`` in ``configs/models.yaml``. A module
+        with no list raises :class:`ModuleLanguagesMissing`: guessing "score
+        everything" would send Hindi to an English model with no sign anything
+        went wrong, and guessing "score nothing" would look like an empty week.
+        The entry ``["*"]`` is the explicit way to say a module is language
+        agnostic.
 
         Accepts pandas' null sentinels as well as ``None``. Phase 1 legitimately
         leaves ``lang`` unset for short text rather than guessing, and a null
         string column read back from Parquet arrives as ``NaN``, not ``None``.
         """
+        allowed = module_languages(module)
+        if "*" in allowed:
+            return True
         if lang is None or lang != lang:  # None or NaN
             return self.score_unknown_language
-        return str(lang).lower() in self.languages
+        return str(lang).lower() in allowed
+
+
+class ModuleLanguagesMissing(ValueError):
+    """A module asked for its language policy and ``models.yaml`` gives none."""
+
+
+def module_languages(module: str) -> tuple[str, ...]:
+    """The languages a module may score, from ``configs/models.yaml``.
+
+    Raises :class:`ModuleLanguagesMissing` when the module has no usable list.
+    The parsed list is cached for the life of the process, because the language
+    gate runs once per record and the file does not change under a running
+    process. A failure is not cached. Call :func:`clear_language_cache` after
+    anything that replaces the config.
+    """
+    return _module_languages(module)
+
+
+def clear_language_cache() -> None:
+    """Forget the parsed per-module language lists."""
+    _module_languages.cache_clear()
+
+
+@cache
+def _module_languages(module: str) -> tuple[str, ...]:
+    value = (models_config().get(module) or {}).get("languages")
+    if isinstance(value, str) or not isinstance(value, (list, tuple)) or not value:
+        raise ModuleLanguagesMissing(
+            f"configs/models.yaml has no non-empty `languages` list for module {module!r}. "
+            "Add one (for example `languages: [en]`, or `languages: ['*']` for a module "
+            "that does not read text) so the module does not guess."
+        )
+    return tuple(str(item).strip().lower() for item in value)
 
 
 @lru_cache(maxsize=1)
@@ -288,6 +334,7 @@ def run_fingerprint(seed: int | None = None) -> dict[str, Any]:
         "device": settings.resolve_device(),
         "input_manifest_hash": manifest_hash(),
         "languages": list(settings.languages),
+        "module_languages": _all_module_languages(),
         "library_versions": library_versions(),
     }
 
@@ -355,3 +402,12 @@ def setup_logging(level: str | None = None) -> None:
         "numba",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def _all_module_languages() -> dict[str, list[str]]:
+    """Every module's language list, for the run fingerprint."""
+    out: dict[str, list[str]] = {}
+    for name, body in sorted(models_config().items()):
+        if isinstance(body, dict) and "languages" in body:
+            out[name] = [str(item) for item in body["languages"]]
+    return out

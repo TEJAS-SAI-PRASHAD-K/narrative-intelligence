@@ -112,8 +112,10 @@ the next.
    benchmark, so a zero-shot number is a baseline to report, never a model to
    ship.
 
-4. **Build the three-way evaluation harness.** This is the deliverable and it
-   does not exist yet. Score the fact-check evaluation set with Laya, with the
+4. **Build the three-way evaluation harness.** The harness is written
+   (`modeling/eval/factcheck_eval.py`, `modeling.cli evaluate-factchecks`) and reads
+   precomputed scores. The scoring step that writes its input files is not written.
+   Score the fact-check evaluation set with Laya, with the
    roberta-base fine-tune and with TF-IDF plus logistic regression, on identical
    group-aware splits, and report them side by side. Details in step 6 of the
    fine-tune runbook.
@@ -183,6 +185,11 @@ the honest entry in that cell, not a zero.
   recontextualised media. The gap is currently unmeasured. Closing it needs 100
   hand-labelled corpus records, and that single table is worth more than any
   hyperparameter sweep. `modeling.cli sample-for-labelling` writes the blank CSV.
+  `modeling.cli sample-for-labelling misinfo [--lang en|hi]` writes the blank
+  sheet with no model score in it. Label the `label` column by hand, then
+  `modeling.cli evaluate misinfo` reports the transfer section. Blank labels are
+  not 0, null scores are excluded with a reason, and no metric is computed below
+  `MIN_LABELLED_ROWS` (50) labelled rows.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination

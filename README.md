@@ -452,8 +452,9 @@ One trap worth knowing before editing: `topics.yaml`'s `languages:` key is **dec
 and read by nothing**. The three real enforcement points are
 `sources.yaml → gdelt.doc_api.languages` (which articles are fetched),
 `sources.yaml → youtube.discovery.*` (region and relevance), and
-`modeling/config.py → Settings.languages` (which records are **scored**). They gate
-different things on purpose; the third is still `("en",)`.
+the `languages` list of each module in `configs/models.yaml` (which records that module
+**scores**). They gate different things on purpose. English-only modules list `en`, `laya`
+lists `en` and `hi`, and a module with no list raises.
 
 ---
 
@@ -583,7 +584,7 @@ Three things that were not in the plan, found by running it.
 
   The `en` count being zero is what makes this harmful rather than merely wrong. A record
   labelled `sw` is not a near miss — `modeling/config.py` gates scoring on
-  `lang in languages`, so the record is silently skipped, and the YouTube, Reddit and
+  the module's `languages` list, so the record is silently skipped, and the YouTube, Reddit and
   Mastodon adapters would have quietly dropped most of what they collected. Fixed with a
   function-word lexicon checked *before* langdetect runs, because afterwards langdetect has
   already committed.
@@ -613,10 +614,12 @@ Three things that were not in the plan, found by running it.
   claim from this corpus is a claim about English and Hindi web content, weighted heavily
   toward English.
 - **Ingesting Hindi and scoring Hindi are different things, and only the first is done.**
-  `modeling/config.py` still sets `languages = ("en",)`, so Hindi records are collected,
-  normalized and stored, then **skipped by the Phase 2 scoring pass with a reason code**.
-  Widening it needs a multilingual checkpoint, not a config edit. Until then the Hindi
-  corpus is real data with no scores attached, and the dashboard will show it as such.
+  Every text module except `laya` lists only `en` under `languages` in
+  `configs/models.yaml`, so Hindi records are collected, normalized and stored, then
+  **skipped with a reason code** by those modules. Widening a list needs a multilingual
+  checkpoint, not a config edit. `laya` lists `hi`, and the embedder lists every language
+  (the English default clusters Hindi poorly; `compare-embedder` measures the multilingual
+  alternative).
 - **Romanized Hindi is now labelled, but its recall is unmeasured.** See *Findings* below:
   langdetect assigns romanized Hindi a confident *non-English* language (Swahili,
   Estonian, Somali, Turkish — never English), which routes it out of the analysis
@@ -699,6 +702,7 @@ python -m modeling.cli score --all --demo    # committed fixtures, ~12s, no netw
 | `report [module]` | regenerate `artifacts/eval/**` from saved predictions |
 | `cluster --audit 20` | re-cluster and print the manual coherence audit |
 | `ablate` | the module-ablation table |
+| `compare-embedder` | cluster and ablate with another embedder, into `artifacts/eval/embedder/<model>` |
 | `datasets` | what benchmark data is on disk, and how to get what is not |
 | `registry` | local checkpoints (weights are never in git) |
 | `show-config` | seed, device, corpus hash, library versions |

@@ -528,9 +528,19 @@ def _null_if_na(value: Any) -> Any:
 class ScoredStore:
     """Writer/reader for ``data/scored/``."""
 
-    def __init__(self, settings: ModelingSettings | None = None, root: Path | None = None):
+    def __init__(
+        self,
+        settings: ModelingSettings | None = None,
+        root: Path | None = None,
+        manifest_path: Path | None = None,
+    ):
         self.settings = settings or get_settings()
         self.root = Path(root) if root else self.settings.scored_dir
+        #: Defaults to the shared manifest. A caller that writes to its own
+        #: ``root`` and must not touch the shared one passes its own path.
+        self.manifest_path = Path(manifest_path) if manifest_path else (
+            self.settings.scored_manifest_path
+        )
 
     def path_for(self, table: ScoredTable, partition: dict[str, str] | None = None) -> Path:
         path = self.root / table.name
@@ -718,7 +728,7 @@ class ScoredStore:
         extra: dict[str, Any] | None = None,
     ) -> None:
         """Mirror Phase 1's manifest pattern: table -> rows, versions, provenance."""
-        path = self.settings.scored_manifest_path
+        path = self.manifest_path
         payload: dict[str, Any] = {}
         if path.exists():
             try:
@@ -736,7 +746,7 @@ class ScoredStore:
         _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     def manifest(self) -> dict[str, Any]:
-        path = self.settings.scored_manifest_path
+        path = self.manifest_path
         if not path.exists():
             return {}
         try:

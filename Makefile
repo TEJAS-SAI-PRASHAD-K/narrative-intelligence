@@ -63,6 +63,9 @@ eval-report: ## Regenerate artifacts/eval/** from saved predictions, no retraini
 ablate: ## The module-ablation table
 	$(BIN)/python -m modeling.cli ablate
 
+compare-embedder: ## Cluster and ablate with the multilingual embedder, into artifacts/eval/embedder/
+	$(BIN)/python -m modeling.cli compare-embedder
+
 notebooks: ## Regenerate the notebook skeletons from their build scripts
 	$(BIN)/python notebooks/build_eda_notebook.py
 	$(BIN)/python notebooks/build_phase2_notebooks.py

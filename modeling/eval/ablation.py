@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from itertools import combinations
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -171,12 +172,20 @@ def provisional_fusion(components: pd.DataFrame, allowed: tuple[str, ...]) -> pd
 
 
 def run_ablation(
-    *, demo: bool = False, settings: ModelingSettings | None = None
+    *,
+    demo: bool = False,
+    settings: ModelingSettings | None = None,
+    store: ScoredStore | None = None,
 ) -> AblationResult:
-    """Build the ablation table from the scored tables on disk."""
+    """Build the ablation table from the scored tables on disk.
+
+    ``store`` replaces the default store, for a comparison that scores into a
+    store of its own.
+    """
     settings = settings or get_settings()
-    root = settings.scored_dir.parent / "scored_demo" if demo else None
-    store = ScoredStore(settings, root=root)
+    if store is None:
+        root = settings.scored_dir.parent / "scored_demo" if demo else None
+        store = ScoredStore(settings, root=root)
 
     narratives = store.read("narratives")
     if not len(narratives):
@@ -306,13 +315,16 @@ def _quality(fused: pd.Series, labels: pd.Series) -> tuple[float | None, float |
 
 
 def write_ablation(
-    result: AblationResult, *, settings: ModelingSettings | None = None
+    result: AblationResult,
+    *,
+    settings: ModelingSettings | None = None,
+    target_dir: Path | None = None,
 ) -> list:
-    """Persist the ablation table alongside the other eval artifacts."""
+    """Persist the ablation table. The default is ``artifacts/eval/ablation``."""
     import json
 
     settings = settings or get_settings()
-    target = settings.eval_dir / "ablation"
+    target = Path(target_dir) if target_dir else settings.eval_dir / "ablation"
     target.mkdir(parents=True, exist_ok=True)
     written = []
 

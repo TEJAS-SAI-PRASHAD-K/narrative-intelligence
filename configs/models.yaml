@@ -16,11 +16,26 @@ defaults:
 # --- Module A: text / narrative --------------------------------------------
 embed:
   version: v0.1.0
-  # CPU-viable default. bge-base is better and needs a GPU for bulk embedding;
-  # the dimension is read from the loaded model, never hardcoded, because
-  # Phase 4's pgvector column width depends on it.
+  # Every language, because that is what the code does: the cluster stage embeds
+  # each record whatever its `lang`, so Hindi is clustered today with the
+  # English-trained default below. That is not a claim of quality. A Hindi
+  # sentence is mostly word pieces the English vocabulary splits badly, so
+  # Hindi narratives cluster by shared Latin tokens, names and URLs. The
+  # multilingual alternative below exists to test that.
+  languages: ["*"]
+  # CPU-viable default, English-trained. It stays the default until the
+  # alternative below is compared on the GPU host:
+  #   python -m modeling.cli compare-embedder
   model_name: sentence-transformers/all-MiniLM-L6-v2
+  # Width of the pgvector column. The embedder reads the width from the loaded
+  # model and refuses to load one that differs, so a wrong model fails at load.
+  vector_dim: 384
+  # To switch, put a name from this list in `model_name` and bump `version`,
+  # because every stored vector and narrative centroid comes from the old model.
   alternatives:
+    # 384-dim, 50+ languages including Hindi: the same column width, no migration.
+    - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+    # 768-dim. Refused at load while vector_dim is 384; needs a column migration.
     - BAAI/bge-base-en-v1.5
   batch_size: 64
   max_seq_length: 256      # tokens; long articles are title + head, see embed.py
@@ -28,6 +43,8 @@ embed:
 
 cluster:
   version: v0.1.0
+  # Works on vectors and metadata, never on text. Language is the embedder's.
+  languages: ["*"]
   min_cluster_size: 15
   min_samples: 5
   cluster_selection_epsilon: 0.0
@@ -48,6 +65,9 @@ cluster:
 
 misinfo:
   version: v0.1.0
+  # roberta-base is English-only. Hindi is skipped with `unsupported_language`;
+  # `laya` is the module that reads it.
+  languages: [en]
   base_model: roberta-base
   fallback_model: distilbert-base-uncased
   num_labels: 2
@@ -80,15 +100,18 @@ misinfo:
 # questions about a state in one forward pass with calibrated probabilities.
 # It is here for one reason the roberta-base fine-tune cannot satisfy -- the
 # multilingual checkpoint covers Hindi, and the corpus is now English+Hindi
-# while `modeling.config.Settings.languages` is still ("en",). This is the
-# module that closes that gap.
+# while the other text modules list only `en`. This is the module that closes
+# that gap.
 #
 # It does NOT replace `misinfo`. It is scored against it, and against the
 # TF-IDF baseline, on identical splits through one eval harness. That
 # three-way comparison is the result; a second model that nobody compared to
 # the first is not.
 laya:
-  version: v0.1.0
+  version: v0.2.1
+  # The routes below are the source for this list. A language with no route is
+  # skipped with `unrouted_language`. Hindi goes to the multilingual checkpoint.
+  languages: [en, hi]
   # 421M ModernBERT-large, English, 512-token context.
   checkpoint: convaiinnovations/laya
   # 322M mmBERT-base, 100+ languages, 1024 context, extendable to 8192 via
@@ -102,7 +125,18 @@ laya:
   route:
     en: checkpoint
     hi: multilingual_checkpoint
+  # Hugging Face commit of convaiinnovations/laya (both checkpoints live in
+  # that repo). Applied to Hub loads only. A fine-tuned local directory has no
+  # revision. Update it deliberately and bump `version` with it.
+  revision: 55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851
+  # Local fine-tuned checkpoint directory per language, null for the base
+  # checkpoint. A path that does not exist skips the record with reason
+  # `checkpoint_missing`. It never falls back to the base checkpoint.
+  finetuned_checkpoints:
+    en: null
+    hi: null
   device: auto
+  # States per forward pass in predict_batch. Long states use predict_long.
   batch_size: 16
   # The English checkpoint's own context window. predict_long() scans anything
   # longer in overlapping windows rather than silently truncating -- which
@@ -173,6 +207,8 @@ laya:
 
 stance:
   version: v0.2.0
+  # DeBERTa-v3, English NLI and FEVER. Not scored yet, but the gate is declared.
+  languages: [en]
   # An NLI+FEVER-tuned encoder, not a bare one. (claim, post) stance is
   # structurally premise/hypothesis entailment, so this checkpoint starts the
   # fine-tune already knowing the relation; roberta-base starts from nothing.
@@ -215,6 +251,8 @@ stance:
 
 summarize:
   version: v0.1.0
+  # Reads representative posts through an LLM, which handles Hindi. No gate today.
+  languages: ["*"]
   # Pinned, and recorded in model_versions. temperature 0 for reproducibility.
   llm_model: claude-haiku-4-5-20251001
   temperature: 0.0
@@ -225,6 +263,8 @@ summarize:
 # --- Module B: account / coordination --------------------------------------
 bot:
   version: v0.1.0
+  # Account behaviour features, no text.
+  languages: ["*"]
   primary: xgboost
   comparison: random_forest
   xgboost:
@@ -247,6 +287,8 @@ bot:
 
 coordination:
   version: v0.1.0
+  # Simhash, shared URLs, hashtags and timing. Language agnostic.
+  languages: ["*"]
   window_minutes: 60
   simhash_hamming: 3
   embedding_cosine: 0.95
@@ -268,6 +310,8 @@ coordination:
 # --- Module C: media --------------------------------------------------------
 deepfake:
   version: v0.2.0-pretrained
+  # Reads frames, not text.
+  languages: ["*"]
   # A pre-existing detector, used with NO fine-tuning.
   #
   # Why: FaceForensics++ is 17 GB behind a signed agreement, and the DFDC copy
@@ -342,12 +386,14 @@ deepfake:
 # defend.
 toxicity:
   version: v0.1.0
+  languages: [en]   # toxic-bert is English
   model_name: unitary/toxic-bert
   batch_size: 32
   max_length: 256
 
 sentiment:
   version: v0.1.0
+  languages: [en]   # twitter-roberta-base-sentiment-latest is English
   # Social-media domain, unlike the generic SST-trained models.
   model_name: cardiffnlp/twitter-roberta-base-sentiment-latest
   batch_size: 32
@@ -355,6 +401,7 @@ sentiment:
 
 emotion:
   version: v0.1.0
+  languages: [en]   # emotion-english-distilroberta-base
   model_name: j-hartmann/emotion-english-distilroberta-base
   batch_size: 32
   max_length: 256
@@ -372,6 +419,8 @@ emotion:
 
 anomaly:
   version: v0.1.0
+  # Behavioural features per post (timing, engagement, length), no text model.
+  languages: ["*"]
   method: isolation_forest
   n_estimators: 200
   contamination: 0.05

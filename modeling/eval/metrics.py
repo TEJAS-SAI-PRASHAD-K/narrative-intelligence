@@ -160,6 +160,101 @@ def bootstrap_metric(
     return Interval(point, float(low), float(high), len(samples))
 
 
+def macro_f1_binary(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Macro-F1 over the fixed classes 0 and 1.
+
+    The class set is fixed rather than read from the data, so a resample that
+    happens to hold one class still has a defined value: the absent class
+    contributes an F1 of 0, as ``zero_division=0`` does in scikit-learn. That
+    makes the function the same for every resample, which a paired difference
+    needs. Equal to ``f1_score(average="macro", labels=[0, 1], zero_division=0)``.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    total = 0.0
+    for cls in (0, 1):
+        tp = int(np.sum((y_true == cls) & (y_pred == cls)))
+        fp = int(np.sum((y_true != cls) & (y_pred == cls)))
+        fn = int(np.sum((y_true == cls) & (y_pred != cls)))
+        denominator = 2 * tp + fp + fn
+        total += 2 * tp / denominator if denominator else 0.0
+    return total / 2
+
+
+@dataclass
+class PairedInterval(Interval):
+    """A paired difference with its interval, and how many rows it rests on."""
+
+    n_paired: int = 0
+    #: Resamples whose true labels held one class only. Kept in the interval.
+    n_single_class_resamples: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            **super().as_dict(),
+            "n_paired": self.n_paired,
+            "n_single_class_resamples": self.n_single_class_resamples,
+        }
+
+
+def paired_bootstrap_difference(
+    y_true: np.ndarray,
+    pred_a: np.ndarray,
+    pred_b: np.ndarray,
+    metric_fn,
+    *,
+    n_bootstrap: int = DEFAULT_BOOTSTRAP,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> PairedInterval:
+    """Percentile bootstrap of ``metric(a) - metric(b)`` on shared rows.
+
+    Each resample draws one set of row indices and applies it to *both* models.
+    Two independent bootstraps would add each model's sampling noise to the
+    difference. The two models are scored on the same rows, so most of that noise
+    cancels, and the paired interval is the narrower and correct one.
+
+    Unlike ``bootstrap_metric`` this does not skip a resample that holds one true
+    class. Dropping such draws would be conditioning on the data, and
+    ``metric_fn`` must be defined there (``macro_f1_binary`` is). They are
+    counted in ``n_single_class_resamples``.
+
+    The difference is ``a - b``: pass the candidate first and the baseline second.
+    """
+    y_true = np.asarray(y_true)
+    pred_a = np.asarray(pred_a)
+    pred_b = np.asarray(pred_b)
+    n = len(y_true)
+    if not (len(pred_a) == len(pred_b) == n):
+        raise ValueError(
+            f"paired bootstrap needs equal lengths, got {n}, {len(pred_a)}, {len(pred_b)}"
+        )
+    point = float(metric_fn(y_true, pred_a)) - float(metric_fn(y_true, pred_b))
+    if n < 10:
+        return PairedInterval(point, float("nan"), float("nan"), 0, n_paired=n)
+
+    rng = np.random.default_rng(seed)
+    differences = np.empty(n_bootstrap, dtype=float)
+    single_class = 0
+    for b in range(n_bootstrap):
+        index = rng.integers(0, n, size=n)
+        resampled = y_true[index]
+        if len(np.unique(resampled)) < 2:
+            single_class += 1
+        differences[b] = float(metric_fn(resampled, pred_a[index])) - float(
+            metric_fn(resampled, pred_b[index])
+        )
+    low, high = np.percentile(differences, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return PairedInterval(
+        point,
+        float(low),
+        float(high),
+        n_bootstrap,
+        n_paired=n,
+        n_single_class_resamples=single_class,
+    )
+
+
 def classification_report(
     y_true: np.ndarray,
     y_pred: np.ndarray,
