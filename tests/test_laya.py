@@ -317,6 +317,31 @@ class TestTrainingExport:
         path = tmp_path / "train.jsonl"
         assert LayaTrainingExporter(scorer).export(frame, path) == 1
 
+    def test_skipped_rows_are_counted_by_reason_and_warned(self, scorer, tmp_path, caplog):
+        import logging
+
+        from modeling.text.laya_clf import LayaTrainingExporter
+
+        frame = _frame(
+            [
+                {"id": "a", "text": "a real claim", "label": 1},
+                {"id": "b", "text": "", "label": 1},
+                {"id": "c", "text": "   ", "label": 0},
+                {"id": "d", "text": "unlabelled", "label": None},
+                {"id": "e", "text": "also unlabelled", "label": float("nan")},
+                {"id": "f", "text": "unlabelled", "label": None},
+            ]
+        )
+        exporter = LayaTrainingExporter(scorer)
+        with caplog.at_level(logging.WARNING, logger="modeling.text.laya_clf"):
+            assert exporter.export(frame, tmp_path / "train.jsonl") == 1
+        assert exporter.skipped == {"empty_text": 2, "null_label": 3}
+        assert "empty_text" in caplog.text and "null_label" in caplog.text
+
+        clean = _frame([{"id": "a", "text": "a real claim", "label": 1}])
+        exporter.export(clean, tmp_path / "again.jsonl")
+        assert exporter.skipped == {}
+
     def test_devanagari_survives_the_json_round_trip(self, scorer, tmp_path):
         """ensure_ascii=False, so the file stays readable and the tokenizer
         sees the same bytes the corpus holds."""

@@ -143,7 +143,7 @@ print(split.describe())
 exporter = LayaTrainingExporter()   # reads the "text" column of the frame
 for name, idx in (("train", split.train), ("val", split.val)):
     n = exporter.export(work.iloc[idx], OUT / f"{name}.jsonl", label_column="label")
-    print(name, n)
+    print(name, n, "skipped:", exporter.skipped or "none")
 # `split.test` is NOT exported. It is held for step 6 and must never reach finetune.
 PY
 ```
