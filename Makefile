@@ -4,7 +4,8 @@ VENV := .venv
 BIN := $(VENV)/bin
 
 .PHONY: help setup data fetch normalize validate stats test lint fmt benchmarks clean clean-data \
-	up down logs ps migrate revision downgrade load reload verify seed openapi api-shell db-shell
+	collect-daily up down logs ps migrate revision downgrade load reload verify seed openapi \
+	api-shell db-shell
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -24,6 +25,9 @@ setup: $(BIN)/python ## Create venv and install everything (core + sources + dev
 
 data: ## Full rebuild: fetch every available source -> normalized parquet + manifest
 	$(BIN)/python -m ingest.cli fetch-all
+
+collect-daily: ## Daily capture: news_rss, fact-checks, one GDELT pass (locked, logged)
+	$(BIN)/python scripts/collect_daily.py
 
 fetch: ## Fetch a single source: make fetch SOURCE=mastodon
 	$(BIN)/python -m ingest.cli fetch $(SOURCE)
