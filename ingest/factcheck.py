@@ -92,6 +92,8 @@ class DropReason(str, Enum):
     DOMAIN_GIVEN_UP = "domain_given_up"
     #: The corpus held this record id more than once; only the first is kept.
     DUPLICATE_RECORD = "duplicate_record"
+    #: A corpus record with no id. A verdict is keyed on it, so it cannot be stored.
+    NO_RECORD_ID = "no_record_id"
 
 
 @dataclass
@@ -488,6 +490,9 @@ class FactCheckExtractor:
             if not url:
                 self.drop(DropReason.NO_URL, str(record.get("id")))
                 continue
+            if not record.get("id"):
+                self.drop(DropReason.NO_RECORD_ID, url)
+                continue
 
             tier = publisher.get("tier")
             if tier == Tier.RSS_TAG.value:
@@ -663,6 +668,8 @@ def write_factchecks(
     os.close(fd)
     try:
         pq.write_table(table, tmp_name, compression="zstd")
+        # mkstemp creates the file private to this user; the artifact is shared data.
+        os.chmod(tmp_name, 0o644)
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)

@@ -388,6 +388,12 @@ class TestDriver:
         assert list(extractor.run(records)) == []
         assert extractor.dropped[DropReason.NO_URL.value] == 1
 
+    def test_a_record_with_no_id_is_skipped_and_counted(self, extractor, monkeypatch):
+        _no_network(monkeypatch)
+        records = [{"id": "", "url": BOOM_URL, "source_detail": "boomlive.in"}]
+        assert list(extractor.run(records)) == []
+        assert extractor.dropped == {DropReason.NO_RECORD_ID.value: 1}
+
 
 BOOM_URL = "https://www.boomlive.in/fact-check/x"
 
@@ -516,6 +522,16 @@ class TestSideArtifact:
         from ingest.config import Settings
 
         assert write_factchecks([], Settings(data_dir=tmp_path)) is None
+
+    def test_the_artifact_is_readable_by_others_not_just_the_writer(self, tmp_path):
+        pytest.importorskip("pyarrow")
+        import stat
+
+        from ingest.config import Settings
+
+        path = write_factchecks([self._verdict(1)], Settings(data_dir=tmp_path))
+        assert path is not None
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
 
 
 class TestRecordsFromCorpus:
