@@ -94,6 +94,9 @@ class DropReason(str, Enum):
     DUPLICATE_RECORD = "duplicate_record"
     #: A corpus record with no id. A verdict is keyed on it, so it cannot be stored.
     NO_RECORD_ID = "no_record_id"
+    #: A JSON-LD block nested deeper than the JSON parser can read. The page is
+    #: kept in the cache, so without a count it would fail the same way each run.
+    JSONLD_TOO_DEEP = "jsonld_too_deep"
 
 
 @dataclass
@@ -135,18 +138,27 @@ _JSONLD_RE = re.compile(
 )
 
 
-def jsonld_blocks(html: str) -> Iterator[Any]:
+def jsonld_blocks(html: str, on_too_deep: Callable[[], None] | None = None) -> Iterator[Any]:
     """Every parseable JSON-LD block on a page.
 
     Malformed blocks are skipped rather than raising: publishers ship trailing
     commas and raw newlines inside strings, and one bad block on a page must not
     cost the good one next to it.
+
+    A block nested past the interpreter's recursion limit raises
+    ``RecursionError`` from the JSON parser, which is not a ``ValueError``. It
+    is skipped like any other bad block and reported through ``on_too_deep``;
+    retrying with newlines replaced cannot help, so the block is abandoned.
     """
     for match in _JSONLD_RE.finditer(html or ""):
         raw = match.group(1).strip()
         for candidate in (raw, raw.replace("\n", " ")):
             try:
                 yield json.loads(candidate)
+                break
+            except RecursionError:
+                if on_too_deep is not None:
+                    on_too_deep()
                 break
             except ValueError:
                 continue
@@ -159,14 +171,18 @@ def walk_jsonld(node: Any) -> Iterator[dict]:
     inside a list, or nested under the article node, and which one varies by
     publisher and by CMS version. Walking everything is cheaper than four
     per-publisher paths that each break separately.
+
+    The walk uses an explicit stack, in document order, so nesting depth is
+    bounded by memory rather than by the interpreter's recursion limit.
     """
-    if isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from walk_jsonld(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from walk_jsonld(value)
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            yield current
+            stack.extend(reversed(list(current.values())))
+        elif isinstance(current, list):
+            stack.extend(reversed(current))
 
 
 def _types(node: dict) -> list[str]:
@@ -174,11 +190,13 @@ def _types(node: dict) -> list[str]:
     return [str(v) for v in (value if isinstance(value, list) else [value]) if v]
 
 
-def find_claim_reviews(html: str) -> list[dict]:
+def find_claim_reviews(
+    html: str, on_too_deep: Callable[[], None] | None = None
+) -> list[dict]:
     """ClaimReview nodes on a page, in document order."""
     return [
         node
-        for block in jsonld_blocks(html)
+        for block in jsonld_blocks(html, on_too_deep)
         for node in walk_jsonld(block)
         if "ClaimReview" in _types(node)
     ]
@@ -312,7 +330,9 @@ class FactCheckExtractor:
     # --- tier 1: ClaimReview --------------------------------------------
     def from_html(self, record: dict, html: str) -> FactCheck | None:
         url = record.get("url") or ""
-        reviews = find_claim_reviews(html)
+        reviews = find_claim_reviews(
+            html, on_too_deep=lambda: self.drop(DropReason.JSONLD_TOO_DEEP, url)
+        )
         if not reviews:
             self.drop(DropReason.NO_CLAIMREVIEW, url)
             return None

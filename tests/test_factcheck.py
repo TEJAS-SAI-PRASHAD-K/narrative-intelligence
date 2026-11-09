@@ -370,6 +370,46 @@ class TestRobotsHandling:
         assert calls == ["https://www.boomlive.in/robots.txt"]
 
 
+class TestPoisonedPage:
+    URL_BAD = "https://www.boomlive.in/fact-check/bad"
+    URL_GOOD = "https://www.boomlive.in/fact-check/good"
+
+    def _cache(self, extractor, url, html):
+        path = extractor._cache_path(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+
+    def test_deeply_nested_jsonld_is_counted_and_the_batch_continues(self, extractor):
+        bad = (
+            '<script type="application/ld+json">' + "[" * 100_000 + "</script>"
+        )
+        self._cache(extractor, self.URL_BAD, bad)
+        self._cache(extractor, self.URL_GOOD, BOOM_HTML)
+        records = [
+            {"id": "news:bad", "url": self.URL_BAD, "source_detail": "boomlive.in"},
+            {"id": "news:good", "url": self.URL_GOOD, "source_detail": "boomlive.in"},
+        ]
+        verdicts = list(extractor.run(records))
+        assert [v.record_id for v in verdicts] == ["news:good"]
+        assert extractor.dropped[DropReason.JSONLD_TOO_DEEP.value] == 1
+        # A rerun over the same cached page behaves the same, not worse.
+        assert list(extractor.run(records[:1])) == []
+
+    def test_walk_jsonld_survives_nesting_past_the_recursion_limit(self):
+        from ingest.factcheck import walk_jsonld
+
+        node: dict = {"@type": "ClaimReview"}
+        for _ in range(5_000):
+            node = {"child": [node]}
+        assert any(n.get("@type") == "ClaimReview" for n in walk_jsonld(node))
+
+    def test_walk_jsonld_keeps_document_order(self):
+        from ingest.factcheck import walk_jsonld
+
+        tree = {"n": 1, "a": [{"n": 2}, {"n": 3, "k": {"n": 4}}], "b": {"n": 5}}
+        assert [d.get("n") for d in walk_jsonld(tree)] == [1, 2, 3, 4, 5]
+
+
 class TestFetchCache:
     def test_a_cache_hit_is_returned_after_the_budget_is_spent(self, extractor):
         cache_path = extractor._cache_path(BOOM_URL)
