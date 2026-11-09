@@ -94,6 +94,35 @@ python -m ingest.cli show-config
 
 ---
 
+## Daily capture
+
+```bash
+make collect-daily
+```
+
+This target runs three steps in order: `news_rss`, the fact-check extraction, and one
+GDELT pass. The fact-check RSS feeds hold only 10 to 60 entries. A day that you do not
+capture is lost.
+
+- A failed step does not stop the next steps. The target prints one status line for each
+  step (`ok`, `FAILED` or `DEGRADED`).
+- The exit code is 1 if a step failed. It is 2 if a step exited 0 but reported a GDELT
+  throttle or a skipped source. It is 75 if another run holds the lock.
+- A lock file in `data/` prevents overlapping runs.
+- The output goes to `data/logs/collect-daily-YYYY-MM-DD.log`. `data/` is gitignored.
+- Two runs do not write the same `id` twice, also when a source reports a different
+  timestamp for an article. The store counts these as `duplicates_cross_partition`.
+
+Run the target once each day. The GDELT rate limit is a per-IP penalty window that a
+retry or a second run in the same day can extend. Add a user-level `crontab` line. Replace
+`/path/to/narrative-intelligence` with the path of your clone:
+
+```cron
+17 6 * * * cd /path/to/narrative-intelligence && make collect-daily
+```
+
+---
+
 ## The schema is the contract
 
 Everything converges on one record type (`ingest/schema.py`). A downstream consumer must
