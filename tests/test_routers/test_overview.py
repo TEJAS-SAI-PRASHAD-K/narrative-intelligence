@@ -237,3 +237,58 @@ def test_a_null_score_is_not_scored_but_a_measured_zero_is(client, seeded_langua
     # cov3 has toxicity 0.0 (counted) and misinfo None (not counted).
     assert en["scored"]["toxicity"] == 4
     assert en["scored"]["misinfo"] == 3
+
+
+@requires_postgres
+def test_skip_reason_filter_returns_only_matching_posts(client, seeded_languages, admin_key):
+    response = client.get(
+        f"/api/v1/posts?project_id={seeded_languages}"
+        "&skip_reason=misinfo:unsupported_language",
+        headers={"X-API-Key": admin_key},
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["total"] == 2
+    assert {item["id"] for item in body["items"]} == {"reddit:cov3", "reddit:cov7"}
+    assert body["filters_applied"]["skip_reason"] == "misinfo:unsupported_language"
+
+
+@requires_postgres
+def test_skip_reason_filter_is_exact_and_safe_with_special_characters(
+    client, seeded_languages, admin_key
+):
+    headers = {"X-API-Key": admin_key}
+    for value in (
+        "misinfo:%",  # LIKE wildcard must not match
+        "misinfo:unsupported_languag_",
+        "misinfo",  # a prefix is not a match
+        "x' OR '1'='1",
+        "x'; DROP TABLE post_scores; --",
+        "a\"b\\c{}",
+    ):
+        response = client.get(
+            "/api/v1/posts",
+            params={"project_id": str(seeded_languages), "skip_reason": value},
+            headers=headers,
+        )
+        assert response.status_code == 200, value
+        assert response.json()["total"] == 0, value
+
+    # The table survived and the unfiltered listing is intact.
+    unfiltered = client.get(f"/api/v1/posts?project_id={seeded_languages}", headers=headers)
+    assert unfiltered.json()["total"] == 8
+
+
+@requires_postgres
+def test_skip_reason_filter_combines_with_the_risk_sort(client, seeded_languages, admin_key):
+    """The risk sort joins post_scores itself; the filter must not collide with it."""
+    response = client.get(
+        f"/api/v1/posts?project_id={seeded_languages}"
+        "&skip_reason=misinfo:unsupported_language&sort=risk",
+        headers={"X-API-Key": admin_key},
+    )
+    assert response.status_code == 200
+    # cov3 and cov7 carry the reason, and both have a null misinfo score, which the
+    # risk sort excludes.
+    assert response.json()["total"] == 0

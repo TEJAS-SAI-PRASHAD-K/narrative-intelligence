@@ -36,9 +36,21 @@ async def list_posts(
     page: Pagination,
     session: Annotated[AsyncSession, Depends(get_session)],
     sort: Annotated[str, Query(pattern="^(recent|oldest|engagement|risk)$")] = "recent",
+    skip_reason: Annotated[
+        str | None,
+        Query(
+            max_length=64,
+            description=(
+                "Only posts whose `skip_reasons` contain exactly this string, "
+                "for example `misinfo:unsupported_language`. Exact match, not a prefix."
+            ),
+        ),
+    ] = None,
 ) -> PageResponse[PostOut]:
     if mock.demo_mode():
         posts = mock.apply_post_filters(mock.corpus().posts, filters)
+        if skip_reason:
+            posts = [p for p in posts if skip_reason in (p.scores or {}).get("skip_reasons", ())]
         sorters = {
             "recent": lambda p: -p.timestamp.timestamp(),
             "oldest": lambda p: p.timestamp.timestamp(),
@@ -48,12 +60,13 @@ async def list_posts(
             "risk": lambda p: -((p.scores or {}).get("misinfo_likelihood") or -1),
         }
         posts = sorted(posts, key=sorters[sort])
-        return mock.paginate(
-            [mock.to_post(p) for p in posts], page, {**filters.as_response_dict(), "sort": sort}
-        )
+        applied = {**filters.as_response_dict(), "sort": sort}
+        if skip_reason:
+            applied["skip_reason"] = skip_reason
+        return mock.paginate([mock.to_post(p) for p in posts], page, applied)
     from app.repositories.posts import list_posts as query_posts
 
-    return await query_posts(session, filters, page, sort=sort)
+    return await query_posts(session, filters, page, sort=sort, skip_reason=skip_reason)
 
 
 @router.get(

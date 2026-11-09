@@ -18213,6 +18213,25 @@
             }
           },
           {
+            "description": "Only posts whose `skip_reasons` contain exactly this string, for example `misinfo:unsupported_language`. Exact match, not a prefix.",
+            "in": "query",
+            "name": "skip_reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only posts whose `skip_reasons` contain exactly this string, for example `misinfo:unsupported_language`. Exact match, not a prefix.",
+              "title": "Skip Reason"
+            }
+          },
+          {
             "description": "Project uuid or slug. Required everywhere.",
             "in": "query",
             "name": "project_id",

@@ -153,6 +153,29 @@ def test_ingest(demo_client, demo_ids):
     IngestRunOut.model_validate(demo_client.get(f"/api/v1/ingest/runs/{page.items[0].id}").json())
 
 
+def test_posts_skip_reason_filter_in_demo_mode(demo_client, demo_ids):
+    from app.mock.corpus import corpus
+    from app.schemas.common import PageResponse
+    from app.schemas.posts import PostOut
+
+    base = "/api/v1/posts"
+    project = {"project_id": demo_ids["project_id"], "limit": 100}
+    reason = "text_too_short"
+    expected = {p.id for p in corpus().posts if reason in (p.scores or {}).get("skip_reasons", ())}
+    assert expected
+
+    page = PageResponse[PostOut].model_validate(
+        demo_client.get(base, params={**project, "skip_reason": reason}).json()
+    )
+    assert page.total == len(expected)
+    assert {item.id for item in page.items} <= expected
+    assert all(reason in item.scores.skip_reasons for item in page.items)
+    assert page.filters_applied["skip_reason"] == reason
+
+    none = demo_client.get(base, params={**project, "skip_reason": "x' OR '1'='1"}).json()
+    assert none["total"] == 0
+
+
 def test_overview(demo_client, demo_ids):
     from app.schemas.common import PageResponse
     from app.schemas.overview import (
