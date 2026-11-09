@@ -38,7 +38,7 @@ def make_record(n: int, *, source="reddit", when: datetime = TS) -> Record:
 class TestRoundTrip:
     def test_write_then_read(self, store):
         result = store.write_records([make_record(i) for i in range(5)])
-        assert result == {"written": 5, "duplicates": 0}
+        assert (result["written"], result["duplicates"]) == (5, 0)
         df = store.read_all()
         assert len(df) == 5
         assert set(df["id"]) == {f"reddit:id{i}" for i in range(5)}
@@ -94,13 +94,49 @@ class TestPartitioning:
 class TestDedupe:
     def test_duplicate_ids_within_a_batch(self, store):
         result = store.write_records([make_record(1), make_record(1)])
-        assert result == {"written": 1, "duplicates": 1}
+        assert (result["written"], result["duplicates"]) == (1, 1)
+        assert result["duplicates_in_batch"] == 1
 
     def test_duplicate_ids_across_runs(self, store):
         store.write_records([make_record(i) for i in range(3)])
         result = store.write_records([make_record(i) for i in range(5)])
-        assert result == {"written": 2, "duplicates": 3}
+        assert (result["written"], result["duplicates"]) == (2, 3)
+        assert result["duplicates_same_partition"] == 3
         assert len(store.read_all()) == 5
+
+    def test_overlap_across_a_date_boundary(self, store):
+        # The same ids come back on the next run stamped one day later, as a feed
+        # does when it reports an updated time. They must not land in a second
+        # partition.
+        day1 = TS
+        day2 = TS + timedelta(days=1)
+        first = store.write_records([make_record(i, when=day1) for i in range(3)])
+        assert first["written"] == 3
+        second = store.write_records(
+            [make_record(i, when=day2) for i in range(5)]  # 0-2 repeat, 3-4 are new
+        )
+        assert second["written"] == 2
+        assert second["duplicates"] == 3
+        assert second["duplicates_cross_partition"] == 3
+        assert second["duplicates_same_partition"] == 0
+        ids = store.read_all()["id"].tolist()
+        assert len(ids) == len(set(ids)) == 5
+
+    def test_two_consecutive_runs_leave_unique_ids(self, store):
+        run1 = [make_record(i, when=TS + timedelta(hours=20 * i)) for i in range(6)]
+        run2 = [make_record(i, when=TS + timedelta(hours=20 * i + 30)) for i in range(3, 9)]
+        store.write_records(run1)
+        result = store.write_records(run2)
+        assert result["duplicates"] == 3
+        assert result["written"] == 3
+        ids = store.read_all()["id"].tolist()
+        assert len(ids) == len(set(ids)) == 9
+
+    def test_same_id_in_another_source_is_not_a_duplicate(self, store):
+        store.write_records([make_record(1, source="reddit")])
+        result = store.write_records([make_record(1, source="news", when=TS + timedelta(days=1))])
+        assert result["written"] == 1
+        assert result["duplicates"] == 0
 
     def test_rerun_is_idempotent(self, store):
         # This is the "kill it mid-fetch and rerun" acceptance criterion.
