@@ -27,12 +27,18 @@ corpus record, which sits between the two: claim-like on one side, short social
 text on the other. FNC-1 is the closer match on label set and the worse match on
 text length, and that tradeoff is stated in the model card rather than hidden.
 
-**The group key is the article body.** Verified against the organizers' own
-split: their competition test set shares *zero* bodies with train and only 155
-of 25,413 headlines (0.6%). The headline/body bipartite graph is a single
-connected component, so component-based grouping would put everything in one
-group and is useless here -- body-level grouping is both the strongest available
-key and the published protocol.
+**The group key is the headline (the claim).** FNC-1's 50k train pairs carry only
+~1.6k distinct headlines, each against many bodies. A split that groups by body
+puts every validation headline in train as well (measured on the pinned
+download: 1466 of 1466 validation headlines), and a model that memorizes
+"this headline is usually `unrelated`" scores well there. So train and val are
+split by ``claim_id``, a hash of the lowercased headline. The organizers'
+competition test set stays the held-out test. It shares zero bodies with train
+but 10 headlines with it, and ``modeling.training`` purges those from train
+and val through ``domain_holdout(purge_col="claim_id")``. The bodies cannot be
+kept disjoint at the same time: the headline/body graph is one connected
+component. The residual body overlap between train and val is stated in the
+model card.
 
 **Severe imbalance, and the rare class is the one that matters.** In train:
 unrelated 73%, discuss 18%, agree 7%, **disagree 1.7%**. A model that never
@@ -44,6 +50,7 @@ is the pushback signal -- so its per-class recall is the number to read first.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -105,9 +112,8 @@ class FNC1(BenchmarkDataset):
             "cares most about."
         ),
     )
-    #: The article body. See the module docstring: this is the organizers' own
-    #: split key, and the bipartite graph gives no finer honest grouping.
-    group_col = "body_id"
+    #: The headline. See the module docstring for why not the body.
+    group_col = "claim_id"
     label_col = "label"
     #: Which of the organizers' files a row came from, so their published
     #: protocol can be reproduced without re-deriving it.
@@ -212,9 +218,12 @@ class FNC1(BenchmarkDataset):
         raw = drop_empty_text(raw, "text", dropped, min_chars=20)
         raw = drop_empty_text(raw, "target", dropped, min_chars=5)
 
+        raw["claim_id"] = raw["target"].str.lower().map(
+            lambda t: hashlib.sha1(t.encode("utf-8")).hexdigest()[:16]
+        )
         raw["source_dataset"] = "fnc1"
         out = raw[
-            ["body_id", "target", "text", "label", "official_split", "source_dataset"]
+            ["claim_id", "body_id", "target", "text", "label", "official_split", "source_dataset"]
         ].reset_index(drop=True)
 
         rarest = out["label"].value_counts().idxmin()

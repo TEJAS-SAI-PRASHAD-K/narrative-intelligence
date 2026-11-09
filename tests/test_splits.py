@@ -216,6 +216,27 @@ def test_domain_holdout_puts_the_whole_domain_in_test():
     assert "outlet-2" not in set(work["outlet"].iloc[split.val].unique())
 
 
+def test_domain_holdout_purge_removes_keys_shared_with_the_held_out_domain():
+    rows = [
+        {"split": "train" if i < 40 else "test", "claim": f"c{i % 10}", "body": f"b{i}"}
+        for i in range(50)
+    ]
+    # Test rows use claims c0..c9 as well, so every claim straddles the boundary,
+    # except that the test frame below keeps only c0 and c1.
+    frame = pd.DataFrame(rows)
+    frame = frame.loc[(frame["split"] == "train") | frame["claim"].isin(["c0", "c1"])]
+    work, split = S.domain_holdout(
+        frame, domain_col="split", held_out="test", group_col="claim", purge_col="claim"
+    )
+    test_claims = set(work["claim"].iloc[split.test])
+    assert test_claims == {"c0", "c1"}
+    assert not test_claims & set(work["claim"].iloc[split.train])
+    assert not test_claims & set(work["claim"].iloc[split.val])
+    assert not set(work["claim"].iloc[split.train]) & set(work["claim"].iloc[split.val])
+    assert split.dropped["purged_overlap_with_test"] == 8
+    assert (work["split"].iloc[split.test] == "test").all()
+
+
 def test_domain_holdout_rejects_an_absent_domain():
     with pytest.raises(ValueError, match="not present"):
         S.domain_holdout(make_frame(), domain_col="outlet", held_out="outlet-99")

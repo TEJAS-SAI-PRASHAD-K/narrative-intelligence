@@ -392,6 +392,7 @@ def domain_holdout(
     domain_col: str,
     held_out: str | Sequence[str],
     group_col: str | None = None,
+    purge_col: str | None = None,
 ) -> tuple[pd.DataFrame, SplitResult]:
     """Train on every domain except ``held_out``; test only on ``held_out``.
 
@@ -401,11 +402,36 @@ def domain_holdout(
 
     ``val`` is carved out of the training domains, so the held-out domain stays
     genuinely unseen until test time.
+
+    ``purge_col`` names a second key that the organizers' domain split does not
+    keep disjoint. Rows outside the held-out domain whose value in that column
+    also occurs inside it are dropped, and the count is recorded in
+    ``SplitResult.dropped``. The held-out rows are never touched. FNC-1 uses it
+    for headlines: its competition test set shares the article bodies with
+    nothing, but it does share headlines with train.
     """
     settings = get_settings()
     work = frame.reset_index(drop=True)
     if domain_col not in work.columns:
         raise KeyError(f"domain column {domain_col!r} not in frame")
+    purged = 0
+    if purge_col is not None:
+        if purge_col not in work.columns:
+            raise KeyError(f"purge column {purge_col!r} not in frame")
+        held = work[domain_col].astype(str).isin(
+            {held_out} if isinstance(held_out, str) else set(held_out)
+        )
+        held_keys = set(work.loc[held, purge_col].astype(str))
+        leaked = ~held & work[purge_col].astype(str).isin(held_keys)
+        purged = int(leaked.sum())
+        if purged:
+            log.warning(
+                "domain holdout: dropped %d training rows whose %s also occurs in the held-out "
+                "domain (reason: purged_overlap_with_test)",
+                purged,
+                purge_col,
+            )
+            work = work.loc[~leaked].reset_index(drop=True)
 
     wanted = {held_out} if isinstance(held_out, str) else set(held_out)
     present = set(work[domain_col].astype(str).unique())
@@ -440,7 +466,15 @@ def domain_holdout(
         n_groups=int(work[domain_col].nunique()),
         seed=settings.seed,
         notes={"strategy": "domain_holdout", "held_out": sorted(wanted)},
+        dropped={"purged_overlap_with_test": purged} if purged else {},
     )
+    if len(val_idx):
+        assert_no_group_leakage(groups, train_idx, val_idx, names=["train", "val"])
+    if purge_col is not None:
+        trainval = np.concatenate([train_idx, val_idx])
+        assert_no_group_leakage(
+            work[purge_col], trainval, test_idx, names=["train+val", "test"]
+        )
     log.info("domain holdout on %s=%s: %s", domain_col, sorted(wanted), result.sizes)
     return work, result
 

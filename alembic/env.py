@@ -29,7 +29,9 @@ from app.models import import_all_models  # noqa: E402
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep loggers that already exist (the application's own, and the ones a
+    # host process or test harness is capturing); the default would disable them.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 import_all_models()
 target_metadata = Base.metadata

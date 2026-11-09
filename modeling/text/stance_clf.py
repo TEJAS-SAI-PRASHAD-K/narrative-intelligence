@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,41 @@ STANCE_LABELS = ("support", "deny", "discuss", "unrelated")
 
 #: Index <-> label, fixed so a checkpoint's head can never be read off by one.
 LABEL_TO_INDEX = {label: index for index, label in enumerate(STANCE_LABELS)}
+
+
+#: Wording that checkpoints use for each contract label. FNC-1's own names are
+#: accepted because a head trained straight from its CSV labels carries them.
+_LABEL_ALIASES = {
+    "support": "support",
+    "agree": "support",
+    "deny": "deny",
+    "disagree": "deny",
+    "discuss": "discuss",
+    "unrelated": "unrelated",
+}
+
+
+def resolve_stance_labels(id2label: Any) -> list[str] | None:
+    """Return the contract label at each logit position, or ``None``.
+
+    Read from the checkpoint's own ``id2label``. ``None`` means the head cannot
+    be read with confidence: a missing map, the unhelpful ``LABEL_0`` default,
+    an unknown name, a repeated class or a missing class. The caller must then
+    refuse the checkpoint. A guessed order swaps ``support`` with ``deny``, and
+    no aggregate metric shows it.
+    """
+    if not id2label:
+        return None
+    try:
+        ordered = sorted((int(index), str(name)) for index, name in dict(id2label).items())
+    except (TypeError, ValueError):
+        return None
+    if [index for index, _ in ordered] != list(range(len(STANCE_LABELS))):
+        return None
+    labels = [_LABEL_ALIASES.get(name.strip().lower()) for _, name in ordered]
+    if None in labels or set(labels) != set(STANCE_LABELS):
+        return None
+    return [str(label) for label in labels]
 
 
 @dataclass
@@ -113,6 +149,10 @@ class StanceClassifier:
         #: stance fine-tune. Changes how logits are read, and is reported.
         self._zero_shot = False
         self._nli_index: dict[str, int] | None = None
+        #: Contract label at each logit position of a fine-tuned head.
+        self._index_to_label: list[str] = list(STANCE_LABELS)
+        #: Reason code for the last refused ``load``, or ``None``.
+        self.load_error: str | None = None
 
     @property
     def trained(self) -> bool:
@@ -181,20 +221,29 @@ class StanceClassifier:
         base_model: str | None = None,
         epochs: int | None = None,
     ) -> TrainedStanceModel:
-        """Fine-tune and checkpoint every epoch.
+        """Fine-tune and keep the epoch with the lowest validation loss.
 
         A plain PyTorch loop for the same reason the misinfo trainer is one: it
-        keeps visible that the validation split drives early stopping, and that
+        keeps visible that the validation split selects the checkpoint, and that
         the imbalance is handled by class weighting rather than resampling.
         Resampling would duplicate rows, and duplicated rows straddle the group
         boundary the splitter just enforced.
 
-        Checkpointing every epoch is not optional discipline -- 50k pairs is
-        hours of work and an interrupted run that saves only at the end saves
-        nothing.
+        The checkpoint on disk is rewritten whenever validation loss improves,
+        so the saved weights are the best epoch, not the last one, and those
+        weights are loaded back into memory before the run returns. The first
+        epoch always improves on infinity, so a checkpoint exists after one
+        epoch: 50k pairs is hours of work and an interrupted run that saves
+        only at the end saves nothing.
         """
         import torch
         from torch.utils.data import DataLoader
+
+        if len(val_pairs) == 0:
+            raise ValueError(
+                "fine_tune needs a non-empty validation set: the validation loss selects "
+                "the checkpoint, and with none no epoch can be chosen or saved."
+            )
 
         model_name = base_model or self.base_model
         device = self.settings.resolve_device()
@@ -247,6 +296,8 @@ class StanceClassifier:
         loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
 
         best_val = float("inf")
+        best_epoch = 0
+        best_state: dict[str, Any] | None = None
         history: list[dict[str, float]] = []
         for epoch in range(n_epochs):
             model.train()
@@ -274,21 +325,48 @@ class StanceClassifier:
             )
             log.info("epoch %d/%d: %s", epoch + 1, n_epochs, history[-1])
 
-            # Save every epoch, before anything can go wrong.
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
-            if val_loss < best_val:
-                best_val = val_loss
-                (output_dir / "best_epoch.json").write_text(
-                    json.dumps({"epoch": epoch + 1, "val_log_loss": val_loss}), encoding="utf-8"
+            # Save only on improvement. The first finite epoch always improves,
+            # so a checkpoint exists before anything can go wrong. A NaN or
+            # infinite loss is never an improvement and never the best epoch.
+            if not math.isfinite(val_loss):
+                log.warning(
+                    "epoch %d: validation loss is %s; this epoch cannot be the best",
+                    epoch + 1,
+                    val_loss,
                 )
+            elif val_loss < best_val:
+                best_val, best_epoch = val_loss, epoch + 1
+                model.save_pretrained(output_dir)
+                tokenizer.save_pretrained(output_dir)
+                (output_dir / "best_epoch.json").write_text(
+                    json.dumps({"epoch": best_epoch, "val_log_loss": val_loss}), encoding="utf-8"
+                )
+                # Held on the CPU so a large model does not need twice its
+                # weights in accelerator memory.
+                best_state = {
+                    name: tensor.detach().cpu().clone()
+                    for name, tensor in model.state_dict().items()
+                }
+
+        if best_state is None:
+            raise RuntimeError(
+                f"no epoch produced a finite validation loss in {n_epochs} epochs, so no "
+                f"checkpoint was written to {output_dir}. Check the learning rate and the "
+                "validation labels; do not register this directory."
+            )
+        # Later scoring in this run must use the weights that were saved,
+        # not whatever the last epoch left behind.
+        model.load_state_dict(best_state)
+        log.info("restored the best epoch (%d, val_log_loss %.4f)", best_epoch, best_val)
 
         self._model, self._tokenizer = model, tokenizer
         self._zero_shot = False
+        self._index_to_label = list(STANCE_LABELS)
 
         metadata = {
             "base_model": model_name,
             "epochs": n_epochs,
+            "best_epoch": best_epoch,
             "history": history,
             "calibration": "none (4-class; see the module docstring)",
             "n_train": len(train_pairs),
@@ -355,21 +433,44 @@ class StanceClassifier:
 
     # --- inference ---------------------------------------------------------
     def load(self, checkpoint_dir: Path | None) -> bool:
-        """Load a fine-tuned checkpoint. Returns False when there is none."""
+        """Load a fine-tuned checkpoint. Returns False when there is none.
+
+        The label order is read from the checkpoint's ``id2label``. A head that
+        does not name exactly the four stance classes is refused, with
+        ``load_error`` set to ``label_orientation_unresolved``.
+        """
+        self.load_error = None
         if checkpoint_dir is None:
+            self.load_error = "no_checkpoint"
             return False
         try:
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
-            self._model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
-            self._model.to(self.settings.resolve_device())
-            self._model.eval()
-            self._zero_shot = False
-            return True
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
+            model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
         except Exception as exc:
             log.warning("no usable stance checkpoint at %s: %s", checkpoint_dir, exc)
+            self.load_error = "checkpoint_unreadable"
             return False
+
+        order = resolve_stance_labels(getattr(model.config, "id2label", None))
+        if order is None:
+            log.error(
+                "refusing the stance checkpoint at %s: id2label=%s does not name support, "
+                "deny, discuss and unrelated exactly once each, so the meaning of each "
+                "logit cannot be resolved",
+                checkpoint_dir,
+                getattr(model.config, "id2label", None),
+            )
+            self.load_error = "label_orientation_unresolved"
+            return False
+
+        self._tokenizer, self._model = tokenizer, model
+        self._index_to_label = order
+        self._model.to(self.settings.resolve_device())
+        self._model.eval()
+        self._zero_shot = False
+        return True
 
     def load_zero_shot(self, model_name: str | None = None) -> bool:
         """Load the NLI base model and read its head as stance.
@@ -442,7 +543,7 @@ class StanceClassifier:
         if self._zero_shot:
             return self._zero_shot_predictions(probabilities)
         return [
-            StancePrediction(STANCE_LABELS[int(np.argmax(row))], float(np.max(row)))
+            StancePrediction(self._index_to_label[int(np.argmax(row))], float(np.max(row)))
             for row in probabilities
         ]
 

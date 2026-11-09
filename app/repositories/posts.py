@@ -17,6 +17,7 @@ from app.deps import FilterSpec, Page
 from app.errors import BadRequest, NotFound
 from app.repositories.filters import (
     apply_post_filters,
+    join_post_scores,
     count_rows,
     decode_cursor,
     encode_cursor,
@@ -116,12 +117,23 @@ async def list_posts(
     page: Page,
     *,
     sort: str = "recent",
+    skip_reason: str | None = None,
 ) -> PageResponse[PostOut]:
     from app.models.corpus import Post, PostScore
 
     project_id = await resolve_project_id(session, spec.project_id)
     stmt = select(Post).select_from(Post)
     stmt = apply_post_filters(stmt, spec, project_id)
+    if skip_reason:
+        # A semi-join rather than a JOIN: the risk sort and the score filters
+        # already join post_scores, and a second join would be ambiguous.
+        # `.any()` renders `:param = ANY(skip_reasons)`, so the value is a bound
+        # parameter and is compared whole, never as a pattern.
+        stmt = stmt.where(
+            Post.id.in_(
+                select(PostScore.post_id).where(PostScore.skip_reasons.any(skip_reason))
+            )
+        )
 
     cursor = decode_cursor(page.cursor)
     if sort in ("recent", "oldest"):
@@ -140,7 +152,7 @@ async def list_posts(
         stmt = stmt.order_by(total.desc(), Post.id.desc()).offset(cursor.get("o", 0))
     else:  # risk
         stmt = (
-            stmt.join(PostScore, PostScore.post_id == Post.id)
+            join_post_scores(stmt)
             .where(PostScore.misinfo_likelihood.isnot(None))
             .order_by(PostScore.misinfo_likelihood.desc(), Post.id.desc())
             .offset(cursor.get("o", 0))
@@ -158,7 +170,11 @@ async def list_posts(
         items=items,
         next_cursor=_next_cursor(rows, sort, cursor, page.limit),
         total=total,
-        filters_applied={**spec.as_response_dict(), "sort": sort},
+        filters_applied={
+            **spec.as_response_dict(),
+            "sort": sort,
+            **({"skip_reason": skip_reason} if skip_reason else {}),
+        },
     )
 
 

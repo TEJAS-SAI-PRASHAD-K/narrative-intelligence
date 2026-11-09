@@ -153,9 +153,33 @@ def test_ingest(demo_client, demo_ids):
     IngestRunOut.model_validate(demo_client.get(f"/api/v1/ingest/runs/{page.items[0].id}").json())
 
 
+def test_posts_skip_reason_filter_in_demo_mode(demo_client, demo_ids):
+    from app.mock.corpus import corpus
+    from app.schemas.common import PageResponse
+    from app.schemas.posts import PostOut
+
+    base = "/api/v1/posts"
+    project = {"project_id": demo_ids["project_id"], "limit": 100}
+    reason = "text_too_short"
+    expected = {p.id for p in corpus().posts if reason in (p.scores or {}).get("skip_reasons", ())}
+    assert expected
+
+    page = PageResponse[PostOut].model_validate(
+        demo_client.get(base, params={**project, "skip_reason": reason}).json()
+    )
+    assert page.total == len(expected)
+    assert {item.id for item in page.items} <= expected
+    assert all(reason in item.scores.skip_reasons for item in page.items)
+    assert page.filters_applied["skip_reason"] == reason
+
+    none = demo_client.get(base, params={**project, "skip_reason": "x' OR '1'='1"}).json()
+    assert none["total"] == 0
+
+
 def test_overview(demo_client, demo_ids):
     from app.schemas.common import PageResponse
     from app.schemas.overview import (
+        COVERAGE_MODULES,
         AuthorsBreakdown,
         ConceptsResponse,
         EmotionsBreakdown,
@@ -172,6 +196,20 @@ def test_overview(demo_client, demo_ids):
     # Every KPI ships its own definition. The `(?)` tooltip is the backend's job.
     for metric in (kpis.posts, kpis.engagements, kpis.authors, kpis.sentiment, kpis.emotions):
         assert metric.definition and len(metric.definition) > 20
+    # Language coverage: the mock must populate the new field, and its counts
+    # must be internally consistent with the corpus and with the null rule.
+    assert kpis.language_coverage
+    assert sum(row.total for row in kpis.language_coverage) == kpis.posts.value
+    for row in kpis.language_coverage:
+        assert set(row.scored) == set(COVERAGE_MODULES)
+        assert all(0 <= n <= row.total for n in row.scored.values())
+    from app.mock.corpus import corpus
+
+    unscored = [p for p in corpus().posts if not (p.scores or {}).get("sentiment")]
+    assert unscored, "fixture must include records a module declined to score"
+    assert sum(r.scored["sentiment"] for r in kpis.language_coverage) == (
+        kpis.posts.value - len(unscored)
+    )
     # Engagements must declare that it skipped nulls rather than zeroing them.
     assert "views" in kpis.engagements.nullable_fields
 

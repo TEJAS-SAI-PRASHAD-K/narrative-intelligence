@@ -65,10 +65,11 @@ class MisinfoClassifier:
     """Fine-tune and predict. Written as a plain PyTorch loop on purpose.
 
     ``transformers.Trainer`` would be shorter and would hide the two things most
-    worth seeing here: that the validation split drives both early stopping and
-    calibration, and that class weighting rather than resampling handles the
-    imbalance (resampling would duplicate rows across the group boundary the
-    splitter just enforced).
+    worth seeing here: that the validation split drives calibration and the
+    ``best_epoch.json`` record (there is no early stopping and no restore: the
+    last epoch is the saved checkpoint), and that class weighting rather than
+    resampling handles the imbalance (resampling would duplicate rows across the
+    group boundary the splitter just enforced).
     """
 
     module = "misinfo"
@@ -176,7 +177,9 @@ class MisinfoClassifier:
             )
             log.info("epoch %d/%d: %s", epoch + 1, n_epochs, history[-1])
 
-            # Save every epoch, before anything can go wrong.
+            # Save every epoch, before anything can go wrong. The last epoch is
+            # therefore the saved checkpoint; best_epoch.json only records which
+            # epoch had the lowest validation loss and does not restore it.
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
             if val_loss < best_val:

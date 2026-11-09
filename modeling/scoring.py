@@ -389,16 +389,20 @@ def _text_skip_reason(
 
 
 def _keep_misinfo_skips(frame: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
-    """Carry the ``misinfo:<reason>`` entries on disk into a fresh aux frame.
+    """Carry the ``misinfo:`` and ``stance:`` entries on disk into a fresh aux frame.
 
     ``skip_reasons`` is one list per record, and a merge write replaces the list.
-    The aux pass knows nothing about the misinfo stage, so a rerun of the aux
-    stage would erase the reasons that the misinfo stage recorded.
+    The aux pass knows nothing about the misinfo and stance stages, so a rerun of
+    the aux stage would erase the reasons that those stages recorded.
     """
     if not len(existing) or "skip_reasons" not in existing.columns:
         return frame
     prior = {
-        str(rid): [r for r in (str(x) for x in as_list(value)) if r.startswith("misinfo:")]
+        str(rid): [
+            r
+            for r in (str(x) for x in as_list(value))
+            if r.startswith(("misinfo:", "stance:"))
+        ]
         for rid, value in zip(existing["record_id"], existing["skip_reasons"], strict=True)
     }
     out = frame.copy()
@@ -449,14 +453,29 @@ def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
 
 @stage("stance")
 def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
-    """Stance toward a narrative's representative claim.
+    """Stance of each record toward the representative claim of its narrative.
 
-    Deliberately a null path until a checkpoint exists. An untrained model
-    producing confident stance labels would be worse than an empty column, and
-    the contract explicitly allows null.
+    Without a registered checkpoint this is the null path: ``stance`` and
+    ``stance_conf`` stay null, as the contract permits, because an untrained
+    model producing confident labels is worse than an empty column.
+
+    With one, every record is either scored or skipped with a ``stance:<reason>``
+    entry in ``record_scores.skip_reasons``. The reasons are the aux codes
+    (``empty_text``, ``text_too_short``, ``unsupported_language``) plus
+    ``no_narrative`` (noise bucket or never clustered), ``no_claim_text``
+    (the narrative's representative is not in this corpus slice),
+    ``claim_unsupported_language`` (the claim is outside the stance language
+    gate) and ``is_claim`` (the record is the claim itself). A record that is
+    skipped now has any stance from an earlier run cleared, since the claim it
+    was scored against may no longer exist.
+
+    Every eligible record is rescored on each run. The score depends on the
+    narrative's current claim as well as on the checkpoint, and the resume key
+    covers only the checkpoint.
     """
     from modeling.config import module_config
     from modeling.registry import resolve
+    from modeling.text.stance_clf import StanceClassifier
 
     version = str(module_config("stance").get("version"))
     checkpoint = resolve("stance", version, required=False)
@@ -471,15 +490,183 @@ def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 ),
             }
         ]
+
+    classifier = StanceClassifier(ctx.settings)
+    if not classifier.load(checkpoint.path):
+        return [
+            {
+                "stage": "stance",
+                "table": "record_scores",
+                "note": ctx.note(
+                    f"checkpoint refused ({classifier.load_error}); stance and stance_conf "
+                    "stay null. See the log for the cause."
+                ),
+            }
+        ]
+    if not len(ctx.records):
+        return [{"stage": "stance", "table": "record_scores", "note": ctx.note("no records")}]
+
+    demo_note = warn_if_demo_checkpoint("stance", checkpoint, ctx.demo)
+    claims = _narrative_claims(ctx)
+    reasons: list[str | None] = []
+    pairs: list[tuple[str, str]] = []
+    for row in ctx.records.itertuples(index=False):
+        reason, claim = _stance_skip_reason(ctx, claims, row)
+        reasons.append(reason)
+        if claim is not None:
+            pairs.append((claim, str(row.text)))
+
+    skipped = pd.Series(reasons, dtype=object)
+    counts = skipped.dropna().value_counts().to_dict()
+    skip_note = (
+        "; skipped " + ", ".join(f"{n} {reason}" for reason, n in sorted(counts.items()))
+        if counts
+        else ""
+    )
+    if ctx.dry_run:
+        return [
+            {
+                "stage": "stance",
+                "table": "record_scores",
+                "note": ctx.note(f"dry-run; would score {len(pairs)} rows{skip_note}"),
+            }
+        ]
+
+    predictions = iter(classifier.predict(pairs))
+    existing = ctx.store.read("record_scores")
+    prior: dict[str, list[str]] = {}
+    if len(existing) and "skip_reasons" in existing.columns:
+        prior = {
+            str(rid): [str(r) for r in as_list(value)]
+            for rid, value in zip(existing["record_id"], existing["skip_reasons"], strict=True)
+        }
+    versions = {"stance": checkpoint_stamp("stance", version, checkpoint)}
+    rows = []
+    retract: dict[tuple[str, ...], set[str]] = {}
+    for row, reason in zip(ctx.records.itertuples(index=False), reasons, strict=True):
+        record_id = str(row.id)
+        kept = [r for r in prior.get(record_id, []) if not r.startswith("stance:")]
+        entry: dict[str, Any] = {"record_id": record_id, "source": str(row.source)}
+        if reason is None:
+            prediction = next(predictions)
+            entry.update(
+                stance=prediction.label,
+                stance_conf=prediction.confidence,
+                skip_reasons=kept,
+                model_versions=versions,
+            )
+        else:
+            entry.update(
+                stance=None,
+                stance_conf=None,
+                skip_reasons=[*kept, f"stance:{reason}"],
+                model_versions={},
+            )
+            # The merge unions version maps, so a stamp from an earlier scored
+            # run would survive and `already_scored` would still return this row.
+            retract[(record_id,)] = {"stance"}
+        entry["scored_at"] = utcnow_local()
+        rows.append(entry)
+
+    result = ctx.store.write(
+        "record_scores",
+        pd.DataFrame(rows),
+        known_keys=ctx.known_record_ids or None,
+        drop_model_versions=retract,
+    )
     return [
         {
             "stage": "stance",
             "table": "record_scores",
+            **result,
             "note": ctx.note(
-                "checkpoint present but the scoring path is not wired; see model card"
+                f"scored {len(pairs)}/{len(ctx.records)} records"
+                + skip_note
+                + (f" [{demo_note}]" if demo_note else "")
             ),
         }
     ]
+
+
+@dataclass
+class _NarrativeClaims:
+    """Which claim each record is scored against, and where that fails."""
+
+    claim_of: dict[str, str] = field(default_factory=dict)
+    claim_lang: dict[str, Any] = field(default_factory=dict)
+    claim_record: dict[str, str] = field(default_factory=dict)
+    narrative_of: dict[str, str] = field(default_factory=dict)
+    # Narratives whose representatives all had text, but none long enough.
+    too_short: set[str] = field(default_factory=set)
+
+
+_STANCE_MIN_CHARS = 20
+
+
+def _narrative_claims(ctx: StageContext) -> _NarrativeClaims:
+    """Pick each record's narrative and each narrative's representative claim.
+
+    A record in several narratives takes the one with the highest membership
+    probability. The claim is the narrative's best-ranked representative whose
+    text is present in ``ctx.records`` and at least ``_STANCE_MIN_CHARS`` long,
+    the same floor as for the record text: a premise such as "ok" says nothing.
+    """
+    out = _NarrativeClaims()
+    membership = ctx.store.read("narrative_membership")
+    if not len(membership):
+        return out
+
+    texts = ctx.records.set_index(ctx.records["id"].astype(str))
+    ranked = membership.assign(
+        record_id=membership["record_id"].astype(str),
+        narrative_id=membership["narrative_id"].astype(str),
+        membership_prob=membership["membership_prob"].fillna(0.0),
+    ).sort_values(["membership_prob", "record_id"], ascending=[False, True], kind="stable")
+
+    out.narrative_of = (
+        ranked.drop_duplicates("record_id").set_index("record_id")["narrative_id"].to_dict()
+    )
+    representatives = ranked.loc[ranked["is_representative"].fillna(False).astype(bool)]
+    for narrative_id, group in representatives.groupby("narrative_id", sort=False):
+        for record_id in group["record_id"]:
+            if record_id not in texts.index:
+                continue
+            text = texts.loc[record_id, "text"]
+            if text is None or pd.isna(text) or not str(text).strip():
+                continue
+            if len(str(text).strip()) < _STANCE_MIN_CHARS:
+                out.too_short.add(narrative_id)
+                continue
+            out.too_short.discard(narrative_id)
+            out.claim_of[narrative_id] = str(text)
+            out.claim_lang[narrative_id] = texts.loc[record_id, "lang"]
+            out.claim_record[narrative_id] = record_id
+            break
+    return out
+
+
+def _stance_skip_reason(
+    ctx: StageContext, claims: _NarrativeClaims, row: Any
+) -> tuple[str | None, str | None]:
+    """``(reason, None)`` when a record gets no stance, else ``(None, claim_text)``."""
+    from modeling.aux.base import SkipReason
+
+    record_id = str(row.id)
+    reason = _text_skip_reason(ctx.settings, "stance", row.text, row.lang, _STANCE_MIN_CHARS)
+    if reason is not None:
+        return reason, None
+    narrative_id = claims.narrative_of.get(record_id)
+    if narrative_id is None:
+        return "no_narrative", None
+    if narrative_id not in claims.claim_of:
+        if narrative_id in claims.too_short:
+            return "claim_text_too_short", None
+        return "no_claim_text", None
+    if claims.claim_record[narrative_id] == record_id:
+        return "is_claim", None
+    if not ctx.settings.language_allowed("stance", claims.claim_lang[narrative_id]):
+        return f"claim_{SkipReason.UNSUPPORTED_LANGUAGE}", None
+    return None, claims.claim_of[narrative_id]
 
 
 @stage("summarize")

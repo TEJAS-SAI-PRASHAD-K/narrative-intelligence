@@ -3540,6 +3540,21 @@
           "engagements": {
             "$ref": "#/components/schemas/Metric"
           },
+          "language_coverage": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LanguageCoverage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-language record count and per-module scored count, largest language first. Null only when the response was built by a producer that does not compute it.",
+            "title": "Language Coverage"
+          },
           "posts": {
             "$ref": "#/components/schemas/Metric"
           },
@@ -3584,6 +3599,43 @@
           "emotions"
         ],
         "title": "KpiBundle",
+        "type": "object"
+      },
+      "LanguageCoverage": {
+        "description": "How many records of one language each scoring module actually scored.",
+        "properties": {
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Language code as stored on the record. Null groups records with no language.",
+            "title": "Lang"
+          },
+          "scored": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Per scoring module, records in this language with a non-null score. A null score is not scored; a measured zero is.",
+            "title": "Scored",
+            "type": "object"
+          },
+          "total": {
+            "description": "Records in this language that match the filters.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lang",
+          "total",
+          "scored"
+        ],
+        "title": "LanguageCoverage",
         "type": "object"
       },
       "LayoutRequest": {
@@ -18158,6 +18210,25 @@
               "pattern": "^(recent|oldest|engagement|risk)$",
               "title": "Sort",
               "type": "string"
+            }
+          },
+          {
+            "description": "Only posts whose `skip_reasons` contain exactly this string, for example `misinfo:unsupported_language`. Exact match, not a prefix.",
+            "in": "query",
+            "name": "skip_reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only posts whose `skip_reasons` contain exactly this string, for example `misinfo:unsupported_language`. Exact match, not a prefix.",
+              "title": "Skip Reason"
             }
           },
           {

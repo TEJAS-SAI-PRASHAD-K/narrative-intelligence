@@ -527,6 +527,37 @@ def _metric(name: str, value, label: str, **kwargs):
     return Metric(value=value, label=label, definition=DEFINITIONS[name], **kwargs)
 
 
+_COVERAGE_KEYS = {
+    "toxicity": "toxicity",
+    "anomaly": "anomaly",
+    "misinfo": "misinfo_likelihood",
+    "stance": "stance",
+    "sentiment": "sentiment",
+    "emotion": "emotion",
+}
+
+
+def _language_coverage(posts):
+    from app.schemas.overview import COVERAGE_MODULES, LanguageCoverage
+
+    assert tuple(_COVERAGE_KEYS) == COVERAGE_MODULES
+    groups: dict[str | None, list] = {}
+    for post in posts:
+        groups.setdefault(post.lang, []).append(post)
+    ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0] is None, kv[0] or ""))
+    return [
+        LanguageCoverage(
+            lang=lang,
+            total=len(members),
+            scored={
+                module: sum(1 for p in members if (p.scores or {}).get(key) is not None)
+                for module, key in _COVERAGE_KEYS.items()
+            },
+        )
+        for lang, members in ordered
+    ]
+
+
 def overview_kpis(spec: FilterSpec):
     from app.schemas.overview import KpiBundle
 
@@ -548,6 +579,7 @@ def overview_kpis(spec: FilterSpec):
     dominant = max(emotion_counts, key=emotion_counts.get) if emotion_counts else None
 
     return KpiBundle(
+        language_coverage=_language_coverage(posts),
         posts=_metric("posts", len(posts), "Posts", sample_size=len(posts), delta_pct=12.4),
         engagements=_metric(
             "engagements",

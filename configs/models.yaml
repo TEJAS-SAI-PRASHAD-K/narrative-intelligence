@@ -206,8 +206,11 @@ laya:
   precision_target: 0.85
 
 stance:
-  version: v0.2.0
-  # DeBERTa-v3, English NLI and FEVER. Not scored yet, but the gate is declared.
+  # v0.3.0: headline-grouped train/val split with train/test headline purge,
+  # label order read from the checkpoint's id2label, and a scoring stage that
+  # writes stance toward each narrative's representative claim.
+  version: v0.3.0
+  # DeBERTa-v3, English NLI and FEVER. English only through this gate.
   languages: [en]
   # An NLI+FEVER-tuned encoder, not a bare one. (claim, post) stance is
   # structurally premise/hypothesis entailment, so this checkpoint starts the

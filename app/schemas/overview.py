@@ -22,6 +22,26 @@ GroupBy = Literal["platform", "narrative", "cohort", "source_detail", "none"]
 Aggregation = Literal["total", "average", "peak"]
 
 
+#: Scoring modules reported in language coverage, each keyed to the nullable
+#: ``post_scores`` column whose presence means "this module produced a value".
+COVERAGE_MODULES = ("toxicity", "anomaly", "misinfo", "stance", "sentiment", "emotion")
+
+
+class LanguageCoverage(Camel):
+    """How many records of one language each scoring module actually scored."""
+
+    lang: str | None = Field(
+        description="Language code as stored on the record. Null groups records with no language."
+    )
+    total: int = Field(description="Records in this language that match the filters.")
+    scored: dict[str, int] = Field(
+        description=(
+            "Per scoring module, records in this language with a non-null score. "
+            "A null score is not scored; a measured zero is."
+        )
+    )
+
+
 class KpiBundle(Camel):
     """The five headline KPIs, in the fixed order the UI renders them.
 
@@ -40,6 +60,13 @@ class KpiBundle(Camel):
     tz: str = "UTC"
     comparison_window: str | None = Field(
         default=None, description="The preceding window that delta_pct compares against."
+    )
+    language_coverage: list[LanguageCoverage] | None = Field(
+        default=None,
+        description=(
+            "Per-language record count and per-module scored count, largest language first. "
+            "Null only when the response was built by a producer that does not compute it."
+        ),
     )
 
 
