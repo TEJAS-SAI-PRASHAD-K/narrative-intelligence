@@ -156,6 +156,7 @@ def test_ingest(demo_client, demo_ids):
 def test_overview(demo_client, demo_ids):
     from app.schemas.common import PageResponse
     from app.schemas.overview import (
+        COVERAGE_MODULES,
         AuthorsBreakdown,
         ConceptsResponse,
         EmotionsBreakdown,
@@ -172,6 +173,20 @@ def test_overview(demo_client, demo_ids):
     # Every KPI ships its own definition. The `(?)` tooltip is the backend's job.
     for metric in (kpis.posts, kpis.engagements, kpis.authors, kpis.sentiment, kpis.emotions):
         assert metric.definition and len(metric.definition) > 20
+    # Language coverage: the mock must populate the new field, and its counts
+    # must be internally consistent with the corpus and with the null rule.
+    assert kpis.language_coverage
+    assert sum(row.total for row in kpis.language_coverage) == kpis.posts.value
+    for row in kpis.language_coverage:
+        assert set(row.scored) == set(COVERAGE_MODULES)
+        assert all(0 <= n <= row.total for n in row.scored.values())
+    from app.mock.corpus import corpus
+
+    unscored = [p for p in corpus().posts if not (p.scores or {}).get("sentiment")]
+    assert unscored, "fixture must include records a module declined to score"
+    assert sum(r.scored["sentiment"] for r in kpis.language_coverage) == (
+        kpis.posts.value - len(unscored)
+    )
     # Engagements must declare that it skipped nulls rather than zeroing them.
     assert "views" in kpis.engagements.nullable_fields
 

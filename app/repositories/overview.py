@@ -27,7 +27,9 @@ from app.schemas.common import Metric, PageResponse
 from app.schemas.overview import (
     ConceptItem,
     ConceptsResponse,
+    COVERAGE_MODULES,
     KpiBundle,
+    LanguageCoverage,
     TimeseriesPoint,
     TimeseriesResponse,
 )
@@ -115,6 +117,8 @@ async def kpi_bundle(session: AsyncSession, spec: FilterSpec) -> KpiBundle:
         )
     ).first()
 
+    coverage = await language_coverage(session, ids)
+
     return KpiBundle(
         posts=Metric(
             value=posts, label="Posts", definition=DEFINITIONS["posts"], sample_size=posts
@@ -148,7 +152,42 @@ async def kpi_bundle(session: AsyncSession, spec: FilterSpec) -> KpiBundle:
         window_start=spec.date_from or first,
         window_end=spec.date_to or last,
         tz=spec.tz,
+        language_coverage=coverage,
     )
+
+
+async def language_coverage(session: AsyncSession, ids) -> list[LanguageCoverage]:
+    """Record and scored counts per language, one grouped query.
+
+    ``COUNT(column)`` skips nulls, so a record the module declined to score is
+    in ``total`` and not in ``scored``. A LEFT JOIN keeps records that have no
+    ``post_scores`` row at all in ``total``.
+    """
+    from app.models.corpus import Post, PostScore
+
+    columns = {
+        "toxicity": PostScore.toxicity,
+        "anomaly": PostScore.anomaly,
+        "misinfo": PostScore.misinfo_likelihood,
+        "stance": PostScore.stance,
+        "sentiment": PostScore.sentiment,
+        "emotion": PostScore.emotion,
+    }
+    assert tuple(columns) == COVERAGE_MODULES
+    rows = (
+        await session.execute(
+            select(Post.lang, func.count(Post.id), *(func.count(c) for c in columns.values()))
+            .select_from(Post)
+            .outerjoin(PostScore, PostScore.post_id == Post.id)
+            .where(Post.id.in_(select(ids.c.id)))
+            .group_by(Post.lang)
+            .order_by(func.count(Post.id).desc(), Post.lang.asc().nulls_last())
+        )
+    ).all()
+    return [
+        LanguageCoverage(lang=lang, total=total, scored=dict(zip(columns, counts, strict=True)))
+        for lang, total, *counts in rows
+    ]
 
 
 async def timeseries(

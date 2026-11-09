@@ -131,3 +131,109 @@ def test_a_toxicity_floor_excludes_unscored_posts_rather_than_sweeping_them_in(
     # Only the seven scored posts qualify; the three unscored ones are not
     # "measured as harmless" and must not appear.
     assert floored["total"] == 7
+
+
+@pytest.fixture
+def seeded_languages(migrated_db):
+    """en x4, hi x2, null-language x2, with uneven scoring per module.
+
+    The en rows: three fully scored, one with a null misinfo score and a measured
+    zero toxicity. The hi rows: one scored, one with no post_scores row at all.
+    The null-language rows: one scored on sentiment only, one skipped.
+    """
+    from app.db import sync_session
+    from app.models.core import Project
+    from app.models.corpus import Post, PostScore
+
+    project_id = uuid.uuid4()
+    base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    langs = ["en", "en", "en", "en", "hi", "hi", None, None]
+
+    with sync_session() as session:
+        session.add(Project(id=project_id, slug="coverage-test", name="Coverage"))
+        for index, lang in enumerate(langs):
+            session.add(
+                Post(
+                    id=f"reddit:cov{index}",
+                    project_id=project_id,
+                    native_id=f"cov{index}",
+                    source="reddit",
+                    source_detail="r/news",
+                    content_type="post",
+                    text_=f"coverage {index}",
+                    lang=lang,
+                    author_id=f"reddit:cov-author{index}",
+                    author_handle=f"cov{index}",
+                    timestamp=base + timedelta(hours=index),
+                )
+            )
+        session.flush()
+        full = dict(
+            toxicity=0.1,
+            anomaly=0.2,
+            misinfo_likelihood=0.3,
+            stance="neutral",
+            sentiment="neutral",
+            emotion="neutral",
+        )
+        session.add(PostScore(post_id="reddit:cov0", **full))
+        session.add(PostScore(post_id="reddit:cov1", **full))
+        session.add(PostScore(post_id="reddit:cov2", **full))
+        session.add(
+            PostScore(
+                post_id="reddit:cov3",
+                **{**full, "toxicity": 0.0, "misinfo_likelihood": None},
+                skip_reasons=["misinfo:unsupported_language"],
+            )
+        )
+        session.add(PostScore(post_id="reddit:cov4", **full))
+        # reddit:cov5 deliberately has no post_scores row.
+        session.add(PostScore(post_id="reddit:cov6", sentiment="positive"))
+        session.add(PostScore(post_id="reddit:cov7", skip_reasons=["misinfo:unsupported_language"]))
+    return project_id
+
+
+@requires_postgres
+def test_language_coverage_counts_a_mix_of_en_hi_and_null_language(
+    client, seeded_languages, admin_key
+):
+    body = client.get(
+        f"/api/v1/overview/kpis?project_id={seeded_languages}", headers={"X-API-Key": admin_key}
+    ).json()
+    coverage = {row["lang"]: row for row in body["language_coverage"]}
+
+    assert set(coverage) == {"en", "hi", None}
+    assert [row["lang"] for row in body["language_coverage"]] == ["en", "hi", None]
+    assert coverage["en"]["total"] == 4
+    assert coverage["hi"]["total"] == 2
+    assert coverage[None]["total"] == 2
+    assert sum(row["total"] for row in coverage.values()) == body["posts"]["value"]
+
+    assert coverage["hi"]["scored"] == {
+        "toxicity": 1,
+        "anomaly": 1,
+        "misinfo": 1,
+        "stance": 1,
+        "sentiment": 1,
+        "emotion": 1,
+    }
+    assert coverage[None]["scored"] == {
+        "toxicity": 0,
+        "anomaly": 0,
+        "misinfo": 0,
+        "stance": 0,
+        "sentiment": 1,
+        "emotion": 0,
+    }
+
+
+@requires_postgres
+def test_a_null_score_is_not_scored_but_a_measured_zero_is(client, seeded_languages, admin_key):
+    body = client.get(
+        f"/api/v1/overview/kpis?project_id={seeded_languages}", headers={"X-API-Key": admin_key}
+    ).json()
+    en = next(row for row in body["language_coverage"] if row["lang"] == "en")
+
+    # cov3 has toxicity 0.0 (counted) and misinfo None (not counted).
+    assert en["scored"]["toxicity"] == 4
+    assert en["scored"]["misinfo"] == 3
