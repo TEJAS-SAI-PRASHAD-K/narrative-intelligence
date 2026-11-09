@@ -220,17 +220,20 @@ class StanceClassifier:
         base_model: str | None = None,
         epochs: int | None = None,
     ) -> TrainedStanceModel:
-        """Fine-tune and checkpoint every epoch.
+        """Fine-tune and keep the epoch with the lowest validation loss.
 
         A plain PyTorch loop for the same reason the misinfo trainer is one: it
-        keeps visible that the validation split drives early stopping, and that
+        keeps visible that the validation split selects the checkpoint, and that
         the imbalance is handled by class weighting rather than resampling.
         Resampling would duplicate rows, and duplicated rows straddle the group
         boundary the splitter just enforced.
 
-        Checkpointing every epoch is not optional discipline -- 50k pairs is
-        hours of work and an interrupted run that saves only at the end saves
-        nothing.
+        The checkpoint on disk is rewritten whenever validation loss improves,
+        so the saved weights are the best epoch, not the last one, and those
+        weights are loaded back into memory before the run returns. The first
+        epoch always improves on infinity, so a checkpoint exists after one
+        epoch: 50k pairs is hours of work and an interrupted run that saves
+        only at the end saves nothing.
         """
         import torch
         from torch.utils.data import DataLoader
@@ -286,6 +289,8 @@ class StanceClassifier:
         loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
 
         best_val = float("inf")
+        best_epoch = 0
+        best_state: dict[str, Any] | None = None
         history: list[dict[str, float]] = []
         for epoch in range(n_epochs):
             model.train()
@@ -313,14 +318,27 @@ class StanceClassifier:
             )
             log.info("epoch %d/%d: %s", epoch + 1, n_epochs, history[-1])
 
-            # Save every epoch, before anything can go wrong.
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
+            # Save only on improvement. Epoch one always improves, so a
+            # checkpoint exists before anything can go wrong.
             if val_loss < best_val:
-                best_val = val_loss
+                best_val, best_epoch = val_loss, epoch + 1
+                model.save_pretrained(output_dir)
+                tokenizer.save_pretrained(output_dir)
                 (output_dir / "best_epoch.json").write_text(
-                    json.dumps({"epoch": epoch + 1, "val_log_loss": val_loss}), encoding="utf-8"
+                    json.dumps({"epoch": best_epoch, "val_log_loss": val_loss}), encoding="utf-8"
                 )
+                # Held on the CPU so a large model does not need twice its
+                # weights in accelerator memory.
+                best_state = {
+                    name: tensor.detach().cpu().clone()
+                    for name, tensor in model.state_dict().items()
+                }
+
+        if best_state is not None:
+            # Later scoring in this run must use the weights that were saved,
+            # not whatever the last epoch left behind.
+            model.load_state_dict(best_state)
+            log.info("restored the best epoch (%d, val_log_loss %.4f)", best_epoch, best_val)
 
         self._model, self._tokenizer = model, tokenizer
         self._zero_shot = False
@@ -329,6 +347,7 @@ class StanceClassifier:
         metadata = {
             "base_model": model_name,
             "epochs": n_epochs,
+            "best_epoch": best_epoch,
             "history": history,
             "calibration": "none (4-class; see the module docstring)",
             "n_train": len(train_pairs),

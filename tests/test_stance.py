@@ -325,3 +325,113 @@ def test_stance_stage_refuses_a_checkpoint_with_unresolved_labels(settings, monk
     assert _FakeStance.seen == []
     table = ctx.store.read("record_scores")
     assert not len(table) or table["stance"].isna().all()
+
+
+# ---------------------------------------------------------------------------
+# which epoch the fine-tune keeps
+# ---------------------------------------------------------------------------
+class _TinyHead:
+    """A real torch module small enough to train in milliseconds."""
+
+    @staticmethod
+    def build():
+        import torch
+
+        class Tiny(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                torch.manual_seed(0)
+                self.embed = torch.nn.Embedding(16, 4)
+                self.head = torch.nn.Linear(4, 4)
+                self.config = types.SimpleNamespace()
+
+            def forward(self, input_ids, attention_mask):
+                pooled = self.embed(input_ids).mean(dim=1)
+                return types.SimpleNamespace(logits=self.head(pooled))
+
+            def save_pretrained(self, path):
+                torch.save(self.state_dict(), Path(path) / "weights.pt")
+
+        return Tiny()
+
+
+class _TinyTokenizer:
+    def __call__(self, claims, posts, **kwargs):
+        import torch
+
+        n = len(claims)
+        return {
+            "input_ids": torch.arange(n * 3).reshape(n, 3) % 16,
+            "attention_mask": torch.ones(n, 3, dtype=torch.long),
+        }
+
+    def save_pretrained(self, path):
+        pass
+
+
+def _fine_tune_with_val_losses(monkeypatch, tmp_path, favoured_probability):
+    """Run three epochs where validation quality follows ``favoured_probability``.
+
+    Returns the classifier, the model, the weights seen at the end of each
+    epoch, and the output directory.
+    """
+    classifier = StanceClassifier()
+    classifier.gradient_checkpointing = False
+    classifier.batch_size = 2
+    model = _TinyHead.build()
+    monkeypatch.setattr(
+        classifier, "_load_base", lambda name, num_labels=None: (_TinyTokenizer(), model)
+    )
+
+    snapshots: list[dict] = []
+    calls = {"n": 0}
+
+    def fake_probabilities(model_, tokenizer, pairs, device):
+        snapshots.append({k: v.detach().clone() for k, v in model_.state_dict().items()})
+        p = favoured_probability[calls["n"]]
+        calls["n"] += 1
+        # Probability p on the true class (always class 0 in this test).
+        row = [p] + [(1 - p) / 3] * 3
+        return np.tile(row, (len(pairs), 1))
+
+    monkeypatch.setattr(classifier, "_raw_probabilities", fake_probabilities)
+
+    pairs = [(f"claim {i}", f"post {i}") for i in range(6)]
+    labels = np.zeros(6, dtype=int)
+    out = tmp_path / "ckpt"
+    classifier.fine_tune(pairs, labels, pairs[:2], labels[:2], output_dir=out, epochs=3)
+    return classifier, model, snapshots, out
+
+
+def test_fine_tune_saves_the_best_validation_epoch_not_the_last(monkeypatch, tmp_path):
+    import json
+
+    import torch
+
+    # Epoch 2 has the lowest validation loss; epoch 3 is worse.
+    classifier, model, snapshots, out = _fine_tune_with_val_losses(
+        monkeypatch, tmp_path, [0.5, 0.9, 0.3]
+    )
+    assert len(snapshots) == 3
+
+    assert json.loads((out / "best_epoch.json").read_text())["epoch"] == 2
+    saved = torch.load(out / "weights.pt")
+    for name, tensor in snapshots[1].items():
+        assert torch.equal(saved[name], tensor), name
+    assert any(not torch.equal(saved[n], t) for n, t in snapshots[2].items())
+
+    # The model scored in the rest of this run carries the saved weights too.
+    for name, tensor in model.state_dict().items():
+        assert torch.equal(tensor, snapshots[1][name]), name
+    assert classifier._model is model
+    assert json.loads((out / "training.json").read_text())["best_epoch"] == 2
+
+
+def test_fine_tune_leaves_a_checkpoint_after_the_first_epoch(monkeypatch, tmp_path):
+    import torch
+
+    # Validation never improves after epoch one, so epoch one is what is saved.
+    _, _, snapshots, out = _fine_tune_with_val_losses(monkeypatch, tmp_path, [0.9, 0.6, 0.3])
+    saved = torch.load(out / "weights.pt")
+    for name, tensor in snapshots[0].items():
+        assert torch.equal(saved[name], tensor), name
