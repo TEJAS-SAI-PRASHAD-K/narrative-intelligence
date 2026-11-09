@@ -185,6 +185,11 @@ the honest entry in that cell, not a zero.
   recontextualised media. The gap is currently unmeasured. Closing it needs 100
   hand-labelled corpus records, and that single table is worth more than any
   hyperparameter sweep. `modeling.cli sample-for-labelling` writes the blank CSV.
+  `modeling.cli sample-for-labelling misinfo [--lang en|hi]` writes the blank
+  sheet with no model score in it. Label the `label` column by hand, then
+  `modeling.cli evaluate misinfo` reports the transfer section. Blank labels are
+  not 0, null scores are excluded with a reason, and no metric is computed below
+  `MIN_LABELLED_ROWS` (50) labelled rows.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination
