@@ -24,7 +24,7 @@ per run rather than baked into code.
 fusion = 100 * (w1*narrative_severity + w2*coordination + w3*authenticity)
 ```
 
-with, from `configs/fusion.yaml` at `version: fusion-v1.0.0`:
+with, from `configs/fusion.yaml` at `version: fusion-v1.1.0`:
 
 | component | weight | what it measures |
 |---|---:|---|
@@ -47,7 +47,7 @@ Each component is itself a weighted mean of named sub-signals:
 
 | sub-signal | weight | definition |
 |---|---:|---|
-| `bot_like_ratio` | 0.35 | share of member authors above the bot threshold, over *scorable* authors |
+| `coordinated_author_ratio` | 0.35 | share of member authors with a coordination score above 0.50, over authors that have a score |
 | `co_post_similarity_density` | 0.25 | internal edge density against a complete graph on the same author set |
 | `temporal_burstiness` | 0.25 | share of volume in buckets above 3× the narrative's own mean |
 | `cohort_concentration` | 0.15 | share of member posts from the single largest cohort |
@@ -65,10 +65,29 @@ is not the same problem as one that reached a hundred thousand people. The weigh
 is `1 + likes + shares`, so a zero-engagement post still contributes its own
 weight rather than vanishing from the average.
 
-`bot_like_ratio` divides by the authors the classifier *could* score, not by all
-of them. News and GDELT "authors" are outlets, not accounts; Phase 2 skips them
-with a reason code, and counting them as human would deflate the ratio on exactly
-the narratives that news carries.
+`coordinated_author_ratio` divides by the authors that have a coordination score,
+not by all authors. Only authors with an edge in the coordination graph have a
+score. An author with no score is not an author with a score of zero. If no member
+author has a score, the signal is `null`. The fusion then treats it like each other
+missing signal and shares its weight among the other coordination signals.
+
+The score of an author is the mean of three terms in [0, 1]. The terms are the size
+of the community of the author, the mean edge weight of the author, and the share
+of the posts of the author in an edge. The threshold is
+`thresholds.coordination_score_threshold` in `configs/fusion.yaml`. Its value is 0.50.
+That value is the midpoint of the scale. It is not tuned on labelled data. A score
+equal to the threshold is not above it.
+
+**Why the bot ratio left the formula.** The bot classifier does not generalize.
+Its mean-fold macro-F1 is 0.416, and it flags 39 percent of genuine accounts
+(`docs/roadmap.md`). A signal with that error rate is a poor input to a rank.
+`bot_like_ratio` is still collected. The system stores it in `sc.bot_like` and the
+alert metric `bot_like_ratio` still reads it. The fusion formula does not read it.
+
+**Limit of the new signal.** The coordination score comes from a detector whose
+modularity did not exceed the time-shuffled null on this corpus (0.912 against
+0.979). The signal is weak evidence. The change improves the input of the
+formula. It does not show that coordination exists in this corpus.
 
 ## 3. Normalization
 
@@ -133,7 +152,9 @@ priorities.
 ## 6. Worked example
 
 Narrative `6cd364c8-9412-5c99-995c-a281a23cad0d` from the loaded corpus, scored
-by `score.fusion` at `fusion-v1.0.0`.
+by `score.fusion` at `fusion-v1.0.0`. That version still used `bot_like_ratio` in
+the coordination component. The arithmetic of the combination is the same at
+`fusion-v1.1.0`.
 
 Component values as returned by `GET /api/v1/narratives/{id}/score`:
 
@@ -187,9 +208,10 @@ which version produced each.
 * It is **not calibrated**. A 70 does not mean "70% likely to be a coordinated
   influence operation". It means "ranks in the upper range of this project on a
   weighted combination of these eleven signals".
-* It **inherits every upstream limitation**. The bot classifier's per-fold
-  macro-F1 is 0.416 ± 0.187 against a pooled 0.705, so `coordination` is the
-  weakest of the three components on an unfamiliar campaign. That caveat is
-  surfaced on `/authors/{id}/score` rather than buried here.
+* It **inherits every upstream limitation**. The coordination detector did not
+  beat its time-shuffled null on this corpus, so `coordination` is the weakest of
+  the three components. The bot classifier (per-fold macro-F1 0.416 ± 0.187 against
+  a pooled 0.705) no longer feeds the formula. Its caveat stays on
+  `/authors/{id}/score`.
 
 The score is a triage aid. The drilldown is the product.
