@@ -802,13 +802,16 @@ def collapse_duplicate_claims(
     the same claim. The radius is small to keep that rare, and the distance of
     each collapsed row to its representative is returned for audit.
 
-    The representative of a group is the row with the earliest ``extracted_at``,
-    then the smallest ``record_id``. A row with no ``extracted_at`` sorts last.
-    The result does not depend on input order.
+    The representative of a group is the row with the smallest ``record_id``.
+    ``extracted_at`` plays no part: it is re-stamped when an extraction reruns, so
+    ordering by it would let the representative change between runs. The result
+    does not depend on input order.
 
     A hash of ``0`` (or ``None``) means "no hash", so that row never links to
     anything and is always kept. Those rows are counted as ``unhashed_kept``.
     Each collapsed row is counted under ``CollapseReason.DUPLICATE_CLAIM``.
+    A group whose rows carry more than one distinct ``label`` is still collapsed,
+    and is counted once under ``label_conflict`` so the disagreement is visible.
     """
     items = [_row_dict(row) for row in rows]
     n = len(items)
@@ -850,9 +853,8 @@ def collapse_duplicate_claims(
                 if find(i) != find(j) and bin(hashes[i] ^ hashes[j]).count("1") <= max_distance:
                     parent[find(j)] = find(i)
 
-    def order(i: int) -> tuple[bool, str, str]:
-        stamp = items[i].get("extracted_at")
-        return (not stamp, stamp or "", str(items[i].get("record_id") or ""))
+    def order(i: int) -> str:
+        return str(items[i].get("record_id") or "")
 
     groups: dict[int, list[int]] = {}
     for index in range(n):
@@ -860,8 +862,12 @@ def collapse_duplicate_claims(
 
     kept: list[dict[str, Any]] = []
     collapsed: list[tuple[str, str, int]] = []
+    label_conflicts = 0
     for members in groups.values():
         representative = min(members, key=order)
+        labels = {items[i].get("label") for i in members if items[i].get("label") is not None}
+        if len(labels) > 1:
+            label_conflicts += 1
         kept.append(items[representative])
         rep_id = str(items[representative].get("record_id") or "")
         for index in members:
@@ -873,6 +879,7 @@ def collapse_duplicate_claims(
     counts = {
         CollapseReason.DUPLICATE_CLAIM.value: len(collapsed),
         "unhashed_kept": sum(1 for value in hashes if value == 0),
+        "label_conflict": label_conflicts,
     }
     return CollapseResult(kept=kept, collapsed=collapsed, counts=counts)
 

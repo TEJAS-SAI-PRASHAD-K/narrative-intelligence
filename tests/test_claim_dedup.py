@@ -25,35 +25,62 @@ def flip(value: int, *bits: int) -> int:
 
 
 def row(
-    record_id: str, simhash: int | None, extracted_at: str | None = "2026-01-01T00:00:00+00:00"
+    record_id: str,
+    simhash: int | None,
+    extracted_at: str | None = "2026-01-01T00:00:00+00:00",
+    label: str | None = None,
 ):
-    return {"record_id": record_id, "claim_simhash": simhash, "extracted_at": extracted_at}
+    out = {"record_id": record_id, "claim_simhash": simhash, "extracted_at": extracted_at}
+    if label is not None:
+        out["label"] = label
+    return out
 
 
 def ids(result) -> list[str]:
     return [r["record_id"] for r in result.kept]
 
 
-def test_exact_duplicates_collapse_to_the_earliest():
+def test_exact_duplicates_collapse_to_the_smallest_record_id():
     rows = [
         row("b", BASE, "2026-01-02T00:00:00+00:00"),
         row("a", BASE, "2026-01-03T00:00:00+00:00"),
         row("c", BASE, "2026-01-01T00:00:00+00:00"),
     ]
     result = collapse_duplicate_claims(rows)
-    assert ids(result) == ["c"]
+    assert ids(result) == ["a"]
     assert result.counts[DUP] == 2
-    assert result.collapsed == [("a", "c", 0), ("b", "c", 0)]
+    assert result.collapsed == [("b", "a", 0), ("c", "a", 0)]
 
 
-def test_equal_timestamps_break_on_record_id():
-    result = collapse_duplicate_claims([row("z", BASE), row("m", BASE)])
-    assert ids(result) == ["m"]
+def test_representative_survives_a_rerun_that_restamps_extracted_at():
+    old, new = "2026-01-01T00:00:00+00:00", "2026-02-09T00:00:00+00:00"
+    first = [row("m", BASE, old), row("z", BASE, old)]
+    rerun = [row("m", BASE, new), row("z", BASE, old)]
+    assert ids(collapse_duplicate_claims(first)) == ids(collapse_duplicate_claims(rerun)) == ["m"]
 
 
-def test_missing_timestamp_never_wins():
+def test_missing_timestamp_does_not_change_the_representative():
     result = collapse_duplicate_claims([row("a", BASE, None), row("z", BASE)])
-    assert ids(result) == ["z"]
+    assert ids(result) == ["a"]
+
+
+def test_a_group_with_disagreeing_labels_is_counted_and_still_collapsed():
+    rows = [
+        row("a", BASE, label="false"),
+        row("b", BASE, label="true"),
+        row("c", flip(BASE, 40), label="false"),
+        row("x", flip(BASE, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), label="false"),
+        row("y", flip(BASE, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), label="false"),
+    ]
+    result = collapse_duplicate_claims(rows)
+    assert ids(result) == ["a", "x"]
+    assert result.counts["label_conflict"] == 1
+    assert result.counts[DUP] == 3
+
+
+def test_agreeing_or_missing_labels_are_not_a_conflict():
+    rows = [row("a", BASE, label="false"), row("b", BASE), row("c", BASE, label="false")]
+    assert collapse_duplicate_claims(rows).counts["label_conflict"] == 0
 
 
 def test_distance_three_collapses():
@@ -98,9 +125,9 @@ def test_transitive_chain_is_one_group():
         row("c", c, "2026-01-01T00:00:00+00:00"),
     ]
     result = collapse_duplicate_claims(rows)
-    assert ids(result) == ["c"]
+    assert ids(result) == ["a"]
     assert result.counts[DUP] == 2
-    assert ("a", "c", 6) in result.collapsed
+    assert ("c", "a", 6) in result.collapsed
 
 
 def test_result_does_not_depend_on_input_order():
