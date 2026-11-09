@@ -21,7 +21,7 @@ result.
 | Training JSONL exporter | written (`LayaTrainingExporter`), tested |
 | `data/benchmarks/` | `make benchmarks` supplies LIAR (zip, unattended), the CoAID repository clone, and the FakeNewsNet repository clone. The FakeNewsNet clone has the label CSVs and the crawler, not article text. Each download is pinned to a commit or checksum, and a mismatch stops the script. (`make benchmarks` also fetches FNC-1 into `stance/`; it is not used here.) Checksums go in `data/benchmarks/manifest.json` |
 | The fine-tune | not run |
-| Scoring integration | `modeling/scoring.py` has **no Laya stage**, and `LayaScorer.checkpoint_for` cannot yet select a fine-tuned directory (it returns only the configured base checkpoint). A finished fine-tune is **not yet reachable from scoring** |
+| Scoring integration | `modeling/scoring.py` has **no Laya stage**. `LayaScorer.checkpoint_for` returns the directory set in `configs/models.yaml` under `laya.finetuned_checkpoints.<lang>`, and the base checkpoint when that key is null. A path that does not exist skips the record with `checkpoint_missing`. The fine-tuned directory is reachable from the scorer, not yet from `modeling/scoring.py` |
 | The eval harness for the three-way comparison | **not written** — see step 6 |
 
 Everything up to step 5 is runnable now. Step 6 is the part that still needs

@@ -96,7 +96,7 @@ media = [
 # published wheel's own metadata does not agree, and the metadata is what pip
 # resolves against.
 laya = [
-    "laya>=0.4.1",
+    "laya==0.4.30",
 ]
 # Narrative summarization. The pipeline completes without it (and without an
 # API key) by falling back to centroid labels.

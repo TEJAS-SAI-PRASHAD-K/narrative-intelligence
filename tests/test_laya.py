@@ -10,11 +10,21 @@ of it should change when the library updates.
 
 from __future__ import annotations
 
+import sys
+import types
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from modeling.aux.base import SkipReason
-from modeling.text.laya_clf import LayaScorer, LayaSkipReason, polarity_note
+from modeling.config import module_config
+from modeling.text.laya_clf import (
+    LayaCheckpointMissing,
+    LayaScorer,
+    LayaSkipReason,
+    polarity_note,
+)
 
 
 class FakeAgent:
@@ -355,3 +365,219 @@ class TestTrainingExport:
         LayaTrainingExporter(scorer).export(frame, path)
         assert claim in path.read_text(encoding="utf-8")
         assert json.loads(path.read_text(encoding="utf-8").strip())["state"] == claim
+
+
+class FakeBatchAgent(FakeAgent):
+    """Adds the documented `predict_batch`: one result per state, input order."""
+
+    def __init__(self, noul_for=None, **kwargs):
+        super().__init__(**kwargs)
+        self.batch_calls: list[dict] = []
+        self.noul_for = noul_for or (lambda text: self.noul)
+
+    def predict_batch(self, states, questions, **kwargs):
+        self.batch_calls.append({"states": list(states), "questions": questions, **kwargs})
+        qid = next(iter(questions))
+        return [{"answers": {qid: {"noul": self.noul_for(s)}}} for s in states]
+
+
+def _claims(n, prefix="claim"):
+    return [
+        {"id": f"{prefix}:{i}", "text": f"{prefix} number {i} is a long enough text", "lang": "en"}
+        for i in range(n)
+    ]
+
+
+class TestFinetunedRouting:
+    def _scorer(self, tmp_path, **tuned):
+        cfg = module_config("laya")
+        cfg["finetuned_checkpoints"] = tuned
+        return LayaScorer(_config=cfg)
+
+    def test_defaults_are_null_so_the_base_checkpoint_is_used(self):
+        cfg = module_config("laya")
+        assert set(cfg["finetuned_checkpoints"]) == {"en", "hi"}
+        assert not any(cfg["finetuned_checkpoints"].values())
+        assert LayaScorer().checkpoint_for("hi") == ("convaiinnovations/laya", "multilingual")
+
+    def test_a_configured_directory_is_chosen_over_the_base(self, tmp_path):
+        tuned = tmp_path / "hi-ft"
+        tuned.mkdir()
+        scorer = self._scorer(tmp_path, hi=str(tuned), en=None)
+        assert scorer.checkpoint_for("hi") == (str(tuned), None)
+        assert scorer.checkpoint_for("en")[0] == "convaiinnovations/laya"
+
+    def test_a_fine_tuned_hindi_directory_keeps_the_long_context(self, tmp_path):
+        tuned = tmp_path / "hi-ft"
+        tuned.mkdir()
+        scorer = self._scorer(tmp_path, hi=str(tuned))
+        assert scorer.max_len_for("hi") > scorer.max_len_for("en")
+
+    def test_a_missing_directory_is_refused_not_replaced_by_the_base(self, tmp_path):
+        scorer = self._scorer(tmp_path, hi=str(tmp_path / "absent"))
+        with pytest.raises(LayaCheckpointMissing, match="not a directory"):
+            scorer.checkpoint_for("hi")
+
+    def test_a_missing_directory_skips_the_record_with_a_reason(self, tmp_path, monkeypatch):
+        scorer = self._scorer(tmp_path, hi=str(tmp_path / "absent"))
+        _force_available(scorer, monkeypatch)
+        monkeypatch.setattr(scorer, "agent_for", lambda lang: FakeBatchAgent())
+        frame = _frame(
+            [
+                {"id": "hi", "text": "यह एक गलत दावा है जो वायरल हो रहा है", "lang": "hi"},
+                {"id": "en", "text": "an english claim long enough", "lang": "en"},
+            ]
+        )
+        outcome = scorer.score(frame)
+        assert outcome.skipped == {"hi": LayaSkipReason.CHECKPOINT_MISSING}
+        assert "en" in outcome.values
+
+    def test_the_model_version_identifies_which_model_scored(self, tmp_path):
+        tuned = tmp_path / "hi-ft"
+        tuned.mkdir()
+        scorer = self._scorer(tmp_path, hi=str(tuned))
+        assert "finetuned:hi-ft" in scorer.model_version_for("hi")
+        assert "+base@" in scorer.model_version_for("en")
+        assert scorer.model_version_for("en").startswith(str(scorer._config["version"]))
+
+
+class TestRevisionPin:
+    def _fake_laya(self, monkeypatch):
+        loads: list[tuple[str, dict]] = []
+        fake = types.ModuleType("laya")
+        fake.__version__ = "0.4.30"
+        fake.load = lambda checkpoint, **kw: loads.append((checkpoint, kw)) or FakeAgent()
+        monkeypatch.setitem(sys.modules, "laya", fake)
+        return loads
+
+    def test_the_configured_revision_is_passed_to_a_hub_load(self, monkeypatch):
+        loads = self._fake_laya(monkeypatch)
+        scorer = LayaScorer()
+        scorer.agent_for("hi")
+        checkpoint, kwargs = loads[0]
+        assert kwargs["revision"] == scorer._config["revision"]
+        assert len(kwargs["revision"]) == 40
+        assert kwargs["subfolder"] == "multilingual"
+
+    def test_a_local_fine_tune_is_loaded_without_a_revision(self, tmp_path, monkeypatch):
+        loads = self._fake_laya(monkeypatch)
+        tuned = tmp_path / "en-ft"
+        tuned.mkdir()
+        cfg = module_config("laya")
+        cfg["finetuned_checkpoints"] = {"en": str(tuned)}
+        LayaScorer(_config=cfg).agent_for("en")
+        assert loads == [(str(tuned), {"device": "auto"})]
+
+    def test_the_package_is_pinned_exactly(self):
+        text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+        assert '"laya==0.4.30"' in text
+
+
+class TestBatching:
+    def _run(self, scorer, monkeypatch, agent, rows):
+        _force_available(scorer, monkeypatch)
+        monkeypatch.setattr(scorer, "agent_for", lambda lang: agent)
+        return scorer.score(_frame(rows))
+
+    def test_batch_calls_use_the_configured_size(self, monkeypatch):
+        cfg = module_config("laya")
+        cfg["batch_size"] = 4
+        scorer = LayaScorer(_config=cfg)
+        agent = FakeBatchAgent()
+        outcome = self._run(scorer, monkeypatch, agent, _claims(10))
+        assert [len(c["states"]) for c in agent.batch_calls] == [4, 4, 2]
+        assert all(c["batch_size"] == 4 for c in agent.batch_calls)
+        assert all(c["max_len"] == 512 for c in agent.batch_calls)
+        assert not agent.predict_calls
+        assert len(outcome.values) == 10
+
+    def test_results_stay_aligned_with_their_records(self, monkeypatch):
+        scorer = LayaScorer()
+        agent = FakeBatchAgent(noul_for=lambda text: int(text.split()[2]) / 100)
+        outcome = self._run(scorer, monkeypatch, agent, _claims(5))
+        assert outcome.values == {f"claim:{i}": i / 100 for i in range(5)}
+
+    def test_a_long_article_still_goes_to_predict_long(self, monkeypatch):
+        scorer = LayaScorer()
+        agent = FakeBatchAgent(noul=0.3)
+        rows = _claims(2) + [{"id": "long", "text": "x" * 5000, "lang": "en"}]
+        outcome = self._run(scorer, monkeypatch, agent, rows)
+        assert len(agent.long_calls) == 1
+        assert [len(c["states"]) for c in agent.batch_calls] == [2]
+        assert outcome.values["long"] == 0.3
+
+    def test_a_failed_batch_falls_back_to_one_record_at_a_time(self, monkeypatch):
+        class BatchBroken(FakeBatchAgent):
+            def predict_batch(self, states, questions, **kwargs):
+                raise RuntimeError("out of memory")
+
+        cfg = module_config("laya")
+        cfg["batch_size"] = 3
+        scorer = LayaScorer(_config=cfg)
+        agent = BatchBroken(noul=0.6)
+        outcome = self._run(scorer, monkeypatch, agent, _claims(5))
+        assert len(outcome.values) == 5
+        assert not outcome.skipped
+        assert len(agent.predict_calls) == 5
+
+    def test_a_fallback_failure_marks_only_that_record(self, monkeypatch):
+        class Picky(FakeBatchAgent):
+            def predict_batch(self, states, questions, **kwargs):
+                raise RuntimeError("batch is sad")
+
+            def predict(self, state, questions, **kwargs):
+                if "number 1 " in state:
+                    raise RuntimeError("bad state")
+                return super().predict(state, questions, **kwargs)
+
+        outcome = self._run(LayaScorer(), monkeypatch, Picky(noul=0.2), _claims(3))
+        assert set(outcome.values) == {"claim:0", "claim:2"}
+        assert outcome.skipped == {"claim:1": SkipReason.INFERENCE_ERROR}
+
+    def test_a_short_batch_result_never_drops_records(self, monkeypatch):
+        class Truncating(FakeBatchAgent):
+            def predict_batch(self, states, questions, **kwargs):
+                return super().predict_batch(states, questions, **kwargs)[:-1]
+
+        outcome = self._run(LayaScorer(), monkeypatch, Truncating(noul=0.5), _claims(4))
+        assert set(outcome.values) == {f"claim:{i}" for i in range(4)}
+
+    def test_an_unusable_batch_item_is_a_reason_code(self, monkeypatch):
+        class OneBad(FakeBatchAgent):
+            def predict_batch(self, states, questions, **kwargs):
+                results = super().predict_batch(states, questions, **kwargs)
+                results[1] = {"answers": {"misinfo": {"choice": "false"}}}
+                return results
+
+        outcome = self._run(LayaScorer(), monkeypatch, OneBad(noul=0.5), _claims(3))
+        assert outcome.skipped == {"claim:1": SkipReason.INFERENCE_ERROR}
+        assert set(outcome.values) == {"claim:0", "claim:2"}
+
+    def test_output_is_exhaustive_across_batches_and_skips(self, monkeypatch):
+        rows = _claims(20) + [
+            {"id": "empty", "text": "", "lang": "en"},
+            {"id": "ta", "text": "a claim in an unrouted language", "lang": "ta"},
+            {"id": "long", "text": "y" * 5000, "lang": "en"},
+        ]
+        cfg = module_config("laya")
+        cfg["batch_size"] = 7
+        outcome = self._run(LayaScorer(_config=cfg), monkeypatch, FakeBatchAgent(), rows)
+        ids = {r["id"] for r in rows}
+        assert set(outcome.values) | set(outcome.skipped) == ids
+        assert not set(outcome.values) & set(outcome.skipped)
+
+    def test_the_score_is_still_p_false(self, monkeypatch):
+        """Orientation: the noul answer is passed through unflipped."""
+        agent = FakeBatchAgent(noul=0.93)
+        outcome = self._run(LayaScorer(), monkeypatch, agent, _claims(2))
+        assert all(v == 0.93 for v in outcome.values.values())
+        spec = agent.batch_calls[0]["questions"]["misinfo"]
+        assert spec["type"] == "noul"
+        assert "false" in spec["criteria"]["true"].lower()
+
+    def test_a_bad_batch_size_is_refused(self):
+        for bad in (0, -1, 2.5, True, "8"):
+            cfg = module_config("laya")
+            cfg["batch_size"] = bad
+            with pytest.raises(ValueError, match="batch_size"):
+                LayaScorer(_config=cfg).batch_size()

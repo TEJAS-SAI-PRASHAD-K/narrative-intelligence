@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from modeling.aux.base import ScoringOutcome, SkipReason
@@ -58,6 +59,13 @@ class LayaSkipReason(SkipReason):
     #: `lang` is null and `score_unknown_language` is off, so there is no
     #: defensible checkpoint to pick.
     UNKNOWN_LANGUAGE = "unknown_language"
+    #: A fine-tuned checkpoint directory is configured but does not exist.
+    #: The base checkpoint is never substituted for it.
+    CHECKPOINT_MISSING = "checkpoint_missing"
+
+
+class LayaCheckpointMissing(FileNotFoundError):
+    """A configured fine-tuned checkpoint directory does not exist."""
 
 
 @dataclass
@@ -130,17 +138,40 @@ class LayaScorer:
         return str((self._config.get("question") or {}).get("id") or "misinfo")
 
     # --- routing ---------------------------------------------------------
+    def _route_key(self, lang: str | None) -> str | None:
+        route = self._config.get("route") or {}
+        return route.get((lang or "").lower()) or None
+
+    def finetuned_path_for(self, lang: str | None) -> str | None:
+        """The configured fine-tuned directory for a language, or None if unset."""
+        tuned = (self._config.get("finetuned_checkpoints") or {}).get((lang or "").lower())
+        return str(tuned) if tuned else None
+
     def checkpoint_for(self, lang: str | None) -> tuple[str | None, str | None]:
         """``(checkpoint, subfolder)`` for a language, or ``(None, None)``.
 
         Routing is config, not code: Hindi has no business going through the
         English encoder, and that belongs in a file someone can read rather
         than in a branch someone has to find.
+
+        A language with a configured fine-tuned directory gets that directory
+        and no subfolder. A configured directory that is not there raises
+        :class:`LayaCheckpointMissing`. Falling back to the base checkpoint
+        would publish zero-shot scores under the name of a fine-tune.
         """
-        route = self._config.get("route") or {}
-        key = route.get((lang or "").lower())
+        key = self._route_key(lang)
         if not key:
             return None, None
+        tuned = self.finetuned_path_for(lang)
+        if tuned:
+            path = Path(tuned).expanduser()
+            if not path.is_dir():
+                raise LayaCheckpointMissing(
+                    f"finetuned_checkpoints[{(lang or '').lower()}] is {tuned!r}, "
+                    "which is not a directory. Fix the path or set it to null to "
+                    "use the base checkpoint."
+                )
+            return str(path), None
         checkpoint = self._config.get(key)
         if not checkpoint:
             return None, None
@@ -149,30 +180,66 @@ class LayaScorer:
             subfolder = self._config.get("multilingual_subfolder")
         return str(checkpoint), (str(subfolder) if subfolder else None)
 
+    def model_version_for(self, lang: str | None) -> str:
+        """Identifies the model behind a language's scores, for ``model_versions``."""
+        version = self._config.get("version", "v0.0.0-unset")
+        tuned = self.finetuned_path_for(lang)
+        if tuned:
+            return f"{version}+finetuned:{Path(tuned).name}"
+        revision = self._config.get("revision")
+        base = f"{version}+base"
+        return f"{base}@{str(revision)[:12]}" if revision else base
+
     def agent_for(self, lang: str | None) -> Any:
         """Load (and cache) the agent for a language. Raises if unroutable."""
         checkpoint, subfolder = self.checkpoint_for(lang)
         if not checkpoint:
             raise KeyError(f"no checkpoint routed for lang={lang!r}")
-        cache_key = f"{checkpoint}#{subfolder or ''}"
+        # The pin applies to Hub snapshots only. A local fine-tune has no
+        # revision, and laya ignores one for a directory that exists.
+        revision = None if self.finetuned_path_for(lang) else self._config.get("revision")
+        cache_key = f"{checkpoint}#{subfolder or ''}@{revision or ''}"
         if cache_key not in self._agents:
             import laya
 
             kwargs: dict[str, Any] = {"device": self._config.get("device", "auto")}
             if subfolder:
                 kwargs["subfolder"] = subfolder
+            if revision:
+                kwargs["revision"] = str(revision)
             label = f"{checkpoint} ({subfolder})" if subfolder else checkpoint
-            log.info("loading laya checkpoint %s", label)
+            log.info("loading laya checkpoint %s revision=%s", label, revision)
             self._agents[cache_key] = laya.load(checkpoint, **kwargs)
         return self._agents[cache_key]
 
     def max_len_for(self, lang: str | None) -> int:
-        _, subfolder = self.checkpoint_for(lang)
-        if subfolder == "multilingual":
+        if self._route_key(lang) == "multilingual_checkpoint":
             return int(self._config.get("multilingual_max_len", 1024))
         return int(self._config.get("max_len", 512))
 
+    def batch_size(self) -> int:
+        """Configured states per forward pass. Below 1 is refused, not clamped."""
+        size = self._config.get("batch_size", 16)
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+            raise ValueError(f"laya batch_size must be a positive integer, got {size!r}")
+        return size
+
     # --- scoring ---------------------------------------------------------
+    def _is_long(self, text: str, lang: str | None) -> bool:
+        strategy = self._config.get("long_document_strategy", "predict_long")
+        # Rough token estimate; Devanagari is denser per character than Latin,
+        # so this is deliberately pessimistic rather than tight.
+        return strategy == "predict_long" and len(text) > self.max_len_for(lang) * 2
+
+    def _extract(self, result: Any) -> float:
+        answer = ((result or {}).get("answers") or {}).get(self.question_id) or {}
+        if "noul" not in answer:
+            raise ValueError(
+                f"laya returned no `noul` for question {self.question_id!r}; "
+                f"got keys {sorted(answer)}. Is the question still type=noul?"
+            )
+        return float(answer["noul"])
+
     def score_one(self, agent: Any, text: str, lang: str | None) -> float:
         """One calibrated ``P(claim is false)``.
 
@@ -184,23 +251,66 @@ class LayaScorer:
         supports it.
         """
         questions = self.question()
-        max_len = self.max_len_for(lang)
-        strategy = self._config.get("long_document_strategy", "predict_long")
-        # Rough token estimate; Devanagari is denser per character than Latin,
-        # so this is deliberately pessimistic rather than tight.
-        use_long = strategy == "predict_long" and len(text) > max_len * 2
-
-        if use_long and hasattr(agent, "predict_long"):
+        if self._is_long(text, lang) and hasattr(agent, "predict_long"):
             result = agent.predict_long(text, questions)
         else:
-            result = agent.predict(text, questions, max_len=max_len)
-        answer = (result.get("answers") or {}).get(self.question_id) or {}
-        if "noul" not in answer:
-            raise ValueError(
-                f"laya returned no `noul` for question {self.question_id!r}; "
-                f"got keys {sorted(answer)}. Is the question still type=noul?"
-            )
-        return float(answer["noul"])
+            result = agent.predict(text, questions, max_len=self.max_len_for(lang))
+        return self._extract(result)
+
+    def _score_group(
+        self, agent: Any, items: list[tuple[str, str]], lang: str | None, outcome: ScoringOutcome
+    ) -> None:
+        """Score ``(record_id, text)`` pairs that share a checkpoint.
+
+        ``predict_batch`` truncates each state to ``max_len`` and does not scan
+        windows, so long states stay on the per-record ``predict_long`` path.
+        A failed batch call is retried one record at a time, so one bad state
+        costs one record and carries its own reason.
+        """
+        short: list[tuple[str, str]] = []
+        for record_id, text in items:
+            if hasattr(agent, "predict_batch") and not self._is_long(text, lang):
+                short.append((record_id, text))
+            else:
+                self._score_single(agent, record_id, text, lang, outcome)
+
+        size = self.batch_size()
+        questions = self.question()
+        max_len = self.max_len_for(lang)
+        for start in range(0, len(short), size):
+            chunk = short[start : start + size]
+            try:
+                results = agent.predict_batch(
+                    [text for _, text in chunk], questions, batch_size=size, max_len=max_len
+                )
+                if len(results) != len(chunk):
+                    raise ValueError(
+                        f"predict_batch returned {len(results)} results for {len(chunk)} states"
+                    )
+            except Exception as exc:
+                log.warning(
+                    "laya batch of %d failed (%s); scoring its records one at a time",
+                    len(chunk),
+                    exc,
+                )
+                for record_id, text in chunk:
+                    self._score_single(agent, record_id, text, lang, outcome)
+                continue
+            for (record_id, _), result in zip(chunk, results, strict=True):
+                try:
+                    outcome.values[record_id] = self._extract(result)
+                except Exception as exc:
+                    log.warning("laya batch result unusable for %s: %s", record_id, exc)
+                    outcome.skipped[record_id] = LayaSkipReason.INFERENCE_ERROR
+
+    def _score_single(
+        self, agent: Any, record_id: str, text: str, lang: str | None, outcome: ScoringOutcome
+    ) -> None:
+        try:
+            outcome.values[record_id] = self.score_one(agent, text, lang)
+        except Exception as exc:
+            log.warning("laya inference failed for %s: %s", record_id, exc)
+            outcome.skipped[record_id] = LayaSkipReason.INFERENCE_ERROR
 
     def score(self, records: Any) -> ScoringOutcome:
         """Score a DataFrame of records. ``values`` is ``record_id -> P(false)``.
@@ -218,6 +328,7 @@ class LayaScorer:
             return outcome
 
         score_unknown = bool(getattr(self.settings, "score_unknown_language", False))
+        groups: dict[str, list[tuple[str, str]]] = {}
         for row in records.itertuples():
             record_id = str(getattr(row, "id", ""))
             text = (getattr(row, "text", "") or "").strip()
@@ -236,16 +347,27 @@ class LayaScorer:
                 # Assuming English is recorded as an assumption, exactly as
                 # modeling/config.py's `score_unknown_language` requires.
                 lang = "en"
-            checkpoint, _ = self.checkpoint_for(lang)
+            lang = str(lang).lower()
+            try:
+                checkpoint, _ = self.checkpoint_for(lang)
+            except LayaCheckpointMissing as exc:
+                log.warning("%s", exc)
+                outcome.skipped[record_id] = LayaSkipReason.CHECKPOINT_MISSING
+                continue
             if not checkpoint:
                 outcome.skipped[record_id] = LayaSkipReason.UNROUTED_LANGUAGE
                 continue
+            groups.setdefault(lang, []).append((record_id, text))
+
+        for lang, items in groups.items():
             try:
                 agent = self.agent_for(lang)
-                outcome.values[record_id] = self.score_one(agent, text, lang)
             except Exception as exc:
-                log.warning("laya inference failed for %s: %s", record_id, exc)
-                outcome.skipped[record_id] = LayaSkipReason.INFERENCE_ERROR
+                log.warning("laya checkpoint for lang=%s failed to load: %s", lang, exc)
+                for record_id, _ in items:
+                    outcome.skipped[record_id] = LayaSkipReason.INFERENCE_ERROR
+                continue
+            self._score_group(agent, items, lang, outcome)
         return outcome
 
 

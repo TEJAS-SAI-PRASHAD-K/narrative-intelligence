@@ -88,7 +88,7 @@ misinfo:
 # three-way comparison is the result; a second model that nobody compared to
 # the first is not.
 laya:
-  version: v0.1.0
+  version: v0.2.0
   # 421M ModernBERT-large, English, 512-token context.
   checkpoint: convaiinnovations/laya
   # 322M mmBERT-base, 100+ languages, 1024 context, extendable to 8192 via
@@ -102,7 +102,18 @@ laya:
   route:
     en: checkpoint
     hi: multilingual_checkpoint
+  # Hugging Face commit of convaiinnovations/laya (both checkpoints live in
+  # that repo). Applied to Hub loads only. A fine-tuned local directory has no
+  # revision. Update it deliberately and bump `version` with it.
+  revision: 85cc74ddae6109077ebe2853a9b3077fb6606a78
+  # Local fine-tuned checkpoint directory per language, null for the base
+  # checkpoint. A path that does not exist skips the record with reason
+  # `checkpoint_missing`. It never falls back to the base checkpoint.
+  finetuned_checkpoints:
+    en: null
+    hi: null
   device: auto
+  # States per forward pass in predict_batch. Long states use predict_long.
   batch_size: 16
   # The English checkpoint's own context window. predict_long() scans anything
   # longer in overlapping windows rather than silently truncating -- which
