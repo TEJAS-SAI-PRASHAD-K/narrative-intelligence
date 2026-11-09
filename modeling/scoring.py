@@ -596,6 +596,11 @@ class _NarrativeClaims:
     claim_lang: dict[str, Any] = field(default_factory=dict)
     claim_record: dict[str, str] = field(default_factory=dict)
     narrative_of: dict[str, str] = field(default_factory=dict)
+    # Narratives whose representatives all had text, but none long enough.
+    too_short: set[str] = field(default_factory=set)
+
+
+_STANCE_MIN_CHARS = 20
 
 
 def _narrative_claims(ctx: StageContext) -> _NarrativeClaims:
@@ -603,7 +608,8 @@ def _narrative_claims(ctx: StageContext) -> _NarrativeClaims:
 
     A record in several narratives takes the one with the highest membership
     probability. The claim is the narrative's best-ranked representative whose
-    text is present in ``ctx.records``.
+    text is present in ``ctx.records`` and at least ``_STANCE_MIN_CHARS`` long,
+    the same floor as for the record text: a premise such as "ok" says nothing.
     """
     out = _NarrativeClaims()
     membership = ctx.store.read("narrative_membership")
@@ -628,6 +634,10 @@ def _narrative_claims(ctx: StageContext) -> _NarrativeClaims:
             text = texts.loc[record_id, "text"]
             if text is None or pd.isna(text) or not str(text).strip():
                 continue
+            if len(str(text).strip()) < _STANCE_MIN_CHARS:
+                out.too_short.add(narrative_id)
+                continue
+            out.too_short.discard(narrative_id)
             out.claim_of[narrative_id] = str(text)
             out.claim_lang[narrative_id] = texts.loc[record_id, "lang"]
             out.claim_record[narrative_id] = record_id
@@ -642,13 +652,15 @@ def _stance_skip_reason(
     from modeling.aux.base import SkipReason
 
     record_id = str(row.id)
-    reason = _text_skip_reason(ctx.settings, "stance", row.text, row.lang, 20)
+    reason = _text_skip_reason(ctx.settings, "stance", row.text, row.lang, _STANCE_MIN_CHARS)
     if reason is not None:
         return reason, None
     narrative_id = claims.narrative_of.get(record_id)
     if narrative_id is None:
         return "no_narrative", None
     if narrative_id not in claims.claim_of:
+        if narrative_id in claims.too_short:
+            return "claim_text_too_short", None
         return "no_claim_text", None
     if claims.claim_record[narrative_id] == record_id:
         return "is_claim", None

@@ -529,3 +529,51 @@ def test_a_record_skipped_after_being_scored_loses_its_stance_version(
     assert versions["toxicity"] == "v0.1.0"
     assert list(table.loc["r:en", "skip_reasons"]) == ["stance:no_narrative"]
     assert ("r:en",) not in ctx.store.already_scored("record_scores", {"stance": stamp["stance"]})
+
+
+def _with_short_first_representative(ctx, *, second_representative: bool):
+    """Make ``r:claim`` a too-short premise, optionally with a usable runner-up."""
+    ctx.records.loc[ctx.records["id"] == "r:claim", "text"] = "ok"
+    membership = ctx.store.read("narrative_membership")
+    if second_representative:
+        # A second representative of the same narrative with usable text.
+        ctx.records = pd.concat(
+            [
+                ctx.records,
+                pd.DataFrame(
+                    [{"id": "r:alt", "source": "news", "text": CLAIM + " (alt)", "lang": "en"}]
+                ),
+            ],
+            ignore_index=True,
+        )
+        ctx.known_record_ids = set(ctx.records["id"])
+        extra = membership.iloc[[0]].copy()
+        extra["record_id"] = "r:alt"
+        extra["membership_prob"] = 0.5
+        membership = pd.concat([membership, extra], ignore_index=True)
+    ctx.store.write("narrative_membership", membership, merge=False,
+                    known_keys=ctx.known_record_ids)
+
+
+def test_a_too_short_claim_is_not_used_and_the_skip_says_so(settings, monkeypatch, tmp_path):
+    ctx = _ctx(tmp_path, settings, checkpoint=True, monkeypatch=monkeypatch)
+    _with_short_first_representative(ctx, second_representative=False)
+    S._stance_stage(ctx)
+
+    assert _FakeStance.seen == []
+    table = ctx.store.read("record_scores").set_index("record_id")
+    assert list(table.loc["r:en", "skip_reasons"]) == ["stance:claim_text_too_short"]
+    assert pd.isna(table.loc["r:en", "stance"])
+
+
+def test_a_narrative_falls_back_to_its_next_qualifying_representative(
+    settings, monkeypatch, tmp_path
+):
+    ctx = _ctx(tmp_path, settings, checkpoint=True, monkeypatch=monkeypatch)
+    _with_short_first_representative(ctx, second_representative=True)
+    S._stance_stage(ctx)
+
+    assert (CLAIM + " (alt)", POST) in _FakeStance.seen
+    assert all(claim != "ok" for claim, _ in _FakeStance.seen)
+    table = ctx.store.read("record_scores").set_index("record_id")
+    assert table.loc["r:en", "stance"] == "deny"
