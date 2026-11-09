@@ -243,8 +243,9 @@ schema explicitly, as `ingest/store.py` does.
 **`topics.yaml`'s `languages` key is declarative and read by nothing.** The three
 real enforcement points are `sources.yaml` `gdelt.doc_api.languages` for which
 articles are fetched, `sources.yaml` `youtube.discovery` for region and
-relevance, and `modeling/config.py` `Settings.languages` for which records are
-scored. They gate different things on purpose.
+relevance, and the `languages` list of each module in `configs/models.yaml` for which
+records that module scores. `Settings.languages` gates nothing now. A module
+with no list raises. They gate different things on purpose.
 
 **langdetect has no class for romanized Hindi**, so it cannot abstain and returns
 a confident wrong language instead. Measured on hand-written samples it returned
