@@ -524,3 +524,715 @@ def freeze_manifest_from_data(
     rows = build_manifest(result.kept)
     target = write_manifest(rows, path or default_manifest_path(), overwrite=overwrite)
     return target, len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Statistics
+# ---------------------------------------------------------------------------
+DEFAULT_BASELINE = "tfidf"
+DEFAULT_PRECISION_TARGET = 0.85
+#: Resamples for every interval in this module.
+DEFAULT_N_BOOTSTRAP = 2000
+ALPHA = 0.05
+#: Hindi scores enter fusion only with this many Hindi claims ...
+HINDI_MIN_CLAIMS = 50
+#: ... and a lift interval whose lower limit is above this.
+HINDI_LIFT_FLOOR = 1.0
+
+SHIP_RULE = (
+    "A transformer ships only if the lower limit of the 95% paired-bootstrap interval of "
+    "(its macro-F1 minus the baseline macro-F1) is above 0."
+)
+EVALUATION_SET_STATEMENT = (
+    "The fact-check set contains only the claims that publishers chose to debunk. It is not a "
+    "sample of false claims in general, and every claim in it is false. Recall on it measures "
+    "detection of publicly debunked claims and is never reported without the flag rate on the "
+    "unlabelled corpus."
+)
+NOT_FROZEN_NOTICE = (
+    "WARNING: evaluation set not frozen. No manifest exists, so the claim set is whatever "
+    "factchecks.parquet holds today and can change between runs. Freeze it with "
+    "`python -m modeling.cli freeze-factchecks` before citing any number from this report."
+)
+
+
+def macro_f1(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    from modeling.eval.metrics import macro_f1_binary
+
+    return macro_f1_binary(y_true, y_pred)
+
+
+def _interval_dict(interval: Any) -> dict[str, Any]:
+    """An ``Interval`` at full precision, with NaN written as ``None``."""
+    out = {
+        "value": _finite_or_none(interval.value),
+        "ci_low": _finite_or_none(interval.low),
+        "ci_high": _finite_or_none(interval.high),
+        "n_bootstrap": int(interval.n_bootstrap),
+    }
+    for extra in ("n_paired", "n_single_class_resamples"):
+        if hasattr(interval, extra):
+            out[extra] = int(getattr(interval, extra))
+    return out
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    if value is None:
+        return None
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
+def _skip_counts(frame: pd.DataFrame) -> dict[str, int]:
+    """Null-score rows counted per ``skip_reason``, in a stable order."""
+    skipped = frame[frame["score"].isna()]
+    counts = skipped["skip_reason"].fillna(UNSPECIFIED_SKIP).value_counts()
+    return {str(reason): int(count) for reason, count in sorted(counts.items())}
+
+
+def _describe_skips(skips: dict[str, int]) -> str:
+    return ", ".join(f"{reason}={count}" for reason, count in skips.items()) or "none"
+
+
+def operating_point(scores: ModelScores, precision_target: float) -> dict[str, Any]:
+    """The model's threshold from its own validation rows at a precision target.
+
+    Null-score validation rows are left out and counted. When the scored rows
+    hold only one class there is no precision-recall curve, and the model gets no
+    operating point rather than a made-up one.
+    """
+    from modeling.eval.metrics import threshold_at_precision
+
+    val = scores.part("val")
+    scored = val[val["score"].notna()]
+    out: dict[str, Any] = {
+        "precision_target": precision_target,
+        "n_val_rows": int(len(val)),
+        "n_val_scored": int(len(scored)),
+        "n_val_skipped": int(len(val) - len(scored)),
+        "skips": _skip_counts(val),
+    }
+    y = scored["label"].astype(int).to_numpy()
+    if not len(scored):
+        return {**out, "status": "no_operating_point", "reason": "no scored validation rows"}
+    if y.min() == y.max():
+        return {
+            **out,
+            "status": "no_operating_point",
+            "reason": f"the scored validation rows hold only class {int(y[0])}",
+        }
+    chosen = threshold_at_precision(y, scored["score"].to_numpy(), precision_target)
+    return {
+        **out,
+        "status": "ok",
+        "threshold": float(chosen["threshold"]),
+        "val_precision": float(chosen["precision"]),
+        "val_recall": float(chosen["recall"]),
+        "target_met": bool(chosen["target_met"]),
+    }
+
+
+def _test_summary(
+    scores: ModelScores, op: dict[str, Any], n_bootstrap: int, seed: int
+) -> dict[str, Any]:
+    from modeling.eval.metrics import bootstrap_metric
+
+    test = scores.part("test")
+    scored = test[test["score"].notna()].sort_values("id")
+    out: dict[str, Any] = {
+        "n_test_rows": int(len(test)),
+        "n_scored": int(len(scored)),
+        "n_skipped": int(len(test) - len(scored)),
+        "skips": _skip_counts(test),
+    }
+    if op["status"] != "ok":
+        return {**out, "macro_f1": None, "reason": f"no operating point: {op['reason']}"}
+    if not len(scored):
+        return {**out, "macro_f1": None, "reason": "no scored test rows"}
+    y = scored["label"].astype(int).to_numpy()
+    pred = (scored["score"].to_numpy() >= op["threshold"]).astype(int)
+    interval = bootstrap_metric(y, pred, macro_f1, n_bootstrap=n_bootstrap, seed=seed)
+    out["macro_f1"] = _interval_dict(interval)
+    out["n_flagged"] = int(pred.sum())
+    if interval.n_bootstrap == 0 or not np.isfinite(interval.low):
+        out["reason"] = "no interval: fewer than 10 scored test rows or too few usable resamples"
+    return out
+
+
+def paired_comparison(
+    candidate: ModelScores,
+    baseline: ModelScores,
+    candidate_op: dict[str, Any],
+    baseline_op: dict[str, Any],
+    *,
+    n_bootstrap: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Paired macro-F1 difference of a candidate against the baseline, with the ship decision.
+
+    Uses the test ids scored by *both* models. A row one model could not score is
+    not a row where it was wrong, and is left out of the pair rather than
+    counted as a miss. The number left out is reported.
+    """
+    from modeling.eval.metrics import paired_bootstrap_difference
+
+    out: dict[str, Any] = {
+        "model": candidate.name,
+        "baseline": baseline.name,
+        "rule": SHIP_RULE,
+        "difference_definition": f"macro-F1({candidate.name}) - macro-F1({baseline.name})",
+    }
+    for op, name in ((candidate_op, candidate.name), (baseline_op, baseline.name)):
+        if op["status"] != "ok":
+            return {
+                **out,
+                "ship": False,
+                "difference": None,
+                "reason": f"{name} has no operating point: {op['reason']}",
+            }
+
+    def scored_test(scores: ModelScores) -> pd.DataFrame:
+        test = scores.part("test")
+        return test[test["score"].notna()].set_index("id")
+
+    cand_rows, base_rows = scored_test(candidate), scored_test(baseline)
+    common = sorted(set(cand_rows.index) & set(base_rows.index))
+    n_test = len(candidate.part("test"))
+    out["n_test_rows"] = int(n_test)
+    out["n_paired"] = len(common)
+    out["n_left_out"] = int(n_test - len(common))
+    if not common:
+        return {**out, "ship": False, "difference": None, "reason": "no test row scored by both"}
+
+    y = cand_rows.loc[common, "label"].astype(int).to_numpy()
+    pred_c = (cand_rows.loc[common, "score"].to_numpy() >= candidate_op["threshold"]).astype(int)
+    pred_b = (base_rows.loc[common, "score"].to_numpy() >= baseline_op["threshold"]).astype(int)
+    interval = paired_bootstrap_difference(
+        y, pred_c, pred_b, macro_f1, n_bootstrap=n_bootstrap, seed=seed
+    )
+    out["difference"] = _interval_dict(interval)
+    if not np.isfinite(interval.low):
+        return {
+            **out,
+            "ship": False,
+            "reason": f"no interval: {len(common)} paired rows is fewer than 10",
+        }
+    ship = bool(interval.low > 0)
+    return {
+        **out,
+        "ship": ship,
+        "reason": (
+            f"lower limit {interval.low:.4f} is above 0"
+            if ship
+            else f"lower limit {interval.low:.4f} is not above 0"
+        ),
+    }
+
+
+def percentile_with_undefined(finite: np.ndarray, n_undefined: int, q: float) -> float:
+    """Percentile ``q`` of a sample in which ``n_undefined`` values are +infinity.
+
+    Same interpolation as ``numpy.percentile`` (linear). The undefined values sort
+    above every finite one. The result is ``inf`` when the percentile falls on or
+    between an undefined value, which says the limit cannot be bounded. It is
+    never a made-up finite number, and it is equal to ``numpy.percentile`` when
+    ``n_undefined`` is 0.
+    """
+    ordered = np.sort(np.asarray(finite, dtype=float))
+    total = len(ordered) + n_undefined
+    if total == 0:
+        return float("nan")
+    position = q / 100 * (total - 1)
+    low_rank = int(np.floor(position))
+    high_rank = int(np.ceil(position))
+    fraction = position - low_rank
+
+    def at(rank: int) -> float:
+        return float(ordered[rank]) if rank < len(ordered) else float("inf")
+
+    low_value, high_value = at(low_rank), at(high_rank)
+    if fraction == 0 or low_value == high_value:
+        return low_value
+    if not np.isfinite(high_value):
+        return float("inf")
+    return low_value + (high_value - low_value) * fraction
+
+
+def _bootstrap_streams(seed: int) -> tuple[np.random.Generator, np.random.Generator]:
+    """Independent generators for the claims resample and the corpus resample."""
+    claims, corpus = np.random.SeedSequence(seed).spawn(2)
+    return np.random.default_rng(claims), np.random.default_rng(corpus)
+
+
+def _count_draws(k: int, n: int, n_bootstrap: int, rng: np.random.Generator) -> np.ndarray:
+    """Flag counts of ``n_bootstrap`` bootstrap resamples of ``n`` rows with ``k`` flagged.
+
+    Resampling ``n`` rows with replacement and counting the flagged ones is a
+    Binomial(n, k/n) draw. That is the same distribution as resampling the rows
+    one by one, and it costs one number per resample instead of ``n``, which
+    matters for a corpus of millions of rows.
+    """
+    return rng.binomial(n, k / n, size=n_bootstrap)
+
+
+def _rate_estimate(k: int, n: int, *, n_bootstrap: int, seed: int, stream: int) -> dict[str, Any]:
+    """A rate with its bootstrap interval. ``stream`` 0 is claims, 1 is corpus.
+
+    Uses the same generators as ``lift_estimate``, so the recall and flag-rate
+    intervals printed beside a lift are the very draws that lift was built from.
+    """
+    rng = _bootstrap_streams(seed)[stream]
+    draws = _count_draws(k, n, n_bootstrap, rng) / n
+    low, high = np.percentile(draws, [100 * ALPHA / 2, 100 * (1 - ALPHA / 2)])
+    return {
+        "status": "ok",
+        "value": k / n,
+        "ci_low": float(low),
+        "ci_high": float(high),
+        "n_bootstrap": n_bootstrap,
+        "reason": None,
+    }
+
+
+def lift_estimate(
+    k_claims: int,
+    n_claims: int,
+    k_corpus: int,
+    n_corpus: int,
+    *,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    seed: int,
+) -> dict[str, Any]:
+    """Lift = recall / flag rate, with a bootstrap interval from independent resamples.
+
+    The claims and the corpus are resampled independently, ``n_bootstrap`` times.
+    A resample with no flagged corpus row has an undefined lift (a division by
+    zero). Such resamples are counted and reported, and they are not dropped from
+    the interval: they rank above every finite lift, so when more than 2.5% of
+    resamples are undefined the upper limit itself is undefined and is reported
+    as "no value" with the reason. Dropping them would shrink the interval exactly
+    when the flag rate is too small to measure.
+
+    When the flag rate of the data is 0, the lift is undefined: no value, no
+    interval, a reason, and never infinity.
+    """
+    recall = k_claims / n_claims
+    flag_rate = k_corpus / n_corpus
+    out: dict[str, Any] = {
+        "recall": recall,
+        "flag_rate": flag_rate,
+        "n_claims": n_claims,
+        "n_corpus": n_corpus,
+        "n_bootstrap": n_bootstrap,
+    }
+    if k_corpus == 0:
+        return {
+            **out,
+            "status": "undefined",
+            "value": None,
+            "ci_low": None,
+            "ci_high": None,
+            "n_zero_flag_resamples": n_bootstrap,
+            "reason": (
+                f"flag rate is 0 at the validation threshold (0 of {n_corpus} corpus rows "
+                "flagged), so the ratio is undefined"
+            ),
+        }
+
+    rng_claims, rng_corpus = _bootstrap_streams(seed)
+    recall_draws = _count_draws(k_claims, n_claims, n_bootstrap, rng_claims) / n_claims
+    corpus_counts = _count_draws(k_corpus, n_corpus, n_bootstrap, rng_corpus)
+    zero = corpus_counts == 0
+    n_zero = int(zero.sum())
+    lifts = recall_draws[~zero] / (corpus_counts[~zero] / n_corpus)
+
+    low = percentile_with_undefined(lifts, n_zero, 100 * ALPHA / 2)
+    high = percentile_with_undefined(lifts, n_zero, 100 * (1 - ALPHA / 2))
+    reasons: list[str] = []
+    if not np.isfinite(low) or not np.isfinite(high):
+        reasons.append(
+            f"{n_zero} of {n_bootstrap} resamples had flag rate 0, so the "
+            + ("upper limit" if not np.isfinite(high) and np.isfinite(low) else "interval")
+            + " cannot be bounded"
+        )
+    elif n_zero:
+        reasons.append(
+            f"{n_zero} of {n_bootstrap} resamples had flag rate 0; they are counted in the "
+            "percentiles as undefined and are not dropped"
+        )
+    return {
+        **out,
+        "status": "ok",
+        "value": recall / flag_rate,
+        "ci_low": _finite_or_none(low),
+        "ci_high": _finite_or_none(high),
+        "n_zero_flag_resamples": n_zero,
+        "reason": "; ".join(reasons) or None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Claims, corpus and the cells of the report
+# ---------------------------------------------------------------------------
+def load_factcheck_publishers(path: Path | None = None) -> frozenset[str]:
+    """Publisher domains from ``configs/factcheck.yaml``. An empty list refuses.
+
+    With no publishers to exclude, the flag rate would include the articles the
+    claims came from, which measures the model on its own answer key.
+    """
+    import yaml
+
+    from modeling.config import CONFIG_DIR
+
+    path = Path(path) if path else CONFIG_DIR / "factcheck.yaml"
+    if not path.exists():
+        raise EvalInputError(f"{path} not found; cannot tell which corpus rows are fact-checkers")
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    domains = frozenset(_normalise_domain(d) for d in (data.get("publishers") or {}))
+    if not domains:
+        raise EvalInputError(f"{path} lists no publishers; refusing to compute a flag rate")
+    return domains
+
+
+def _normalise_domain(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text[4:] if text.startswith("www.") else text
+
+
+def _split_claims(
+    scores: ModelScores, universe: ClaimUniverse
+) -> tuple[pd.DataFrame, dict[str, int], int]:
+    """Claim rows that count towards recall, the exclusion counts, and kept ids with no row.
+
+    A claim id that is not an evaluation claim is excluded under a reason code
+    (collapsed duplicate, not labelled false, outside the frozen set, or unknown).
+    The input part may or may not be limited already, so none of this is assumed.
+    """
+    claims = scores.part("claims")
+    reasons = claims["id"].map(universe.reason_for_exclusion)
+    kept = claims[reasons.isna()]
+    counts = reasons.dropna().value_counts()
+    excluded = {str(reason): int(count) for reason, count in sorted(counts.items())}
+    absent = len(universe.eval_ids - set(claims["id"]))
+    return kept, excluded, absent
+
+
+def _split_corpus(
+    scores: ModelScores, part: str, publishers: frozenset[str]
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Corpus rows without fact-check publishers, and what was removed or unclear."""
+    frame = scores.part(part)
+    domains = frame["source_detail"].map(_normalise_domain)
+    is_publisher = domains.isin(publishers)
+    kept = frame[~is_publisher]
+    info = {
+        "n_rows_in_file": int(len(frame)),
+        "n_excluded_fact_check_publisher": int(is_publisher.sum()),
+        "n_without_source_detail": int((domains == "").sum()),
+    }
+    return kept, info
+
+
+def _language_subset(frame: pd.DataFrame, language: str) -> pd.DataFrame:
+    if language == ALL:
+        return frame
+    return frame[frame["lang"] == language]
+
+
+def _counts(frame: pd.DataFrame, threshold: float) -> dict[str, Any]:
+    scored = frame[frame["score"].notna()]
+    return {
+        "n_rows": int(len(frame)),
+        "n_scored": int(len(scored)),
+        "n_skipped": int(len(frame) - len(scored)),
+        "skips": _skip_counts(frame),
+        "n_flagged": int((scored["score"].to_numpy() >= threshold).sum()),
+    }
+
+
+def _no_value(reason: str, status: str = "no_score") -> dict[str, Any]:
+    return {"status": status, "value": None, "ci_low": None, "ci_high": None, "reason": reason}
+
+
+def _no_score_reason(counts: dict[str, Any], what: str) -> str:
+    if counts["n_rows"] == 0:
+        return f"no {what} rows in this cell"
+    return (
+        f"no valid score for any of {counts['n_rows']} {what} rows "
+        f"(skip_reason: {_describe_skips(counts['skips'])})"
+    )
+
+
+def _cell(
+    claims: pd.DataFrame,
+    corpus: dict[str, pd.DataFrame],
+    language: str,
+    threshold: float,
+    n_bootstrap: int,
+    seed: int,
+) -> dict[str, Any]:
+    claim_counts = _counts(_language_subset(claims, language), threshold)
+    cell: dict[str, Any] = {"claims": claim_counts}
+    if claim_counts["n_scored"]:
+        claim_counts["recall"] = _rate_estimate(
+            claim_counts["n_flagged"],
+            claim_counts["n_scored"],
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+            stream=0,
+        )
+    else:
+        claim_counts["recall"] = _no_value(_no_score_reason(claim_counts, "claim"))
+
+    for part, key, label in (
+        ("corpus_title", "title", "corpus title"),
+        ("corpus_text", "text", "corpus text"),
+    ):
+        counts = _counts(_language_subset(corpus[part], language), threshold)
+        cell[f"corpus_{key}"] = counts
+        if counts["n_scored"]:
+            counts["flag_rate"] = _rate_estimate(
+                counts["n_flagged"],
+                counts["n_scored"],
+                n_bootstrap=n_bootstrap,
+                seed=seed,
+                stream=1,
+            )
+        else:
+            counts["flag_rate"] = _no_value(_no_score_reason(counts, label))
+
+        if claim_counts["n_scored"] and counts["n_scored"]:
+            cell[f"lift_{key}"] = lift_estimate(
+                claim_counts["n_flagged"],
+                claim_counts["n_scored"],
+                counts["n_flagged"],
+                counts["n_scored"],
+                n_bootstrap=n_bootstrap,
+                seed=seed,
+            )
+        else:
+            reasons = []
+            if not claim_counts["n_scored"]:
+                reasons.append("recall: " + claim_counts["recall"]["reason"])
+            if not counts["n_scored"]:
+                reasons.append("flag rate: " + counts["flag_rate"]["reason"])
+            cell[f"lift_{key}"] = _no_value("; ".join(reasons))
+    return cell
+
+
+def _unavailable_cell(reason: str) -> dict[str, Any]:
+    entry = _no_value(reason)
+    return {
+        "claims": {"recall": entry},
+        "corpus_title": {"flag_rate": entry},
+        "corpus_text": {"flag_rate": entry},
+        "lift_title": entry,
+        "lift_text": entry,
+    }
+
+
+def hindi_gate(model: str, cell: dict[str, Any] | None) -> dict[str, Any]:
+    """Hindi scores enter fusion only with enough claims and a lift that clears 1.
+
+    Needs at least ``HINDI_MIN_CLAIMS`` Hindi claims *with a valid score* and a
+    lower interval limit above ``HINDI_LIFT_FLOOR`` on the primary (title) lift.
+    Both numbers are returned, so a failure shows which condition failed.
+    """
+    out: dict[str, Any] = {
+        "model": model,
+        "min_claims": HINDI_MIN_CLAIMS,
+        "lift_floor": HINDI_LIFT_FLOOR,
+        "lift_basis": "corpus_title",
+    }
+    claims = (cell or {}).get("claims", {})
+    n = int(claims.get("n_scored", 0))
+    lift = (cell or {}).get("lift_title") or {}
+    low = lift.get("ci_low")
+    out.update(
+        n_hindi_claims_scored=n,
+        n_hindi_claims_rows=int(claims.get("n_rows", 0)),
+        lift=lift.get("value"),
+        lift_ci_low=low,
+        lift_ci_high=lift.get("ci_high"),
+        claims_condition_met=n >= HINDI_MIN_CLAIMS,
+        lift_condition_met=bool(low is not None and low > HINDI_LIFT_FLOOR),
+    )
+    out["pass"] = bool(out["claims_condition_met"] and out["lift_condition_met"])
+    failures = []
+    if not out["claims_condition_met"]:
+        failures.append(f"{n} Hindi claims with a score, {HINDI_MIN_CLAIMS} needed")
+    if not out["lift_condition_met"]:
+        failures.append(
+            "no lift interval: " + str(lift.get("reason") or "not computed")
+            if low is None
+            else f"lift lower limit {low:.3f} is not above {HINDI_LIFT_FLOOR:g}"
+        )
+    out["reason"] = "; ".join(failures) or (
+        f"{n} Hindi claims and lift lower limit {low:.3f} above {HINDI_LIFT_FLOOR:g}"
+    )
+    return out
+
+
+def check_claim_languages(models: dict[str, ModelScores]) -> None:
+    """Refuse when two models give one claim id different languages.
+
+    Per-language recall would then be computed on different claims per model.
+    """
+    seen: dict[str, tuple[str, Any]] = {}
+    for name, scores in models.items():
+        for claim_id, lang in zip(
+            scores.part("claims")["id"], scores.part("claims")["lang"], strict=True
+        ):
+            lang = None if pd.isna(lang) else lang
+            if claim_id in seen and seen[claim_id][1] != lang:
+                raise SplitMismatch(
+                    f"claim {claim_id!r} has lang {seen[claim_id][1]!r} in model "
+                    f"{seen[claim_id][0]!r} and {lang!r} in model {name!r}"
+                )
+            seen.setdefault(claim_id, (name, lang))
+
+
+def evaluate(
+    models: dict[str, ModelScores],
+    *,
+    universe: ClaimUniverse,
+    publishers: frozenset[str],
+    baseline: str = DEFAULT_BASELINE,
+    precision_target: float = DEFAULT_PRECISION_TARGET,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    seed: int | None = None,
+    versions: dict[str, str] | None = None,
+    split_description: str | None = None,
+) -> dict[str, Any]:
+    """Run the whole comparison and return a JSON-ready result.
+
+    Raises ``EvalInputError`` (or a subclass) for anything it must not work
+    around: a missing baseline, test splits that differ, no publishers to exclude.
+    Output depends only on the inputs and ``seed``, never on row order.
+    """
+    from modeling.config import get_settings
+
+    seed = get_settings().seed if seed is None else seed
+    if baseline not in models:
+        raise EvalInputError(
+            f"baseline model {baseline!r} has no score file; found {sorted(models)}"
+        )
+    if not publishers:
+        raise EvalInputError("no fact-check publishers given; refusing to compute a flag rate")
+    check_shared_test_split(models)
+    check_claim_languages(models)
+    versions = versions or {}
+    ordered = sorted(models)
+
+    notices: list[str] = []
+    if not universe.frozen:
+        notices.append(NOT_FROZEN_NOTICE)
+    for name, scores in models.items():
+        if scores.ignored_columns:
+            notices.append(f"{name}: ignored unknown column(s) {scores.ignored_columns}")
+
+    ops = {name: operating_point(models[name], precision_target) for name in ordered}
+    for name, op in ops.items():
+        if op["status"] != "ok":
+            notices.append(f"{name}: no operating point ({op['reason']}); every cell is no score")
+        elif not op["target_met"]:
+            notices.append(
+                f"{name}: no validation threshold reaches precision {precision_target}; the "
+                f"best available is {op['val_precision']:.3f}. The flags below use that threshold."
+            )
+
+    model_out: dict[str, Any] = {}
+    cells: dict[str, dict[str, Any]] = {}
+    for name in ordered:
+        scores, op = models[name], ops[name]
+        claims, excluded, absent = _split_claims(scores, universe)
+        corpus: dict[str, pd.DataFrame] = {}
+        corpus_info: dict[str, Any] = {}
+        for part in CORPUS_PARTS:
+            corpus[part], corpus_info[part] = _split_corpus(scores, part, publishers)
+        if absent:
+            notices.append(
+                f"{name}: {absent} evaluation claim(s) have no row in the score file; they are "
+                "not in any denominator"
+            )
+        if any(info["n_without_source_detail"] for info in corpus_info.values()):
+            notices.append(
+                f"{name}: corpus rows with no source_detail cannot be checked against the "
+                "fact-check publisher list and stay in the flag rate"
+            )
+
+        model_out[name] = {
+            "version": versions.get(name),
+            "input": {
+                "file": scores.path.name if scores.path else None,
+                "sha256": scores.sha256,
+                "n_rows": int(len(scores.frame)),
+            },
+            "operating_point": op,
+            "test": _test_summary(scores, op, n_bootstrap, seed),
+            "claims_excluded": excluded,
+            "evaluation_claims_missing_from_scores": absent,
+            "corpus": corpus_info,
+        }
+        if op["status"] == "ok":
+            cells[name] = {
+                lang: _cell(claims, corpus, lang, op["threshold"], n_bootstrap, seed)
+                for lang in (*LANGUAGES, ALL)
+            }
+        else:
+            reason = f"no operating point: {op['reason']}"
+            cells[name] = {lang: _unavailable_cell(reason) for lang in (*LANGUAGES, ALL)}
+
+    comparisons = {
+        name: paired_comparison(
+            models[name],
+            models[baseline],
+            ops[name],
+            ops[baseline],
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+        )
+        for name in ordered
+        if name != baseline
+    }
+    for name, comparison in comparisons.items():
+        if comparison.get("n_left_out"):
+            notices.append(
+                f"{name}: {comparison['n_left_out']} test row(s) were not scored by both {name} "
+                f"and {baseline}; the paired comparison uses the {comparison['n_paired']} rows "
+                "both scored"
+            )
+
+    n_val = {name: ops[name]["n_val_rows"] for name in ordered}
+    n_test = len(models[baseline].part("test"))
+    return {
+        "schema_version": 1,
+        "seed": seed,
+        "n_bootstrap": n_bootstrap,
+        "precision_target": precision_target,
+        "baseline": baseline,
+        "languages": [*LANGUAGES, ALL],
+        "split": {
+            "description": split_description
+            or (
+                "val and test rows are used as supplied in each score file. This harness does "
+                "not re-split and cannot verify that the producer split by group (author, source "
+                "video, speaker)."
+            ),
+            "n_test_shared": int(n_test),
+            "n_val_per_model": n_val,
+        },
+        "evaluation_set": {
+            "frozen": universe.frozen,
+            "manifest": str(universe.manifest_path) if universe.manifest_path else None,
+            "manifest_rows": universe.manifest_rows,
+            "n_evaluation_claims": len(universe.eval_ids),
+            "dedup_counts": universe.dedup_counts,
+            "statement": EVALUATION_SET_STATEMENT,
+        },
+        "notices": notices,
+        "models": model_out,
+        "comparisons": comparisons,
+        "cells": cells,
+        "hindi_gate": {name: hindi_gate(name, cells[name].get("hi")) for name in ordered},
+    }
