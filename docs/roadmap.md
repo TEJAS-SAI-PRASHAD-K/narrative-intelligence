@@ -23,7 +23,7 @@ the module being quietly described as present.
 | bot classifier | does not generalize | see below |
 | coordination detection | no signal on this corpus | see below |
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
-| Laya scorer | code only | never run against real weights |
+| Laya scorer | code only | base checkpoints load, no fine-tune has run, no stage in modeling/scoring.py |
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation |
 | API | done | 69 paths, 80 operations, contract tested under `DEMO_MODE` |
 | database | done | 27 tables, 3 migrations, round-trip asserted in CI |
@@ -41,7 +41,9 @@ so "why is this outlet missing" has an answer.
 **Fact-check extraction produces bilingual supervision.** 96 verdicts from 111
 eligible records: BOOM 55, The Quint WebQoof 29, Vishvas News 8, Fact Crescendo
 4. Vishvas News and Fact Crescendo supply claims in Devanagari, so this path
-yields Hindi labels and not merely Hindi text.
+yields Hindi labels and not merely Hindi text. The corpus and the verdicts are not
+in the repo. RSS feeds hold only recent entries, so a new run does not produce the
+same 96 verdicts.
 
 **The API serves the full contract without a database.** All contract tests pass
 under `DEMO_MODE=1`, and `make openapi-check` holds the committed `openapi.json`
@@ -76,38 +78,45 @@ corpus simply does not contain the phenomenon at a detectable level.
 
 **Hindi is ingested but not scored.** `modeling/config.py` sets
 `languages = ("en",)`, so Hindi records are collected, normalized, stored, and
-then skipped by every scorer with a reason code. The scored tables therefore
-cover a subset of the corpus, and any volume comparison between a Hindi and an
-English narrative is invalid until a multilingual checkpoint lands.
+then skipped by the toxicity, sentiment, emotion and misinformation stages.
+English-only MiniLM still embeds and clusters Hindi records, so those clusters come
+from a model that was not built for Hindi. The scored tables therefore cover a
+subset of the corpus, and any volume comparison between a Hindi and an English
+narrative is invalid until a multilingual checkpoint lands.
 
 ## Critical path
 
 The shortest route from here to a defensible result, in order. Each step unblocks
 the next.
 
-1. **Fetch the benchmarks.** `data/benchmarks/` is empty. `make benchmarks`
-   pulls LIAR, CoAID and FakeNewsNet with checksums. FakeNewsNet ships ids and a
-   crawler rather than article text, and CoAID's tweet content cannot be
-   recollected, so budget for that. LIAR alone is enough for a first number and
-   is what the current classifier was trained on, which is what makes the
-   comparison like for like.
+1. **Fetch the benchmarks.** A new clone has no `data/benchmarks/`. `make benchmarks`
+   pulls LIAR, CoAID and FakeNewsNet with checksums. The FakeNewsNet label CSVs and
+   the CoAID CSVs are enough, with no crawl. The current classifier was trained on
+   the union of all three, so a like-for-like comparison needs all three. On the
+   public data, `build_training_frame` and the project seed reproduce the recorded
+   split: 30148 groups, 26777/3596/7085.
 
-2. **Fine-tune Laya on a GPU.** Follow [laya-finetune.md](laya-finetune.md). The
+2. **Retrain the misinformation classifier.** The three-way comparison needs its
+   predictions, and its weights are gone. Train it on the same split as step 1.
+
+3. **Fine-tune Laya on a GPU.** Follow [laya-finetune.md](laya-finetune.md). The
    scorer and the training exporter are written and tested, but nothing has
    touched the real weights. Fine-tuning is mandatory rather than optional: the
    base checkpoint scores below its own majority-class baseline on the vendor's
    benchmark, so a zero-shot number is a baseline to report, never a model to
    ship.
 
-3. **Build the three-way evaluation harness.** This is the deliverable and it
+4. **Build the three-way evaluation harness.** This is the deliverable and it
    does not exist yet. Score the fact-check evaluation set with Laya, with the
    roberta-base fine-tune and with TF-IDF plus logistic regression, on identical
    group-aware splits, and report them side by side. Details in step 6 of the
    fine-tune runbook.
 
-4. **Widen the scoring language gate.** Once a multilingual checkpoint exists,
-   `modeling/config.py` `Settings.languages` can include `hi`, and the Hindi
-   corpus stops being collected-but-unscored.
+5. **Make the scoring language gate per module.** `Settings.languages` is global.
+   Adding `hi` to it sends Hindi into English-only toxicity, sentiment, emotion and
+   misinformation models, which then write noise. Move the gate to each module in
+   `configs/models.yaml`. Then add a Laya stage to `modeling/scoring.py`, and let
+   `LayaScorer.checkpoint_for` select a fine-tuned directory. Neither exists today.
 
 ### How to report the fact-check evaluation
 
@@ -151,8 +160,8 @@ the honest entry in that cell, not a zero.
 - **Cross-publisher claim deduplication over longer windows.** The current
   96-claim set has zero near-duplicates at the project's own Hamming threshold,
   but the same claim gets debunked by several publishers within days, so a longer
-  collection window will produce them. The check exists; it needs to run over
-  accumulated data.
+  collection window will produce them. Only `claim_simhash` is stored today,
+  and no code compares claims yet.
 
 ### Modeling
 
@@ -160,7 +169,8 @@ the honest entry in that cell, not a zero.
   transformer. Its weights are gone, so the current state is neither.
 - **Fine-tune stance.** The corpus supplied as SemEval-2016 is actually FNC-1,
   which is the better fit because its four labels map one to one onto the
-  contract. 75,385 pairs over 2,587 bodies, all on disk. The fine-tune starts
+  contract. 75,385 pairs over 2,587 bodies. `make benchmarks` does not fetch it
+  yet. The fine-tune starts
   from an NLI and FEVER checkpoint rather than a bare encoder.
 - **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
   statements, CoAID is COVID-era health claims, and this corpus is Indian
