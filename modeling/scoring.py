@@ -29,7 +29,7 @@ import pandas as pd
 
 from ingest.config import REPO_ROOT
 from modeling.config import ModelingSettings, get_settings, scoring_config
-from modeling.io import CorpusReader, ScoredStore
+from modeling.io import CorpusReader, ScoredStore, as_list
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,11 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
     policy = scoring_config().get("source_policy") or {}
     records = _apply_length_floor(ctx.records, policy)
+    # The embed entry in models.yaml says which languages are embedded. It is
+    # `*` today, so this keeps every record; narrowing it narrows clustering.
+    records = records.loc[
+        records["lang"].map(lambda lang: ctx.settings.language_allowed("embed", lang))
+    ]
     if len(records) < 2:
         return [{"stage": "cluster", "note": ctx.note("too few records to cluster")}]
 
@@ -306,18 +311,19 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
     demo_note = warn_if_demo_checkpoint("misinfo", checkpoint, ctx.demo)
     versions = {"misinfo": checkpoint_stamp("misinfo", version, checkpoint)}
     done = {key[0] for key in ctx.store.already_scored("record_scores", versions)}
-    eligible = ctx.records.loc[
-        ctx.records["lang"].map(lambda lang: ctx.settings.language_allowed("misinfo", lang))
-        & ctx.records["text"].fillna("").astype(str).str.len().ge(20)
-        & ~ctx.records["id"].astype(str).isin(done)
-    ]
+    reasons = ctx.records.apply(
+        lambda row: _text_skip_reason(ctx.settings, "misinfo", row["text"], row["lang"], 20),
+        axis=1,
+    )
+    skip_note = _record_misinfo_skips(ctx, reasons)
+    eligible = ctx.records.loc[reasons.isna() & ~ctx.records["id"].astype(str).isin(done)]
     if not len(eligible):
         return [
             {
                 "stage": "misinfo",
                 "table": "record_scores",
                 "unchanged": len(ctx.records),
-                "note": ctx.note("resumed: nothing to do"),
+                "note": ctx.note("resumed: nothing to do" + skip_note),
             }
         ]
 
@@ -334,7 +340,7 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
     if ctx.dry_run:
         return [
             {"stage": "misinfo", "table": "record_scores",
-             "note": ctx.note(f"dry-run; would score {len(frame)} rows")}
+             "note": ctx.note(f"dry-run; would score {len(frame)} rows{skip_note}")}
         ]
 
     # A plain merge write: ScoredStore merges column-wise, so the aux pass's
@@ -347,10 +353,69 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             **result,
             "note": ctx.note(
                 f"scored {len(frame)}/{len(ctx.records)} records"
+                + skip_note
                 + (f" [{demo_note}]" if demo_note else "")
             ),
         }
     ]
+
+
+def _text_skip_reason(
+    settings: ModelingSettings, module: str, text: Any, lang: Any, min_chars: int
+) -> str | None:
+    """Why a text stage declines a record, in the order the aux scorers use.
+
+    The codes are those of ``modeling.aux.base.SkipReason``, so a record skipped
+    by this stage and one skipped by an aux scorer read the same in
+    ``record_scores.skip_reasons``.
+    """
+    from modeling.aux.base import SkipReason
+
+    if text is None or pd.isna(text) or not str(text).strip():
+        return SkipReason.EMPTY_TEXT
+    if len(str(text).strip()) < min_chars:
+        return SkipReason.TEXT_TOO_SHORT
+    if not settings.language_allowed(module, lang):
+        return SkipReason.UNSUPPORTED_LANGUAGE
+    return None
+
+
+def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
+    """Write ``misinfo:<reason>`` into ``record_scores.skip_reasons``; return a note.
+
+    The column is shared with the aux pass, and a merge write replaces a list
+    rather than appending to it, so the aux entries already on disk are read
+    back and kept. Entries this stage wrote on an earlier run are replaced.
+    """
+    skipped = ctx.records.loc[reasons.notna()]
+    if not len(skipped):
+        return ""
+    counts = reasons.dropna().value_counts().to_dict()
+    note = "; skipped " + ", ".join(f"{n} {reason}" for reason, n in sorted(counts.items()))
+    if ctx.dry_run:
+        return note
+
+    existing = ctx.store.read("record_scores")
+    prior: dict[str, list[str]] = {}
+    if len(existing) and "skip_reasons" in existing.columns:
+        prior = {
+            str(rid): [str(r) for r in as_list(value)]
+            for rid, value in zip(existing["record_id"], existing["skip_reasons"], strict=True)
+        }
+    rows = []
+    for row, reason in zip(skipped.itertuples(index=False), reasons.dropna(), strict=True):
+        record_id = str(row.id)
+        kept = [r for r in prior.get(record_id, []) if not r.startswith("misinfo:")]
+        rows.append(
+            {
+                "record_id": record_id,
+                "source": str(row.source),
+                "skip_reasons": [*kept, f"misinfo:{reason}"],
+                "scored_at": utcnow_local(),
+            }
+        )
+    ctx.store.write("record_scores", pd.DataFrame(rows), known_keys=ctx.known_record_ids or None)
+    return note
 
 
 @stage("stance")

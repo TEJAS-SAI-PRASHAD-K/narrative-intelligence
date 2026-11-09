@@ -97,3 +97,201 @@ def test_every_module_in_models_yaml_declares_languages():
 def test_english_only_text_modules_list_only_english():
     for name in ("misinfo", "stance", "toxicity", "sentiment", "emotion"):
         assert module_languages(name) == ("en",), name
+
+
+# ---------------------------------------------------------------------------
+# acceptance: no English-only module writes a score for a Hindi record
+# ---------------------------------------------------------------------------
+import pandas as pd  # noqa: E402
+
+from modeling import scoring as S  # noqa: E402
+from modeling.aux import run_aux_pass  # noqa: E402
+from modeling.aux.base import AuxScorer  # noqa: E402
+from modeling.io import ScoredStore  # noqa: E402
+from modeling.registry import Checkpoint  # noqa: E402
+
+TEXT = "a claim that is comfortably longer than twenty characters"
+HINDI = "यह एक दावा है जो बीस अक्षरों से काफी लंबा है"
+FRAME_ROWS = [
+    {"id": "r:en", "source": "news", "text": TEXT, "lang": "en"},
+    {"id": "r:hi", "source": "news", "text": HINDI, "lang": "hi"},
+    {"id": "r:null", "source": "news", "text": TEXT + " again", "lang": None},
+]
+
+
+def _frame() -> pd.DataFrame:
+    return pd.DataFrame(FRAME_ROWS)
+
+
+def _fake_aux(monkeypatch):
+    """Replace every aux scorer's model with one that returns a fixed value."""
+    values = {
+        "toxicity": lambda t: 0.1,
+        "sentiment": lambda t: {"sentiment": "neutral", "sentiment_score": 0.0},
+        "emotion": lambda t: {"neutral": 1.0},
+    }
+    from modeling.aux import TEXT_SCORERS
+
+    for cls in TEXT_SCORERS:
+        fn = values[cls.module]
+        monkeypatch.setattr(cls, "load", lambda self: True)
+        monkeypatch.setattr(
+            cls, "score_texts", lambda self, texts, fn=fn: [fn(t) for t in texts]
+        )
+    assert issubclass(TEXT_SCORERS[0], AuxScorer)
+
+
+def test_aux_pass_writes_no_score_for_hindi_and_says_why(settings, monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    C.get_settings.cache_clear()
+    _fake_aux(monkeypatch)
+    out = run_aux_pass(
+        _frame(), None, settings=C.get_settings(), scorers=["toxicity", "sentiment", "emotion"]
+    )
+    by_id = out.set_index("record_id")
+
+    for module in ("toxicity", "sentiment", "emotion"):
+        assert module in by_id.loc["r:en", "model_versions"]
+        assert module not in by_id.loc["r:hi", "model_versions"]
+        assert f"{module}:unsupported_language" in by_id.loc["r:hi", "skip_reasons"]
+        # null lang follows score_unknown_language, which defaults to true
+        assert module in by_id.loc["r:null", "model_versions"]
+    assert pd.isna(by_id.loc["r:hi", "toxicity"])
+    assert pd.isna(by_id.loc["r:hi", "sentiment_score"])
+    assert not any((by_id.loc["r:hi", "emotion"] or {}).values())
+    assert by_id.loc["r:en", "skip_reasons"] == []
+
+
+class _FakeMisinfo:
+    seen: list[str] = []
+
+    def __init__(self, settings):
+        pass
+
+    def load(self, path):
+        return True
+
+    def predict(self, texts):
+        type(self).seen = list(texts)
+        return [0.5] * len(texts)
+
+
+def _misinfo_ctx(tmp_path, settings, monkeypatch, *, dry_run=False):
+    import modeling.registry as registry
+    import modeling.text.misinfo_clf as clf
+
+    monkeypatch.setattr(
+        registry, "resolve",
+        lambda module, version, required=False: Checkpoint(
+            module="misinfo", version=version, path=tmp_path, origin="local", sha256="ab" * 32
+        ),
+    )
+    monkeypatch.setattr(clf, "MisinfoClassifier", _FakeMisinfo)
+    records = _frame()
+    return S.StageContext(
+        settings=settings,
+        reader=None,
+        store=ScoredStore(settings, root=tmp_path / "scored"),
+        records=records,
+        authors=pd.DataFrame(),
+        demo=True,
+        dry_run=dry_run,
+        known_record_ids=set(records["id"]),
+    )
+
+
+def test_misinfo_stage_scores_en_and_null_but_not_hindi_and_records_the_reason(
+    settings, monkeypatch, tmp_path
+):
+    ctx = _misinfo_ctx(tmp_path, settings, monkeypatch)
+    S._misinfo_stage(ctx)
+
+    assert HINDI not in _FakeMisinfo.seen
+    assert len(_FakeMisinfo.seen) == 2
+    table = ctx.store.read("record_scores").set_index("record_id")
+    assert table.loc["r:en", "misinfo_prob"] == pytest.approx(0.5)
+    assert table.loc["r:null", "misinfo_prob"] == pytest.approx(0.5)
+    assert pd.isna(table.loc["r:hi", "misinfo_prob"])
+    assert list(table.loc["r:hi", "skip_reasons"]) == ["misinfo:unsupported_language"]
+    assert not table.loc["r:en", "skip_reasons"]
+
+
+def test_misinfo_skip_reason_keeps_the_aux_reasons_and_is_idempotent(
+    settings, monkeypatch, tmp_path
+):
+    ctx = _misinfo_ctx(tmp_path, settings, monkeypatch)
+    ctx.store.write(
+        "record_scores",
+        pd.DataFrame(
+            [
+                {
+                    "record_id": "r:hi",
+                    "source": "news",
+                    "skip_reasons": ["toxicity:unsupported_language"],
+                }
+            ]
+        ),
+    )
+    S._misinfo_stage(ctx)
+    S._misinfo_stage(ctx)
+    table = ctx.store.read("record_scores").set_index("record_id")
+    assert list(table.loc["r:hi", "skip_reasons"]) == [
+        "toxicity:unsupported_language",
+        "misinfo:unsupported_language",
+    ]
+
+
+def test_misinfo_stage_dry_run_writes_nothing_but_reports_the_skip(
+    settings, monkeypatch, tmp_path
+):
+    ctx = _misinfo_ctx(tmp_path, settings, monkeypatch, dry_run=True)
+    out = S._misinfo_stage(ctx)
+    assert not len(ctx.store.read("record_scores"))
+    assert "1 unsupported_language" in out[0]["note"]
+
+
+class _RecordingEmbedder:
+    seen: list[str] = []
+
+    def __init__(self, settings=None, model_name=None):
+        pass
+
+    def load(self):
+        return True
+
+    def embed_records(self, records, **kwargs):
+        type(self).seen = list(records["id"])
+        return []
+
+
+def _cluster_ctx(tmp_path, settings, monkeypatch):
+    import modeling.text.embed as embed
+
+    monkeypatch.setattr(embed, "Embedder", _RecordingEmbedder)
+    records = _frame()
+    return S.StageContext(
+        settings=settings,
+        reader=None,
+        store=ScoredStore(settings, root=tmp_path / "scored"),
+        records=records,
+        authors=pd.DataFrame(),
+        demo=True,
+        dry_run=True,
+    )
+
+
+def test_cluster_stage_embeds_every_language_while_embed_lists_wildcard(
+    settings, monkeypatch, tmp_path
+):
+    """Clustering behaviour is unchanged by the gate: Hindi is still embedded."""
+    ctx = _cluster_ctx(tmp_path, settings, monkeypatch)
+    S._cluster_stage(ctx)
+    assert _RecordingEmbedder.seen == ["r:en", "r:hi", "r:null"]
+
+
+def test_cluster_stage_follows_a_narrowed_embed_list(settings, monkeypatch, tmp_path):
+    body = {**C.models_config(), "embed": {**C.models_config()["embed"], "languages": ["en"]}}
+    monkeypatch.setattr(C, "models_config", lambda: body)
+    ctx = _cluster_ctx(tmp_path, settings, monkeypatch)
+    S._cluster_stage(ctx)
+    assert _RecordingEmbedder.seen == ["r:en", "r:null"]
