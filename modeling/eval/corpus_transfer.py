@@ -198,7 +198,7 @@ def evaluate_transfer(
     language_allowed: Callable[[str | None], bool],
     model_version: str,
     threshold: float | None,
-    min_labelled: int = MIN_LABELLED_ROWS,
+    min_labelled: int | None = None,
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> TransferResult:
@@ -209,6 +209,8 @@ def evaluate_transfer(
     is excluded as stale. Labels come only from the sheet.
     """
     from modeling.io import _as_version_dict
+
+    min_labelled = MIN_LABELLED_ROWS if min_labelled is None else min_labelled
 
     out = TransferResult(
         sample_rows=len(sheet), threshold=threshold, model_version=model_version

@@ -262,14 +262,54 @@ def evaluate(
     module: str = typer.Argument(..., help="Module to evaluate."),
     data: Path | None = typer.Option(None, help="Local benchmark path."),
     demo: bool = typer.Option(False, "--demo"),
+    sample: Path | None = typer.Option(
+        None,
+        help="misinfo only: the hand-labelled sample CSV. "
+        "Default artifacts/hand_labels/misinfo_corpus_sample.csv.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
-    """Evaluate a trained module without retraining it."""
+    """Evaluate a trained module without retraining it.
+
+    For ``misinfo`` the output ends with a corpus-transfer section computed from the
+    hand-labelled sample. It says so when no sample exists, and refuses to compute
+    metrics while fewer than MIN_LABELLED_ROWS rows carry a label. Exits 1 on refusal.
+    """
     _bootstrap(verbose)
     from modeling.training import evaluate_module
 
     result = evaluate_module(module, data_path=data, demo=demo)
     console.print(f"\n[bold]{module}[/] {result.headline()}")
+    if module != "misinfo":
+        return
+
+    from modeling.config import module_config
+    from modeling.eval.corpus_transfer import evaluate_transfer, read_label_sheet
+    from modeling.io import ScoredStore
+
+    settings = get_settings()
+    path = sample or settings.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv"
+    if not path.exists():
+        console.print(
+            f"\n[yellow]corpus transfer: NOT MEASURED[/] - no labelled sample at {path}. "
+            "Run `modeling sample-for-labelling misinfo`, label the `label` column by hand "
+            "(1 = misinformation-like, 0 = not), then rerun this command."
+        )
+        return
+    transfer = evaluate_transfer(
+        read_label_sheet(path),
+        ScoredStore(settings).read("record_scores"),
+        language_allowed=settings.language_allowed,
+        model_version=str(module_config("misinfo").get("version", "v0.0.0-unset")),
+        threshold=module_config("misinfo").get("decision_threshold"),
+        seed=settings.seed,
+    )
+    benchmark = result.report.macro_f1.value if result.report is not None else None
+    console.print()
+    for line in transfer.render(benchmark_macro_f1=benchmark):
+        console.print(line, markup=False, highlight=False)
+    if not transfer.computed:
+        raise typer.Exit(code=1)
 
 
 @app.command()
