@@ -84,6 +84,12 @@ from a model that was not built for Hindi. The scored tables therefore cover a
 subset of the corpus, and any volume comparison between a Hindi and an English
 narrative is invalid until a multilingual checkpoint lands.
 
+**Old Hindi hashes are stale.** The tokenizer now keeps the zero width joiner and
+non-joiner inside a word, so Indic text with a conjunct such as क्‍ष gets a
+different simhash than before. A corpus written before this change holds stale
+simhash values for Indic text. Re-normalize it before you compare hashes across
+the change.
+
 ## Critical path
 
 The shortest route from here to a defensible result, in order. Each step unblocks

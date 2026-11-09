@@ -453,6 +453,19 @@ class TestSimhash:
         b = "A new species of deep sea jellyfish was described by marine biologists"
         assert hamming(simhash(a), simhash(b)) > 12
 
+    def test_a_joiner_inside_a_conjunct_does_not_split_the_word(self):
+        from ingest.normalize import _WORD_RE, _shingles
+
+        assert _WORD_RE.findall("क्\u200dष") == ["क्\u200dष"]
+        assert _WORD_RE.findall("क्\u200cष") == ["क्\u200cष"]
+        assert _shingles("क्\u200dष") == ["क्\u200dष"]
+
+    def test_english_tokens_are_unchanged_by_the_joiner_characters(self):
+        from ingest.normalize import _WORD_RE
+
+        text = "Don't panic, it's 5 o'clock"
+        assert _WORD_RE.findall(text) == ["Don", "t", "panic", "it", "s", "5", "o", "clock"]
+
     def test_short_text_below_ngram_size_still_hashes(self):
         assert simhash("two words") != 0
 

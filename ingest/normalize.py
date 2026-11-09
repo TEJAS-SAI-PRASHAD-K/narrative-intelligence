@@ -42,7 +42,9 @@ _URL_RE = re.compile(r"""(?i)\bhttps?://[^\s<>"'`\\]+""")
 #: block U+0900 to U+0DFF is added whole, minus the punctuation inside it: the
 #: danda and double danda (U+0964, U+0965) and the abbreviation sign (U+0970),
 #: which sit against the last word of a sentence and would otherwise stay in it.
-WORD_CHARS = r"\w\u0900-\u0963\u0966-\u096f\u0971-\u0dff"
+#: The zero width non-joiner and joiner (U+200C, U+200D) are also word characters,
+#: because inside a conjunct such as क्‍ष they are part of the word.
+WORD_CHARS = r"\w\u0900-\u0963\u0966-\u096f\u0971-\u0dff\u200c\u200d"
 _HASHTAG_RE = re.compile(rf"(?<![\w&])#([{WORD_CHARS}]{{1,139}})", re.UNICODE)
 _MENTION_RE = re.compile(r"(?<![\w])@([A-Za-z0-9_.\-]{1,64}(?:@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})?)")
 _WS_RUN = re.compile(r"[^\S\n]+")  # horizontal whitespace only
