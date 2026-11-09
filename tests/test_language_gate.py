@@ -29,6 +29,7 @@ def fake_models_yaml(monkeypatch):
 
     def install(body: dict):
         monkeypatch.setattr(C, "models_config", lambda: body)
+        C.clear_language_cache()
 
     return install
 
@@ -72,6 +73,29 @@ def test_module_without_a_list_raises_instead_of_scoring_everything(settings, fa
         settings.language_allowed("newmodel", "en")
     with pytest.raises(ModuleLanguagesMissing):
         settings.language_allowed("newmodel", "hi")
+
+
+def test_repeated_calls_do_not_read_the_config_again(settings, monkeypatch):
+    reads: list[str] = []
+    real = C.models_config
+
+    def counting():
+        reads.append("read")
+        return real()
+
+    monkeypatch.setattr(C, "models_config", counting)
+    C.clear_language_cache()
+    for _ in range(50):
+        assert settings.language_allowed("laya", "hi")
+        assert not settings.language_allowed("misinfo", "hi")
+    assert len(reads) == 2  # one read per module, not one per call
+
+
+def test_clearing_the_cache_picks_up_a_changed_config(settings, fake_models_yaml):
+    fake_models_yaml({"m": {"languages": ["en"]}})
+    assert module_languages("m") == ("en",)
+    fake_models_yaml({"m": {"languages": ["hi"]}})
+    assert module_languages("m") == ("hi",)
 
 
 def test_unknown_module_name_raises(settings):
@@ -321,6 +345,7 @@ def test_cluster_stage_embeds_every_language_while_embed_lists_wildcard(
 def test_cluster_stage_follows_a_narrowed_embed_list(settings, monkeypatch, tmp_path):
     body = {**C.models_config(), "embed": {**C.models_config()["embed"], "languages": ["en"]}}
     monkeypatch.setattr(C, "models_config", lambda: body)
+    C.clear_language_cache()
     ctx = _cluster_ctx(tmp_path, settings, monkeypatch)
     S._cluster_stage(ctx)
     assert _RecordingEmbedder.seen == ["r:en", "r:null"]

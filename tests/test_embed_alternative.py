@@ -88,6 +88,7 @@ def test_config_selects_the_model(settings, monkeypatch):
     body = C.models_config()
     patched = {**body, "embed": {**body["embed"], "model_name": MULTILINGUAL}}
     monkeypatch.setattr(C, "models_config", lambda: patched)
+    C.clear_language_cache()
     assert E.Embedder(settings).model_name == MULTILINGUAL
 
 
@@ -116,6 +117,7 @@ def test_missing_vector_dim_is_an_error_not_a_pass(settings, monkeypatch):
     body = C.models_config()
     without = {**body, "embed": {k: v for k, v in body["embed"].items() if k != "vector_dim"}}
     monkeypatch.setattr(C, "models_config", lambda: without)
+    C.clear_language_cache()
     _install(monkeypatch, {DEFAULT: 384})
     with pytest.raises(E.EmbeddingDimensionMismatch, match="vector_dim"):
         E.Embedder(settings).load()

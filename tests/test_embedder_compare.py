@@ -54,6 +54,7 @@ def env(tmp_path, monkeypatch):
     body = C.models_config()
     small = {**body, "cluster": {**body["cluster"], "min_cluster_size": 5, "min_samples": 2}}
     monkeypatch.setattr(C, "models_config", lambda: small)
+    C.clear_language_cache()
     dims = {DEFAULT: 384, ALTERNATIVE: 384, WIDE: 768}
     loaded: list[str] = []
 

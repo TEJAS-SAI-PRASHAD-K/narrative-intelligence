@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import random
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -219,7 +219,21 @@ def module_languages(module: str) -> tuple[str, ...]:
     """The languages a module may score, from ``configs/models.yaml``.
 
     Raises :class:`ModuleLanguagesMissing` when the module has no usable list.
+    The parsed list is cached for the life of the process, because the language
+    gate runs once per record and the file does not change under a running
+    process. A failure is not cached. Call :func:`clear_language_cache` after
+    anything that replaces the config.
     """
+    return _module_languages(module)
+
+
+def clear_language_cache() -> None:
+    """Forget the parsed per-module language lists."""
+    _module_languages.cache_clear()
+
+
+@cache
+def _module_languages(module: str) -> tuple[str, ...]:
     value = (models_config().get(module) or {}).get("languages")
     if isinstance(value, str) or not isinstance(value, (list, tuple)) or not value:
         raise ModuleLanguagesMissing(
