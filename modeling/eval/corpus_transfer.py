@@ -59,7 +59,8 @@ def unscorable_reason(
     """Why the misinfo stage would skip this record, or ``None`` if it scores it."""
     if not language_allowed(None if _is_null(lang) else str(lang)):
         return LANGUAGE_NOT_SCORED
-    if len("" if _is_null(text) else str(text)) < MIN_TEXT_CHARS:
+    # The misinfo stage measures the stripped text, so the sampler must too.
+    if len("" if _is_null(text) else str(text).strip()) < MIN_TEXT_CHARS:
         return TEXT_TOO_SHORT
     return None
 

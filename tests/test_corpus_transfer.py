@@ -30,6 +30,17 @@ def corpus() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["id", "source", "lang", "text"])
 
 
+class TestUnscorableReason:
+    def test_whitespace_padding_does_not_count_towards_the_minimum_length(self):
+        padded = " " * 12 + "x" * (ct.MIN_TEXT_CHARS - 1) + " " * 12
+        assert len(padded) > ct.MIN_TEXT_CHARS
+        assert ct.unscorable_reason("en", padded, allow_en) == ct.TEXT_TOO_SHORT
+
+    def test_text_of_exactly_the_minimum_stripped_length_is_scorable(self):
+        text = "  " + "x" * ct.MIN_TEXT_CHARS + "\n"
+        assert ct.unscorable_reason("en", text, allow_en) is None
+
+
 class TestBuildSample:
     def test_every_sampled_row_is_scorable_and_unexcluded_rows_are_counted(self):
         result = ct.build_sample(corpus(), n=8, language_allowed=allow_en, seed=1)
