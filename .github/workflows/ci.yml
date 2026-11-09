@@ -126,7 +126,7 @@ jobs:
         # Without this the job races the container and fails on connection
         # refused roughly one run in three.
         options: >-
-          --health-cmd "pg_isready -U narrative"
+          --health-cmd "pg_isready -U narrative -d narrative_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -139,13 +139,13 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: python -m pip install -e ".[modeling,api,dev]"
 
-      - name: Enable pgvector
-        # The extension is created by a superuser once, not by the test
-        # fixtures -- see the note in tests/conftest_api.py about `public`
-        # having to stay on the search path.
+      - name: Enable database extensions
+        # The extension list has one source, docker/postgres-init/01-extensions.sql.
+        # A superuser runs it once, not the test fixtures -- see the note in
+        # tests/conftest_api.py about `public` having to stay on the search path.
         run: |
-          PGPASSWORD=test psql -h 127.0.0.1 -U narrative -d narrative_test \
-            -c "CREATE EXTENSION IF NOT EXISTS vector"
+          PGPASSWORD=test psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U narrative -d narrative_test \
+            -f docker/postgres-init/01-extensions.sql
 
       - name: Postgres-backed tests
         env:
@@ -158,10 +158,13 @@ jobs:
             tests/test_auth.py tests/test_routers -p no:cacheprovider -rs
 
       - name: Migration chain round-trips
-        # `alembic downgrade base && alembic upgrade head`. The strongest single
-        # assertion available about the schema, and it needs a real database.
+        # Upgrade first: on a fresh database a downgrade alone does nothing.
+        # Then downgrade to base, which must drop everything the chain created,
+        # then upgrade again. The strongest single assertion available about the
+        # schema, and it needs a real database.
         env:
           DATABASE_URL: postgresql+psycopg://narrative:test@127.0.0.1:5432/narrative_test
         run: |
+          python -m alembic upgrade head
           python -m alembic downgrade base
           python -m alembic upgrade head
