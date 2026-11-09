@@ -255,3 +255,22 @@ def test_an_unsigned_simhash_round_trips_through_a_signed_bigint(migrated_db):
 
     with sync_session() as session:
         assert from_signed(session.get(Post, "reddit:sim").simhash) == unsigned
+
+
+@requires_postgres
+def test_running_migrations_does_not_silence_existing_loggers(api_env, allow_local_sockets):
+    import logging
+
+    from alembic.config import Config
+
+    from alembic import command
+
+    existing = logging.getLogger("ingest.normalize")
+    assert not existing.disabled
+
+    config = Config("alembic.ini")
+    config.set_main_option("script_location", "alembic")
+    # `current` runs env.py, which applies the logging config from alembic.ini.
+    command.current(config)
+
+    assert not existing.disabled
