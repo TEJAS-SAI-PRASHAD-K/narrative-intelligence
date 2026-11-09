@@ -68,6 +68,41 @@ STANCE_LABELS = ("support", "deny", "discuss", "unrelated")
 LABEL_TO_INDEX = {label: index for index, label in enumerate(STANCE_LABELS)}
 
 
+#: Wording that checkpoints use for each contract label. FNC-1's own names are
+#: accepted because a head trained straight from its CSV labels carries them.
+_LABEL_ALIASES = {
+    "support": "support",
+    "agree": "support",
+    "deny": "deny",
+    "disagree": "deny",
+    "discuss": "discuss",
+    "unrelated": "unrelated",
+}
+
+
+def resolve_stance_labels(id2label: Any) -> list[str] | None:
+    """Return the contract label at each logit position, or ``None``.
+
+    Read from the checkpoint's own ``id2label``. ``None`` means the head cannot
+    be read with confidence: a missing map, the unhelpful ``LABEL_0`` default,
+    an unknown name, a repeated class or a missing class. The caller must then
+    refuse the checkpoint. A guessed order swaps ``support`` with ``deny``, and
+    no aggregate metric shows it.
+    """
+    if not id2label:
+        return None
+    try:
+        ordered = sorted((int(index), str(name)) for index, name in dict(id2label).items())
+    except (TypeError, ValueError):
+        return None
+    if [index for index, _ in ordered] != list(range(len(STANCE_LABELS))):
+        return None
+    labels = [_LABEL_ALIASES.get(name.strip().lower()) for _, name in ordered]
+    if None in labels or set(labels) != set(STANCE_LABELS):
+        return None
+    return [str(label) for label in labels]
+
+
 @dataclass
 class StancePrediction:
     label: str | None
@@ -113,6 +148,10 @@ class StanceClassifier:
         #: stance fine-tune. Changes how logits are read, and is reported.
         self._zero_shot = False
         self._nli_index: dict[str, int] | None = None
+        #: Contract label at each logit position of a fine-tuned head.
+        self._index_to_label: list[str] = list(STANCE_LABELS)
+        #: Reason code for the last refused ``load``, or ``None``.
+        self.load_error: str | None = None
 
     @property
     def trained(self) -> bool:
@@ -285,6 +324,7 @@ class StanceClassifier:
 
         self._model, self._tokenizer = model, tokenizer
         self._zero_shot = False
+        self._index_to_label = list(STANCE_LABELS)
 
         metadata = {
             "base_model": model_name,
@@ -355,21 +395,44 @@ class StanceClassifier:
 
     # --- inference ---------------------------------------------------------
     def load(self, checkpoint_dir: Path | None) -> bool:
-        """Load a fine-tuned checkpoint. Returns False when there is none."""
+        """Load a fine-tuned checkpoint. Returns False when there is none.
+
+        The label order is read from the checkpoint's ``id2label``. A head that
+        does not name exactly the four stance classes is refused, with
+        ``load_error`` set to ``label_orientation_unresolved``.
+        """
+        self.load_error = None
         if checkpoint_dir is None:
+            self.load_error = "no_checkpoint"
             return False
         try:
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            self._tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
-            self._model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
-            self._model.to(self.settings.resolve_device())
-            self._model.eval()
-            self._zero_shot = False
-            return True
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
+            model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
         except Exception as exc:
             log.warning("no usable stance checkpoint at %s: %s", checkpoint_dir, exc)
+            self.load_error = "checkpoint_unreadable"
             return False
+
+        order = resolve_stance_labels(getattr(model.config, "id2label", None))
+        if order is None:
+            log.error(
+                "refusing the stance checkpoint at %s: id2label=%s does not name support, "
+                "deny, discuss and unrelated exactly once each, so the meaning of each "
+                "logit cannot be resolved",
+                checkpoint_dir,
+                getattr(model.config, "id2label", None),
+            )
+            self.load_error = "label_orientation_unresolved"
+            return False
+
+        self._tokenizer, self._model = tokenizer, model
+        self._index_to_label = order
+        self._model.to(self.settings.resolve_device())
+        self._model.eval()
+        self._zero_shot = False
+        return True
 
     def load_zero_shot(self, model_name: str | None = None) -> bool:
         """Load the NLI base model and read its head as stance.
@@ -442,7 +505,7 @@ class StanceClassifier:
         if self._zero_shot:
             return self._zero_shot_predictions(probabilities)
         return [
-            StancePrediction(STANCE_LABELS[int(np.argmax(row))], float(np.max(row)))
+            StancePrediction(self._index_to_label[int(np.argmax(row))], float(np.max(row)))
             for row in probabilities
         ]
 
