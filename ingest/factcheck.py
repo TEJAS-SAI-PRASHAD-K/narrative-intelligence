@@ -366,8 +366,16 @@ class FactCheckExtractor:
         Cached permanently and never revalidated: an article is immutable once
         published and a verdict does not change. That also keeps a rerun from
         hammering publishers who are doing this project a favour.
+
+        A cached page is returned before the budget and domain-limit checks, so
+        it costs no budget. It is used without a new robots check: the robots
+        check ran when the page was first fetched.
         """
         config = self.config.get("fetch") or {}
+        cache_path = self._cache_path(url) if config.get("cache", True) else None
+        if cache_path and cache_path.exists():
+            return cache_path.read_text(encoding="utf-8", errors="replace")
+
         if self._budget <= 0:
             self.drop(DropReason.BUDGET_EXHAUSTED, url)
             return None
@@ -376,10 +384,6 @@ class FactCheckExtractor:
         if self._fetch_failures.get(domain, 0) >= limit:
             self.drop(DropReason.DOMAIN_GIVEN_UP, url)
             return None
-
-        cache_path = self._cache_path(url) if config.get("cache", True) else None
-        if cache_path and cache_path.exists():
-            return cache_path.read_text(encoding="utf-8", errors="replace")
 
         allowed, reason = self._robots_allows(url)
         if not allowed:

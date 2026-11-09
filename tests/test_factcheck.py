@@ -358,6 +358,25 @@ class TestRobotsHandling:
         assert calls == ["https://www.boomlive.in/robots.txt"]
 
 
+class TestFetchCache:
+    def test_a_cache_hit_is_returned_after_the_budget_is_spent(self, extractor):
+        cache_path = extractor._cache_path(BOOM_URL)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("<html>cached</html>", encoding="utf-8")
+        extractor._budget = 0
+        assert extractor.fetch_html(BOOM_URL) == "<html>cached</html>"
+        assert extractor._budget == 0
+        assert extractor.dropped == {}
+
+    def test_a_cache_hit_does_not_change_the_budget_count(self, extractor):
+        cache_path = extractor._cache_path(BOOM_URL)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("<html>cached</html>", encoding="utf-8")
+        extractor._budget = 5
+        extractor.fetch_html(BOOM_URL)
+        assert extractor._budget == 5
+
+
 class TestDriver:
     def test_an_unconfigured_domain_is_skipped_and_counted(self, extractor):
         records = [{"id": "news:x", "url": "https://example.com/a", "source_detail": "example.com"}]
