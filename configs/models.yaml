@@ -64,7 +64,9 @@ cluster:
   severity_engagement_weighted: true
 
 misinfo:
-  version: v0.1.0
+  # v0.2.0 is the roberta-base fine-tune of the three-way comparison. The weights of
+  # v0.1.0 are lost, so a score stamped v0.1.0 came from a different checkpoint.
+  version: v0.2.0
   # roberta-base is English-only. Hindi is skipped with `unsupported_language`;
   # `laya` is the module that reads it.
   languages: [en]

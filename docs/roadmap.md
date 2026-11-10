@@ -18,12 +18,12 @@ the module being quietly described as present.
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
 | fact-check verdicts | partial | 2 of 4 extraction tiers, 4 of 8 publishers |
 | embeddings and clustering | done | MiniLM, HDBSCAN, narrative identity across runs |
-| misinformation classifier | does not clear baseline | see below |
+| misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
 | stance classifier | training path only | fine-tune is GPU work, zero-shot baseline exists |
 | bot classifier | does not generalize | see below |
 | coordination detection | no signal on this corpus | see below |
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
-| Laya scorer | code only | base checkpoints load, no fine-tune has run, no stage in modeling/scoring.py |
+| Laya scorer | fine-tuned, not shipped | see the comparison result, no stage in modeling/scoring.py |
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation |
 | API | done | 69 paths, 80 operations, contract tested under `DEMO_MODE` |
 | database | done | 27 tables, 4 migrations, round-trip asserted in CI |
@@ -54,14 +54,9 @@ to what the code produces.
 These are reported because a module that fails quietly is worse than one that
 fails loudly. None of them is a blocker for the pipeline running end to end.
 
-**The misinformation classifier does not clear TF-IDF.** On the demo fixture,
-macro-F1 0.908 against 0.927 for TF-IDF plus logistic regression, intervals
-overlapping. A full-scale run on 26,777 rows recorded macro-F1 0.8062 with a
-95 percent interval of 0.7956 to 0.8161 over 7,085 test rows, but **its weights
-are no longer on disk**, only the config, tokenizer and calibrator. The number
-cannot be reproduced from what is here. Retraining is the only way to close it.
-The bar stands: if the transformer does not clear TF-IDF it should not ship,
-because it costs orders of magnitude more inference for no measured gain.
+**No Hindi model passes the gate.** The set has 13 Hindi claims, and the gate needs
+50. The Laya multilingual fine-tune has a Hindi title lift of 1.495 [0.000, 6.974].
+Hindi scores do not enter fusion.
 
 **The bot classifier does not generalize to unseen botnets.** Trained on
 Cresci-2017: pooled out-of-fold macro-F1 0.705, but the mean across folds is
@@ -76,13 +71,14 @@ communities found are not evidence of coordination. The detector does recover a
 planted coordinated burst on the demo fixture, so the mechanism works and the
 corpus simply does not contain the phenomenon at a detectable level.
 
-**Hindi is ingested but not scored.** `modeling/config.py` sets
-`languages = ("en",)`, so Hindi records are collected, normalized, stored, and
-then skipped by the toxicity, sentiment, emotion and misinformation stages.
-English-only MiniLM still embeds and clusters Hindi records, so those clusters come
-from a model that was not built for Hindi. The scored tables therefore cover a
-subset of the corpus, and any volume comparison between a Hindi and an English
-narrative is invalid until a multilingual checkpoint lands.
+**The default embedder groups Hindi by language.** On a 636-record news corpus, the
+default MiniLM model placed 147 of the 156 Hindi records in one cluster with 2 English
+records. That cluster is a language group, not a narrative. The multilingual
+candidate found no clusters at `min_cluster_size` 15 on the same records, so the
+default stays. Repeat `modeling.cli compare-embedder` when the corpus is larger.
+
+**Hindi is ingested and only partly scored.** Each module in `configs/models.yaml`
+has its own `languages` list. The English-only modules skip Hindi with a reason code.
 
 **Old Hindi hashes are stale.** The tokenizer now keeps the zero width joiner and
 non-joiner inside a word, so Indic text with a conjunct such as क्‍ष gets a
@@ -90,41 +86,21 @@ different simhash than before. A corpus written before this change holds stale
 simhash values for Indic text. Re-normalize it before you compare hashes across
 the change.
 
-## Critical path
+## Comparison result
 
-The shortest route from here to a defensible result, in order. Each step unblocks
-the next.
+The three-way comparison ran on 2026-11-09 on a GPU host. The full report is
+[results/factcheck-comparison.md](results/factcheck-comparison.md), and the runbook is
+[laya-finetune.md](laya-finetune.md).
 
-1. **Fetch the benchmarks.** A new clone has no `data/benchmarks/`. `make benchmarks`
-   pulls LIAR, CoAID and FakeNewsNet, pinned to exact commits and checksums. The FakeNewsNet label CSVs and
-   the CoAID CSVs are enough, with no crawl. The current classifier was trained on
-   the union of all three, so a like-for-like comparison needs all three. On the
-   public data, `build_training_frame` and the project seed reproduce the recorded
-   split: 30148 groups, 26777/3596/7085.
+| model | test macro F1 at precision 0.85 | difference to TF-IDF | decision |
+|---|---|---|---|
+| roberta-base fine-tune | 0.753 [0.741, 0.764] | +0.150 [0.135, 0.164] | ship |
+| Laya English fine-tune | 0.683 [0.670, 0.696] | +0.079 [0.065, 0.095] | passes the rule, not added |
+| Laya multilingual fine-tune | 0.565 [0.552, 0.578] | -0.039 [-0.054, -0.022] | do not ship |
+| TF-IDF + logreg | 0.603 [0.590, 0.616] | baseline | |
 
-2. **Retrain the misinformation classifier.** The three-way comparison needs its
-   predictions, and its weights are gone. Train it on the same split as step 1.
-
-3. **Fine-tune Laya on a GPU.** Follow [laya-finetune.md](laya-finetune.md). The
-   scorer and the training exporter are written and tested, but nothing has
-   touched the real weights. Fine-tuning is mandatory rather than optional: the
-   base checkpoint scores below its own majority-class baseline on the vendor's
-   benchmark, so a zero-shot number is a baseline to report, never a model to
-   ship.
-
-4. **Build the three-way evaluation harness.** The harness is written
-   (`modeling/eval/factcheck_eval.py`, `modeling.cli evaluate-factchecks`) and reads
-   precomputed scores. The scoring step that writes its input files is not written.
-   Score the fact-check evaluation set with Laya, with the
-   roberta-base fine-tune and with TF-IDF plus logistic regression, on identical
-   group-aware splits, and report them side by side. Details in step 6 of the
-   fine-tune runbook.
-
-5. **Make the scoring language gate per module.** `Settings.languages` is global.
-   Adding `hi` to it sends Hindi into English-only toxicity, sentiment, emotion and
-   misinformation models, which then write noise. Move the gate to each module in
-   `configs/models.yaml`. Then add a Laya stage to `modeling/scoring.py`, and let
-   `LayaScorer.checkpoint_for` select a fine-tuned directory. Neither exists today.
+At the default threshold of 0.5, the gap between roberta and TF-IDF is 0.033. The
+roberta model cannot score Hindi. Hindi remains unsupported by any shipped model.
 
 ### How to report the fact-check evaluation
 
@@ -173,8 +149,6 @@ the honest entry in that cell, not a zero.
 
 ### Modeling
 
-- **Retrain the misinformation classifier** and either clear TF-IDF or drop the
-  transformer. Its weights are gone, so the current state is neither.
 - **Fine-tune stance.** The corpus supplied as SemEval-2016 is actually FNC-1,
   which is the better fit because its four labels map one to one onto the
   contract. 75,385 pairs over 2,587 bodies. `make benchmarks` fetches it into
