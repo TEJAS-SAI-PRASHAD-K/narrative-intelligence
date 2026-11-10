@@ -19,7 +19,7 @@ the module being quietly described as present.
 | fact-check verdicts | partial | 2 of 4 extraction tiers, 4 of 8 publishers, sitemap backfill for Vishvas News |
 | embeddings and clustering | done | MiniLM, HDBSCAN, narrative identity across runs |
 | misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
-| stance classifier | training path only | fine-tune is GPU work, zero-shot baseline exists |
+| stance classifier | fine-tuned | macro-F1 0.797 on the FNC-1 competition test set, see the model card |
 | bot classifier | does not generalize | see below |
 | coordination detection | no signal on this corpus | see below |
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
@@ -54,9 +54,10 @@ to what the code produces.
 These are reported because a module that fails quietly is worse than one that
 fails loudly. None of them is a blocker for the pipeline running end to end.
 
-**No Hindi model passes the gate.** The set has 13 Hindi claims, and the gate needs
-50. The Laya multilingual fine-tune has a Hindi title lift of 1.495 [0.000, 6.974].
-Hindi scores do not enter fusion.
+**The Hindi gate passes with clear limits.** The Laya multilingual fine-tune has a
+Hindi title lift of 2.233 [1.146, 6.605] over 261 claims. Recall is 0.115, and the
+corpus has 136 Hindi titles. Almost all Hindi claims come from one publisher. See
+`artifacts/model_cards/laya.md`.
 
 **The bot classifier does not generalize to unseen botnets.** Trained on
 Cresci-2017: pooled out-of-fold macro-F1 0.705, but the mean across folds is
@@ -100,8 +101,7 @@ The three-way comparison ran on 2026-11-09 on a GPU host. The full report is
 | Laya multilingual fine-tune | 0.565 [0.552, 0.578] | -0.039 [-0.054, -0.022] | do not ship |
 | TF-IDF + logreg | 0.603 [0.590, 0.616] | baseline | |
 
-At the default threshold of 0.5, the gap between roberta and TF-IDF is 0.033. The
-roberta model cannot score Hindi. Hindi remains unsupported by any shipped model.
+At the default threshold of 0.5, the gap between roberta and TF-IDF is 0.033. roberta model cannot score Hindi. Only the Laya multilingual fine-tune scores Hindi.
 
 ### How to report the fact-check evaluation
 
@@ -163,11 +163,6 @@ the honest entry in that cell, not a zero.
 
 ### Modeling
 
-- **Fine-tune stance.** The corpus supplied as SemEval-2016 is actually FNC-1,
-  which is the better fit because its four labels map one to one onto the
-  contract. 75,385 pairs over 2,587 bodies. `make benchmarks` fetches it into
-  `data/benchmarks/stance/` at a pinned commit. The fine-tune starts
-  from an NLI and FEVER checkpoint rather than a bare encoder.
 - **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
   statements, CoAID is COVID-era health claims, and this corpus is Indian
   recontextualised media. The gap is currently unmeasured. Closing it needs 100
