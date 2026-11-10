@@ -85,11 +85,15 @@ thresholds:
   # `authors.coordination_score` is the mean of three terms, each in [0, 1]:
   # community size on a log scale against the largest community, mean edge
   # weight against the strongest edge, and the share of the author's own posts
-  # that took part in an edge (modeling/accounts/coordination.py). 0.5 is the
-  # score of an author whose three terms average the middle of their scales.
-  # It is a round midpoint of that scale, not a value tuned on labelled data.
-  # A score equal to the threshold is not above it. Only authors that have an
-  # edge in the coordination graph carry a score at all.
+  # that took part in an edge (modeling/accounts/coordination.py).
+  #
+  # 0.50 is a placeholder. It is not tuned. It has not been measured on a real
+  # score distribution, and no labelled data supports it. An author with an
+  # edge has a floor from the size term and the participation term, so most
+  # authors with an edge can exceed 0.50. An author the detector saw but linked
+  # to nobody has a score of 0.0, and an author it never saw has no score. A
+  # score equal to the threshold is not above it. Measure the distribution and
+  # set this value from it, then bump `version`.
   coordination_score_threshold: 0.50
   toxic: 0.60
   anomalous: 0.70

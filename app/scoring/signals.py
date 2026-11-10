@@ -60,9 +60,10 @@ SELECT
     count(DISTINCT a.author_id) FILTER (WHERE a.bot_score > :bot_threshold)::float
       / NULLIF(count(DISTINCT a.author_id) FILTER (WHERE a.bot_score IS NOT NULL), 0)
         AS bot_like_ratio,
-    -- Same shape as the bot ratio. Only authors the coordination detector put
-    -- in its graph carry a score, so the denominator is the scored authors and
-    -- the result is NULL, never 0, when none of a narrative's authors has one.
+    -- Same shape as the bot ratio. An author the detector saw carries a score,
+    -- 0.0 when it linked them to nobody. An author it never saw carries NULL, so
+    -- the denominator is the scored authors and the result is NULL, never 0,
+    -- when none of a narrative's authors has one.
     count(DISTINCT a.author_id) FILTER (WHERE a.coordination_score > :coordination_threshold)::float
       / NULLIF(count(DISTINCT a.author_id) FILTER (WHERE a.coordination_score IS NOT NULL), 0)
         AS coordinated_author_ratio,

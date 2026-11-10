@@ -148,3 +148,38 @@ def test_populations_rank_the_new_signal_and_not_the_bot_ratio(seeded):
 
     assert "coordinated_author_ratio" in population
     assert "bot_like_ratio" not in population
+
+
+@requires_postgres
+def test_unlinked_authors_with_a_zero_score_stay_in_the_denominator(seeded):
+    """Three measured zeros and one flagged author give 0.25, not 1.0."""
+    narrative = seeded([(0.0, None), (0.0, None), (0.0, None), (0.9, None)])
+    item = _collect(seeded.project_id)[narrative]
+
+    assert item.coordinated_author_ratio == pytest.approx(0.25)
+    assert item.inputs["coordination_scored_authors"] == 4
+
+
+@requires_postgres
+def test_the_signal_reaches_the_coordination_component_and_the_bot_ratio_does_not(seeded):
+    """collect -> populations -> normalizers -> fusion_score, end to end."""
+    from app.scoring import signals
+    from app.scoring.fusion import Normalizers, fusion_score, load_config
+
+    config = load_config()
+    narrative = seeded([(0.9, 0.99), (0.8, 0.99), (0.1, 0.01), (0.0, 0.01)])
+    collected = _collect(seeded.project_id, config)
+    normalizers = Normalizers.build(signals.populations(collected), config)
+
+    result = fusion_score(collected[narrative], config=config, normalizers=normalizers)
+    coordination = next(c for c in result.components["components"] if c["name"] == "coordination")
+
+    # Two of four scored authors are above the threshold. The population has one
+    # narrative, below min_sample, so the normalizer passes the raw value through.
+    assert coordination["inputs"]["coordinated_author_ratio"]["value"] == pytest.approx(0.5)
+    assert "bot_like_ratio" not in coordination["inputs"]
+    # The bot ratio is still collected, and a different value would not move the score.
+    assert collected[narrative].bot_like_ratio == pytest.approx(0.5)
+    collected[narrative].bot_like_ratio = 0.0
+    again = fusion_score(collected[narrative], config=config, normalizers=normalizers)
+    assert again.score == result.score

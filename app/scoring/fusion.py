@@ -70,9 +70,9 @@ SUB_DEFINITIONS = {
     "negative_sentiment": "Share of scored member posts classified negative.",
     "coordinated_author_ratio": (
         "Share of member authors whose coordination score is above the "
-        "threshold, over the authors that have a coordination score. Authors "
-        "outside the coordination graph have no score and are excluded rather "
-        "than counted as uncoordinated."
+        "threshold, over the authors that have a coordination score. An author "
+        "the detector saw but linked to nobody scores 0.0. An author it never "
+        "saw has no score and is excluded."
     ),
     "co_post_similarity_density": (
         "Density of co-posting-similarity edges among member authors, against a "
