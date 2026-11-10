@@ -73,6 +73,11 @@ class ModelingSettings(BaseSettings):
     #: that lists ``*`` admits every record, null or not.
     score_unknown_language: bool = True
 
+    #: Directory of the promoted Laya multilingual checkpoint that the `laya` scoring stage
+    #: loads for Hindi. A relative path resolves against ``models_dir``. Unset means the
+    #: stage is refused with ``checkpoint_missing``. It never falls back to the base checkpoint.
+    laya_hi_checkpoint: str | None = None
+
     # --- LLM (bounded use only; see modeling/text/summarize.py) ----------
     anthropic_api_key: str | None = None
     llm_model: str = "claude-haiku-4-5-20251001"
@@ -94,7 +99,9 @@ class ModelingSettings(BaseSettings):
 
     log_level: str = "INFO"
 
-    @field_validator("anthropic_api_key", "hf_repo", "hf_token", mode="before")
+    @field_validator(
+        "anthropic_api_key", "hf_repo", "hf_token", "laya_hi_checkpoint", mode="before"
+    )
     @classmethod
     def _blank_is_absent(cls, v: Any) -> Any:
         if isinstance(v, str) and not v.strip():
