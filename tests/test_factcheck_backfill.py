@@ -42,10 +42,21 @@ def fixture_bytes(name: str) -> bytes:
 
 
 class Response:
-    def __init__(self, status: int = 200, content: bytes = b""):
+    def __init__(self, status: int = 200, content: bytes = b"", final_url: str | None = None):
         self.status_code = status
         self.content = content
         self.text = content.decode("utf-8", errors="replace")
+        self.encoding = "utf-8"
+        self.final_url = final_url
+        self.url = ""
+        self.closed = False
+
+    def iter_content(self, chunk_size: int = 1):
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -66,6 +77,7 @@ class FakeWeb:
         outcome = self.routes[url]
         if isinstance(outcome, Exception):
             raise outcome
+        outcome.url = outcome.final_url or url
         return outcome
 
     def articles(self) -> list[str]:
@@ -164,6 +176,70 @@ class TestParseSitemap:
         assert parse_lastmod("2026-02-19T11:04:22+05:30").hour == 5
         assert parse_lastmod("not a date") is None
         assert parse_lastmod(None) is None
+
+    @pytest.mark.parametrize("value", ["5", "2026-13-01", "19/02/2026", "yesterday", "2026-02-30"])
+    def test_lastmod_has_no_lenient_fallback(self, value):
+        assert parse_lastmod(value) is None
+
+    @pytest.mark.parametrize(
+        "value", ["2026", "2026-02", "2026-02-19T11:04", "2026-02-19T11:04:22.5Z"]
+    )
+    def test_lastmod_accepts_the_w3c_forms(self, value):
+        assert parse_lastmod(value).year == 2026
+
+    def test_a_utf8_byte_order_mark_is_accepted(self):
+        body = b"\xef\xbb\xbf" + fixture_bytes("sitemap_urlset.xml")
+        assert parse_sitemap(body)[0] == "urlset"
+
+    def test_a_declared_encoding_other_than_utf8_or_ascii_is_refused(self):
+        body = b'<?xml version="1.0" encoding="UTF-16"?><urlset/>'
+        with pytest.raises(ValueError, match="encoding"):
+            parse_sitemap(body)
+
+    def test_empty_loc_is_counted(self):
+        counters: dict[str, int] = {}
+        parse_sitemap(fixture_bytes("sitemap_oddities.xml"), counters)
+        assert counters == {"empty_loc": 1}
+
+
+ENTITY_DOC = (
+    '<?xml version="1.0"?>'
+    '<!DOCTYPE urlset [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    "<url><loc>https://www.vishvasnews.com/viral/&b;/</loc></url></urlset>"
+)
+
+
+class TestEncodingBypass:
+    """A byte search for DOCTYPE cannot see UTF-16, so the encoding is checked first."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            ENTITY_DOC.encode("utf-16-le"),
+            ENTITY_DOC.encode("utf-16-be"),
+            ENTITY_DOC.encode("utf-16"),
+            b"\xff\xfe" + ENTITY_DOC.encode("utf-16-le"),
+            b"\xfe\xff" + ENTITY_DOC.encode("utf-16-be"),
+            ENTITY_DOC.encode("utf-32"),
+        ],
+        ids=["utf16le", "utf16be", "utf16-bom", "utf16le-bom", "utf16be-bom", "utf32"],
+    )
+    def test_nothing_parses(self, body, monkeypatch):
+        import xml.etree.ElementTree as ET
+
+        def never(*args, **kwargs):
+            raise AssertionError("the parser was reached")
+
+        monkeypatch.setattr(ET, "fromstring", never)
+        with pytest.raises(ValueError):
+            parse_sitemap(body)
+
+    def test_the_run_counts_it_as_malformed(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(200, ENTITY_DOC.encode("utf-16"))
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_MALFORMED.value] == 1
 
 
 class TestDiscovery:
@@ -293,6 +369,132 @@ class TestDiscovery:
         wrong_tier = make_backfill(tmp_path, config)
         assert wrong_tier.candidates(DOMAIN) == []
         assert wrong_tier.stats[DOMAIN].dropped[DropReason.NO_BACKFILL_CONFIG.value] == 1
+
+
+class BoundedStream(Response):
+    """A body of unlimited length that fails the test when read past a limit."""
+
+    def __init__(self, fail_after: int):
+        super().__init__(200, b"")
+        self.fail_after = fail_after
+        self.consumed = 0
+
+    def iter_content(self, chunk_size: int = 1):
+        while True:
+            self.consumed += chunk_size
+            if self.consumed > self.fail_after:
+                raise AssertionError(f"read {self.consumed} bytes past the bound")
+            yield b"x" * chunk_size
+
+
+class TestSizeBound:
+    def test_reading_stops_at_the_bound_not_after_the_full_body(self, tmp_path, web):
+        config = make_config()
+        bound = 200_000
+        config["backfill"]["max_sitemap_bytes"] = bound
+        stream = BoundedStream(fail_after=bound + 65536)
+        web.routes[INDEX_URL] = stream
+        backfill = make_backfill(tmp_path, config)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_TOO_LARGE.value] == 1
+        assert bound < stream.consumed <= bound + 65536
+        assert stream.closed
+
+
+class TestRedirects:
+    def test_a_sitemap_that_ends_off_domain_is_discarded(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(
+            200, fixture_bytes("sitemap_urlset.xml"), final_url="https://evil.example/s.xml"
+        )
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.BACKFILL_OFF_DOMAIN_REDIRECT.value] == 1
+
+    def test_a_sitemap_redirect_from_apex_to_www_succeeds(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(
+            200, fixture_bytes("sitemap_urlset.xml"), final_url="https://vishvasnews.com/s.xml"
+        )
+        backfill = make_backfill(tmp_path)
+        assert len(backfill.candidates(DOMAIN)) == 4
+
+    def test_an_article_that_ends_off_domain_is_discarded_and_not_cached(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(
+            200, fixture_bytes("hindi_claimreview.html"), final_url="https://evil.example/x"
+        )
+        backfill = make_backfill(tmp_path)
+        verdicts = list(backfill.run())
+        assert len(verdicts) == 3
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.BACKFILL_OFF_DOMAIN_REDIRECT.value] == 1
+        assert not backfill.extractor._cache_path(NEW_URL).exists()
+
+    def test_an_article_redirect_from_apex_to_www_succeeds(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(
+            200,
+            fixture_bytes("hindi_claimreview.html"),
+            final_url="https://vishvasnews.com/viral/fact-check-new-one/",
+        )
+        backfill = make_backfill(tmp_path)
+        assert len(list(backfill.run())) == 4
+
+    def test_the_daily_path_does_not_check_the_final_domain(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(
+            200, fixture_bytes("hindi_claimreview.html"), final_url="https://other.example/x"
+        )
+        extractor = make_backfill(tmp_path).extractor
+        assert extractor.fetch_html(NEW_URL) is not None
+
+
+class TestClaimLanguages:
+    def test_a_marathi_row_is_excluded_and_counted_by_language(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        web.routes[NEW_URL] = Response(200, fixture_bytes("english_claimreview.html"))
+        backfill = make_backfill(tmp_path, make_config(block={"claim_languages": ["hi"]}))
+        verdicts = list(backfill.run())
+        assert {v.claim_lang for v in verdicts} == {"hi"}
+        assert len(verdicts) == 2
+        stats = backfill.stats[DOMAIN]
+        assert stats.language_excluded == {"mr": 1, "en": 1}
+        assert stats.dropped[DropReason.BACKFILL_LANGUAGE_EXCLUDED.value] == 2
+        assert stats.verdicts == 2
+        assert backfill.extractor.dropped[DropReason.BACKFILL_LANGUAGE_EXCLUDED.value] == 2
+
+    def test_nothing_is_excluded_without_the_setting(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        backfill = make_backfill(tmp_path)
+        assert len(list(backfill.run())) == 4
+
+    def test_the_cli_reports_excluded_languages(self, tmp_path, web, monkeypatch):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        settings = Settings(data_dir=tmp_path)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        config = make_config(block={"claim_languages": ["hi"]})
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: config)
+        result = CliRunner().invoke(cli.app, ["factchecks", "--backfill", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "'mr': 1" in result.output
+
+
+class TestReportedCounts:
+    def test_unreadable_lastmod_empty_and_duplicate_loc(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(200, fixture_bytes("sitemap_oddities.xml"))
+        backfill = make_backfill(tmp_path)
+        urls = [e.loc for e in backfill.candidates(DOMAIN)]
+        stats = backfill.stats[DOMAIN]
+        # The unreadable date keeps the page, as an absent date does.
+        assert "https://www.vishvasnews.com/viral/fact-check-bad-date/" in urls
+        assert stats.lastmod_unparseable == 1
+        assert stats.empty_loc == 1
+        assert stats.duplicate_loc == 1
+        assert urls.count("https://www.vishvasnews.com/viral/fact-check-twice/") == 1
+
+    def test_sitemaps_left_unread_when_the_wanted_count_is_reached(self, tmp_path, web):
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 1
+        backfill = make_backfill(tmp_path, config)
+        backfill.candidates(DOMAIN)
+        assert backfill.stats[DOMAIN].sitemaps_unread >= 1
 
 
 class TestRun:
