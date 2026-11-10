@@ -277,7 +277,6 @@ honestly marked as not done.
 | Sentiment | `twitter-roberta-base-sentiment-latest` | Off the shelf, trained on social media | **In use** |
 | Emotion | `emotion-english-distilroberta-base` | Off the shelf, 7 emotions | **In use** |
 | Unusual behaviour | Isolation Forest | Unsupervised, runs on behaviour not text | **In use** |
-| Deepfake detection | `xception41` | Blocked — the training data is 17 GB behind a signed agreement, and the alternative copy has no metadata linking fakes to source videos | **Blocked** |
 | Writing summaries | `claude-haiku-4-5` | API, pinned version, temperature 0 for repeatability | **In use** |
 
 ### Why some models are deliberately left off the shelf
@@ -320,7 +319,6 @@ So the unit of a split is never a single post:
 | Misinformation | Speaker, claim ID, outlet | One politician's statements share phrasing and history |
 | Stance | Claim / target | Handling unseen targets *is* the benchmark |
 | Bot | **Campaign**, not account | Each bot network runs one template — splitting by account puts siblings on both sides |
-| Deepfake | **Source video**, not frame | Frames from one clip on both sides is *the* classic cause of fake 99% accuracy |
 
 Two things happen in a fixed order: **remove near-duplicates, then split** (a
 duplicate crossing the line leaks even when the group IDs differ), then **split by
@@ -748,13 +746,12 @@ of that detector did not exceed the time-shuffled null (0.912 against 0.979).
 The signal is therefore weak evidence. The change improves the input of the
 formula. It does not show that coordination exists in this corpus.
 
-**Authenticity (20%) — is the evidence what it claims to be**
+**Authenticity (20%) — are the sources what they claim to be**
 
 | Sub-signal | Weight | What it is |
 |---|---|---|
-| `deepfake_hits` | 0.40 | Share of checked media flagged as manipulated |
-| `domain_risk_agg` | 0.35 | Average risk of the websites linked |
-| `anonymous_author_ratio` | 0.25 | Share of accounts that are deleted or have no handle. Lack of attribution isn't proof of bad faith, which is why it's a minority of one component rather than a flag on its own |
+| `domain_risk_agg` | 0.5833 | Average risk of the websites linked |
+| `anonymous_author_ratio` | 0.4167 | Share of accounts that are deleted or have no handle. Lack of attribution isn't proof of bad faith, which is why it's a minority of one component rather than a flag on its own |
 
 ### Three rules built into the code
 
@@ -767,7 +764,7 @@ restart.
 If a component couldn't be computed, it's `null`, it's listed by name in the
 response, and **the remaining weights get redistributed proportionally**. Treating
 "not measured" as "measured zero" would systematically under-flag every narrative
-where the deepfake check never ran.
+where one of its inputs is missing.
 
 **3. Everything normalises the same way.**
 Mixing two normalisation methods produces scores that are each defensible on their
@@ -793,7 +790,7 @@ that it fell back**.
 cannot end up with different priorities.
 
 Thresholds have one definition system-wide: bot-like at 0.60, toxic at 0.60,
-anomalous at 0.70, deepfake at 0.50, and a "burst" is 3× the narrative's own average.
+anomalous at 0.70, and a "burst" is 3× the narrative's own average.
 
 ### One value worth arguing about
 
@@ -897,12 +894,11 @@ logged as warnings so they're impossible to miss during development.
 | **Network** | The graph · trigger a layout computation · saved side-by-side comparisons |
 | **Domains** | Ranked by risk, with detail, linked narratives, and on-demand enrichment |
 | **Posts** | Full-text search · find similar posts · reconstruct a thread |
-| **Media** | Submit a deepfake check, see check history |
 | **Operations** | Health checks · readiness with per-subsystem status · metrics · jobs · ingest history · API keys · alert rules |
 
 ### Two design choices worth noting
 
-**Startup doesn't fail on a missing model.** A missing deepfake checkpoint must not
+**Startup doesn't fail on a missing model.** A missing model checkpoint must not
 stop the narrative API from working. It gets marked "unavailable" in the readiness
 check, and only the routes that need it return an error naming the missing file.
 
@@ -927,10 +923,10 @@ There are four queues, split by *what the work competes for*, not by feature.
 |---|---|---|
 | `io` | Network | Fetching from platforms, looking up domain records. Many run at once |
 | `cpu` | Processor cores | Scoring, graph building, alert checks, report rendering |
-| `gpu` | The graphics card | Embedding, clustering, deepfake checks. Effectively one at a time |
+| `gpu` | The graphics card | Embedding, clustering. Effectively one at a time |
 | `llm` | The AI provider's rate limit | Writing summaries, Compass notes |
 
-> **Why split them:** a 40-minute deepfake job must not be able to starve a
+> **Why split them:** a 40-minute GPU job must not be able to starve a
 > 15-minute alert check. With one queue it can — and the first time it happens the
 > alerts are simply late and nobody notices they were late.
 
@@ -956,7 +952,7 @@ There are four queues, split by *what the work competes for*, not by feature.
 |---|---|---|
 | 15 min | Alert evaluation | Check alert rules against current scores |
 | 1 hour | Domain enrichment | Look up registration and certificate info. Never blocks — a domain page must render regardless |
-| 1 hour | Purge uploads | Uploaded media is imagery of real people. This is what makes the retention promise real rather than aspirational |
+| 1 hour | Purge uploads | Delete files older than the retention window from the uploads folder. An earlier version of the service accepted uploads of images of real people. This task clears files that remain |
 | 6 hours | Rebuild graph edges | Then automatically re-detect communities |
 | 24 hours | Rescore narratives | Recompute every fusion score |
 | 7 days | Re-cluster | Find narratives again, carrying IDs forward |
@@ -1038,7 +1034,6 @@ model versions and the input corpus checksum per table.
 | `narrative_membership` | post × narrative | membership confidence, is-representative flag |
 | `author_scores` | account | bot score, top reasons, coordination score, community |
 | `coordination_edges` | account pair × evidence | weight, evidence type, observations, time window |
-| `media_scores` | post × media file | deepfake score, was a face found, explanation |
 
 **Four rules, checked when the file is written:**
 
@@ -1053,7 +1048,7 @@ model versions and the input corpus checksum per table.
 
 ### Layer 2 — the database, through the API
 
-27 tables, all scoped to a **project** (one case under investigation). Three
+26 tables, all scoped to a **project** (one case under investigation). Three
 structural things shape how you query them:
 
 - **Scores live in a separate table from posts.** The corpus is immutable; scores
@@ -1081,7 +1076,6 @@ for anyone who wants to take the numbers into their own tools.
 | `toxicity` | An off-the-shelf classifier's output, **not calibrated** | A judgement that an account is abusive |
 | `anomaly_score` | A **percentile rank within this corpus** | A probability. It cannot be multiplied into one |
 | `severity` | Engagement-weighted average of the worst 25% of member posts | An average, or a percentile |
-| `deepfake_prob` | Score across the highest-scoring frames with a detected face | Evidence a video is real. Empty means "couldn't look" |
 
 ### Good uses
 

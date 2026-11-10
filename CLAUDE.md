@@ -52,7 +52,6 @@ Optional dependency groups, installed on top:
 pip install -e ".[modeling]"   # classifiers, clustering, evaluation
 pip install -e ".[api]"        # FastAPI, SQLAlchemy, Celery, pgvector
 pip install -e ".[laya]"       # the System One scorer
-pip install -e ".[media]"      # deepfake tree, heaviest, opt-in
 pip install -e ".[llm]"        # narrative summaries
 ```
 
@@ -205,7 +204,7 @@ decision and it belongs in a commit where the diff is the only thing under revie
 ## Traps that have already cost time
 
 **Unanchored gitignore patterns match at any depth.** A bare `models/` also
-matched `app/models/`, so the ORM package holding all 27 tables was never
+matched `app/models/`, so the ORM package holding every table was never
 committed and the API could not import on a clean clone. Build-product patterns
 are anchored now and `tests/test_repo_layout.py` guards it. Patterns that must
 match at any depth, such as `__pycache__/`, are deliberately left unanchored.

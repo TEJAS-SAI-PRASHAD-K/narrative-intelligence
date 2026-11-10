@@ -405,7 +405,7 @@ another process.
 ## 7. Operating point and shipping
 
 `configs/models.yaml` sets `decision_threshold: null` and
-`precision_target: 0.85` deliberately. Same discipline as `bot` and `deepfake`:
+`precision_target: 0.85` deliberately. Same discipline as `bot`:
 a false "misinformation" costs more than a miss, so the threshold comes off the
 PR curve at a precision target and is **re-derived for every checkpoint**. A
 threshold copied from another run belongs to that run.

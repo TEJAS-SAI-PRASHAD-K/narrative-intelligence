@@ -64,6 +64,27 @@ decision.
 - `topics.yaml`'s `languages:` key is marked declarative, because nothing reads
   it. The three real enforcement points are named instead.
 
+### Removed
+
+- **The deepfake module.** The code, the API, the table, the dependency tree, the
+  training path and the evaluation artifacts are gone.
+  - `POST /api/v1/media/check`, `GET /api/v1/media/check/{job_id}` and
+    `GET /api/v1/media/checks` no longer exist. The API now has 66 paths and 77
+    operations. The `media.deepfake` job kind is gone.
+  - Migration `a91f3c5d7b24` deletes the `jobs` rows of kind `media.deepfake` and
+    drops `media_checks`. The downgrade recreates the empty table. The deleted job
+    rows do not come back. The database now has 26 tables and 5 migrations.
+  - The `authenticity` pillar and its weight 0.20 stay. It now has two
+    sub-signals, `domain_risk_agg` at 0.5833 and `anonymous_author_ratio` at
+    0.4167. The config version is `fusion-v1.2.0`. A narrative that had no media
+    checks keeps its score, apart from rounding below 0.01 points.
+  - The `media` extra, `modeling/media/`, the DFDC and FaceForensics++ loaders,
+    the `deepfake` trainer, the `media` scoring stage and the `media_scores` table
+    are removed. A leftover `data/scored/media_scores` directory is ignored.
+  - `maint.purge_uploads` stays as a file-system-only sweep. It deletes every entry
+    under `uploads_dir` that is older than `media_retention_hours`. It clears files
+    that a deployment uploaded before this removal.
+
 ### Known gaps
 
 - **The GDELT country filter is not verified live.** GDELT's stateful penalty
