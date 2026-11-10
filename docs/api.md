@@ -90,7 +90,7 @@ curl -sH "X-API-Key: $KEY" "$API/narratives?project_id=$P&sort=priority&limit=20
   "summary": {"text": "…", "provenance": {"generated_by": "ai", "model": "claude-haiku-4-5-20251001",
                                           "generated_at": "2026-08-19T…"}},
   "scorecard": {"priority": "medium", "fusion_score": 65.38, "bot_like": 0.25,
-                "toxicity": 0.11, "scoring_version": "fusion-v1.0.0", "missing": []}
+                "toxicity": 0.11, "scoring_version": "fusion-v1.1.0", "missing": []}
 }], "total": 21}
 ```
 
@@ -119,7 +119,7 @@ curl -sH "X-API-Key: $KEY" "$API/narratives/$N/score"
 The score endpoint is the product thesis in one response:
 
 ```json
-{"fusion_score": 65.38, "priority": "medium", "scoring_version": "fusion-v1.0.0",
+{"fusion_score": 65.38, "priority": "medium", "scoring_version": "fusion-v1.1.0",
  "formula": "100 * (w1*narrative_severity + w2*coordination + w3*authenticity)",
  "normalization": "percentile-rank within project (min sample 20; …)",
  "missing": [], "weights_renormalized": false,

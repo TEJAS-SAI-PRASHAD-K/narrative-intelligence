@@ -291,7 +291,9 @@ bot:
   shap_top_k: 5
 
 coordination:
-  version: v0.1.0
+  # v0.2.0: coordination_score is 0.0, not null, for an account the detector saw
+  # and linked to nobody.
+  version: v0.2.0
   # Simhash, shared URLs, hashtags and timing. Language agnostic.
   languages: ["*"]
   window_minutes: 60

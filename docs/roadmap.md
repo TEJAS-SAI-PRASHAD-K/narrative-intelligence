@@ -24,7 +24,7 @@ the module being quietly described as present.
 | coordination detection | no signal on this corpus | see below |
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
 | Laya scorer | fine-tuned, not shipped | see the comparison result, no stage in modeling/scoring.py |
-| fusion scoring | done | `configs/fusion.yaml`, returns its own explanation |
+| fusion scoring | done | `configs/fusion.yaml`, returns its own explanation, coordination input is the weak coordination score, not the bot ratio |
 | API | done | 69 paths, 80 operations, contract tested under `DEMO_MODE` |
 | database | done | 27 tables, 4 migrations, round-trip asserted in CI |
 | dashboard | done | separate repo, built against the committed contract |
@@ -63,7 +63,8 @@ Cresci-2017: pooled out-of-fold macro-F1 0.705, but the mean across folds is
 0.416 with a standard deviation of 0.187 and a worst fold of 0.249. The pooled
 figure averages away the folds where the held-out campaign looked nothing like
 the training ones. Quote the per-fold mean. Human recall is 0.608, so 39 percent
-of genuine accounts are flagged at the chosen threshold.
+of genuine accounts are flagged at the chosen threshold. For this reason the fusion
+formula does not read `bot_like_ratio`. It reads `coordinated_author_ratio`.
 
 **Coordination modularity does not exceed the time-shuffled null.** Observed
 0.912 against 0.979 for the null. Any graph has communities; on this corpus the

@@ -44,7 +44,8 @@ def _signals(**overrides) -> NarrativeSignals:
         "compass_status": "debunked",
         "toxicity": 0.5,
         "negative_sentiment": 0.6,
-        "bot_like_ratio": 0.4,
+        "bot_like_ratio": 0.9,
+        "coordinated_author_ratio": 0.4,
         "co_post_similarity_density": 0.3,
         "temporal_burstiness": 0.5,
         "cohort_concentration": 0.7,
@@ -74,6 +75,37 @@ def test_a_fully_populated_narrative_scores_by_the_documented_formula(config, ra
     assert result.scoring_version == config["version"]
 
 
+def test_the_fusion_formula_does_not_read_the_bot_ratio(config, raw):
+    """bot_like_ratio is stored for alerts and scorecards, but is not a fusion input."""
+    low_bot = fusion_score(_signals(bot_like_ratio=0.0), config=config, normalizers=raw)
+    high_bot = fusion_score(_signals(bot_like_ratio=1.0), config=config, normalizers=raw)
+    assert low_bot.score == high_bot.score
+
+    coordination = next(c for c in high_bot.components["components"] if c["name"] == "coordination")
+    assert "bot_like_ratio" not in coordination["inputs"]
+    assert "bot_like_ratio" not in config["coordination"]
+    assert coordination["inputs"]["coordinated_author_ratio"]["weight"] == pytest.approx(0.35)
+
+
+def test_no_coordination_scores_is_a_null_signal_handled_like_any_missing_one(config, raw):
+    """A narrative with no scored authors is not a narrative with 0 coordinated authors."""
+    absent = fusion_score(
+        _signals(coordinated_author_ratio=None), config=config, normalizers=raw
+    )
+    zeroed = fusion_score(
+        _signals(coordinated_author_ratio=0.0), config=config, normalizers=raw
+    )
+    coordination = next(c for c in absent.components["components"] if c["name"] == "coordination")
+
+    assert coordination["inputs"]["coordinated_author_ratio"]["value"] is None
+    live = [i for i in coordination["inputs"].values() if i["value"] is not None]
+    assert sum(i["weight"] for i in live) == pytest.approx(1.0, abs=1e-3)
+    assert coordination["missing"] == ["coordinated_author_ratio"]
+    assert coordination["weights_renormalized"] is True
+    assert absent.missing == []
+    assert absent.score > zeroed.score
+
+
 def test_the_score_is_bounded(config, raw):
     """0-100 by construction, at both ends."""
     everything = dict.fromkeys(
@@ -81,7 +113,7 @@ def test_the_score_is_bounded(config, raw):
             "misinfo_likelihood_agg",
             "toxicity",
             "negative_sentiment",
-            "bot_like_ratio",
+            "coordinated_author_ratio",
             "co_post_similarity_density",
             "temporal_burstiness",
             "cohort_concentration",
@@ -170,7 +202,7 @@ def test_every_missing_component_combination(config, raw, absent):
             "negative_sentiment",
         ],
         "coordination": [
-            "bot_like_ratio",
+            "coordinated_author_ratio",
             "co_post_similarity_density",
             "temporal_burstiness",
             "cohort_concentration",

@@ -734,10 +734,19 @@ score = 100 × ( 0.45 × how harmful  +  0.35 × how coordinated  +  0.20 × how
 
 | Sub-signal | Weight | What it is |
 |---|---|---|
-| `bot_like_ratio` | 0.35 | Share of member accounts above the bot cutoff, **out of accounts that could actually be scored**. News outlets are excluded rather than counted as human |
+| `coordinated_author_ratio` | 0.35 | Share of member accounts with a coordination score above 0.50, **out of accounts that have a score**. An account that the detector saw and linked to nobody has a score of 0. An account the detector did not see has no score and is excluded. If no account has a score, the signal is `null`. The 0.50 cutoff is a placeholder that is not tuned |
 | `co_post_similarity_density` | 0.25 | How densely the member accounts are linked by near-duplicate posting |
 | `temporal_burstiness` | 0.25 | Share of volume in spikes above 3× the narrative's own average. Coordination looks like a spike |
 | `cohort_concentration` | 0.15 | Share of posts from the single largest cohort. A narrative carried entirely by one segment is a different thing from one with broad reach |
+
+The bot ratio left this component. The bot classifier does not generalize
+(mean-fold macro-F1 0.416, and 39 percent of genuine accounts flagged). The system
+still stores the bot ratio and uses it for alerts. The fusion does not read it.
+
+The new signal comes from the coordination detector. On this corpus, the modularity
+of that detector did not exceed the time-shuffled null (0.912 against 0.979).
+The signal is therefore weak evidence. The change improves the input of the
+formula. It does not show that coordination exists in this corpus.
 
 **Authenticity (20%) — is the evidence what it claims to be**
 
