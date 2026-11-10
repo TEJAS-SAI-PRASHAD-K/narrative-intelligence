@@ -1,17 +1,46 @@
 # Model card — stance classifier
 
 **Module:** `modeling/text/stance_clf.py` · **Version:** `v0.3.0`
-**Output:** `record_scores.stance`, `record_scores.stance_conf` — **null until a
-checkpoint is registered**
+**Output:** `record_scores.stance`, `record_scores.stance_conf`. The columns are
+**null where no checkpoint is registered**.
 
 ---
 
-## Status: the training path is complete and verified; the real fine-tune is GPU work
+## Result
 
-`stance` and `stance_conf` are still written as **null** until a checkpoint is
-registered, which the contract permits and Phase 4 renders as "not assessed". An
-untrained model producing confident stance labels would be worse than an empty
-column.
+The fine-tune ran on 2026-11-10 on a GPU host, with 3 epochs. The trainer restored
+epoch 2, which has the lowest validation log loss (0.1376).
+
+The test set is the FNC-1 competition test set, with 25,413 pairs. Its bodies do not
+occur in training. Training and validation split by headline, and the trainer removed
+156 training rows that share a headline with the test set.
+
+| model | macro F1 | 95% CI |
+|---|---|---|
+| **fine-tune v0.3.0** | **0.7965** | [0.7862, 0.8066] |
+| zero-shot NLI, same base model | 0.2496 | [0.2430, 0.2557] |
+| TF-IDF + logreg | 0.2612 | [0.2537, 0.2688] |
+| majority class | 0.2096 | [0.2088, 0.2105] |
+
+| class | precision | recall | F1 | support |
+|---|---|---|---|---|
+| support | 0.739 | 0.736 | 0.737 | 1903 |
+| deny | 0.649 | 0.541 | 0.590 | 697 |
+| discuss | 0.861 | 0.871 | 0.866 | 4464 |
+| unrelated | 0.991 | 0.995 | 0.993 | 18349 |
+
+The fine-tune clears every baseline. The `deny` class is the weakest, and 46 percent
+of `deny` pairs are missed. The FNC-1 competition score is not computed.
+
+The benchmark is English news headlines and bodies. This result does not measure
+stance on this corpus. The weights are on the GPU host only, so a new clone must
+train again.
+
+## Status: the training path and the checkpoint exist; the corpus has no stance labels
+
+`stance` and `stance_conf` are written as **null** where no checkpoint is registered,
+which the contract permits and Phase 4 renders as "not assessed". An untrained model
+producing confident stance labels would be worse than an empty column.
 
 **Scoring stage (v0.3.0).** With a registered checkpoint, `_stance_stage` scores
 each record against the representative claim of its narrative and writes `stance`
@@ -19,8 +48,9 @@ and `stance_conf`. A record that is not scored gets a `stance:<reason>` entry in
 `skip_reasons`: `empty_text`, `text_too_short`, `unsupported_language` (stance is
 English only), `no_narrative`, `no_claim_text`, `claim_unsupported_language` and
 `is_claim`. A checkpoint whose `id2label` does not name the four classes exactly
-once is refused (`label_orientation_unresolved`) and the columns stay null. The
-stage is covered with a fake model only. No real checkpoint has scored a corpus.
+once is refused (`label_orientation_unresolved`) and the columns stay null. A real
+checkpoint scored 83 of 636 news records on 2026-11-10: 60 `support`, 21 `discuss` and
+2 `deny`. No labels exist for these rows, so the accuracy on this corpus is not known.
 
 **What changed.** The trainer is no longer a stub. `modeling/training.py`
 registers a real `stance` path — load → group-split → baselines → fine-tune →

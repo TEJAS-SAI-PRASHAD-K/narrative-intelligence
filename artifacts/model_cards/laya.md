@@ -1,7 +1,7 @@
 # Model card — Laya misinformation scorer
 
 **Module:** `modeling/text/laya_clf.py` · **Version:** `v0.2.1`
-**Status:** fine-tuned and compared. Not in the scoring pipeline.
+**Status:** fine-tuned and compared. The Hindi gate passes. The scoring stage is not built yet.
 
 ## Result
 
@@ -19,7 +19,7 @@ full report is [docs/results/factcheck-comparison.md](../../docs/results/factche
 The base checkpoint did not reach precision 0.85 on validation. Its best precision
 was 0.444.
 
-**Decision: Laya does not enter the scoring pipeline.** The English fine-tune passes
+**Decision for English: Laya does not enter the scoring pipeline.** The English fine-tune passes
 the rule against TF-IDF. But `misinfo` v0.2.0 has a higher macro F1 of 0.753 and a
 higher fact-check lift. The two candidates cover the same language, so a second
 scorer adds cost and no measured gain.
@@ -27,19 +27,26 @@ scorer adds cost and no measured gain.
 ## Hindi
 
 Hindi is the one language that only Laya can score here. The gate needs at least 50
-Hindi claims and a title lift interval with a lower limit above 1.
+Hindi claims and a title lift interval with a lower limit above 1. The set grew from
+13 to 261 Hindi claims when the sitemap backfill added Vishvas News archive pages.
 
 | measure, Hindi titles | Laya multilingual fine-tune |
 |---|---|
-| claims scored | 13 of 50 needed |
-| recall on known-false claims | 0.077 [0.000, 0.231] |
+| claims scored | 261 |
+| recall on known-false claims | 0.115 [0.077, 0.157] |
 | flag rate on 136 corpus titles | 0.051 [0.015, 0.088] |
-| lift | 1.495 [0.000, 6.974] |
+| lift | 2.233 [1.146, 6.605] |
 
-**The gate fails.** Hindi scores do not enter fusion, and the Laya stage in
-`modeling/scoring.py` stays unbuilt. The English result does not prove any transfer
-to Hindi. English recall on the fact-check set is also low, at 0.045 [0.011, 0.091]
-for both Laya fine-tunes.
+**The gate passes.** The result has clear limits:
+
+- The lower limit is 1.146, close to 1. The corpus has only 136 Hindi titles.
+- Recall is 0.115, so the model does not flag most debunked claims at this threshold.
+- Almost all Hindi claims come from one publisher. The result reflects the choice of
+  claims by that publisher.
+- The claims are short fact-check statements, and the corpus has news titles. A part
+  of the lift can come from this difference in text form.
+- The English recall on the fact-check set is 0.045 [0.011, 0.091] for both Laya
+  fine-tunes. The English result does not prove any transfer to Hindi.
 
 ## Calibration
 
