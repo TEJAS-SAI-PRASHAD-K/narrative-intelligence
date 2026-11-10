@@ -1,0 +1,618 @@
+"""Sitemap backfill of fact-check verdicts.
+
+Every payload is a small hand-written file under fixtures/factcheck_backfill/.
+`requests.get` is replaced by a table of canned responses, so no test opens a
+socket.
+"""
+
+from __future__ import annotations
+
+from datetime import timezone
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from ingest import cli, factcheck
+from ingest.config import Settings
+from ingest.factcheck import DropReason, FactCheckExtractor, write_factchecks
+from ingest.factcheck_backfill import (
+    SitemapBackfill,
+    existing_record_ids,
+    parse_lastmod,
+    parse_sitemap,
+    record_for_url,
+)
+from ingest.sources.news_rss import _article_id
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "factcheck_backfill"
+DOMAIN = "vishvasnews.com"
+INDEX_URL = "https://www.vishvasnews.com/sitemap_index.xml"
+SITEMAP_1 = "https://www.vishvasnews.com/post-sitemap.xml"
+SITEMAP_2 = "https://www.vishvasnews.com/post-sitemap2.xml"
+ROBOTS_URL = "https://www.vishvasnews.com/robots.txt"
+NEW_URL = "https://www.vishvasnews.com/viral/fact-check-new-one/"
+NEWER_URL = "https://www.vishvasnews.com/politics/fact-check-newer-one/"
+NO_LASTMOD_URL = "https://www.vishvasnews.com/politics/fact-check-no-lastmod/"
+STORED_URL = "https://www.vishvasnews.com/viral/fact-check-already-stored/"
+
+
+def fixture_bytes(name: str) -> bytes:
+    return (FIXTURES / name).read_bytes()
+
+
+class Response:
+    def __init__(self, status: int = 200, content: bytes = b"", final_url: str | None = None):
+        self.status_code = status
+        self.content = content
+        self.text = content.decode("utf-8", errors="replace")
+        self.encoding = "utf-8"
+        self.final_url = final_url
+        self.url = ""
+        self.closed = False
+
+    def iter_content(self, chunk_size: int = 1):
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeWeb:
+    """A table of canned responses. Any URL not in it is a test failure."""
+
+    def __init__(self, routes: dict[str, Response | Exception]):
+        self.routes = routes
+        self.calls: list[str] = []
+
+    def __call__(self, url, *args, **kwargs):
+        self.calls.append(url)
+        if url not in self.routes:
+            raise AssertionError(f"unexpected request: {url}")
+        outcome = self.routes[url]
+        if isinstance(outcome, Exception):
+            raise outcome
+        outcome.url = outcome.final_url or url
+        return outcome
+
+    def articles(self) -> list[str]:
+        return [u for u in self.calls if not u.endswith((".xml", "robots.txt"))]
+
+
+def base_routes() -> dict[str, Response | Exception]:
+    page = Response(200, fixture_bytes("hindi_claimreview.html"))
+    return {
+        ROBOTS_URL: Response(200, b"User-agent: *\nDisallow: /wp-admin/\n"),
+        INDEX_URL: Response(200, fixture_bytes("sitemap_index.xml")),
+        SITEMAP_1: Response(200, fixture_bytes("sitemap_urlset.xml")),
+        SITEMAP_2: Response(200, fixture_bytes("sitemap_urlset.xml")),
+        NEW_URL: page,
+        NEWER_URL: page,
+        NO_LASTMOD_URL: page,
+        STORED_URL: page,
+    }
+
+
+def make_config(**overrides) -> dict:
+    backfill_block = {
+        "sitemaps": [INDEX_URL],
+        "sitemap_pattern": r"/post-sitemap[0-9]*\.xml$",
+        "url_pattern": "/fact-check",
+        "exclude_pattern": r"^https://www\.vishvasnews\.com/english/",
+    }
+    backfill_block.update(overrides.pop("block", {}))
+    config = {
+        "publishers": {
+            DOMAIN: {
+                "name": "Vishvas News",
+                "tier": "claimreview",
+                "languages": ["hi", "en"],
+                "backfill": backfill_block,
+            },
+            "boomlive.in": {"name": "BOOM", "tier": "claimreview"},
+        },
+        "ratings": {"false": "false", "true": "true", "misleading": "drop"},
+        "fetch": {"max_articles": 5, "request_delay_seconds": 0, "cache": True},
+        "backfill": {
+            "max_urls_per_publisher": 50,
+            "max_sitemaps_per_publisher": 10,
+            "min_lastmod": "2022-01-01",
+        },
+    }
+    return config
+
+
+@pytest.fixture
+def web(monkeypatch):
+    import requests
+
+    fake = FakeWeb(base_routes())
+    monkeypatch.setattr(requests, "get", fake)
+    return fake
+
+
+def make_backfill(tmp_path, config=None, known=None) -> SitemapBackfill:
+    extractor = FactCheckExtractor(
+        settings=Settings(data_dir=tmp_path), config=config or make_config()
+    )
+    return SitemapBackfill(extractor, known if known is not None else set())
+
+
+class TestParseSitemap:
+    def test_index_lists_children_with_lastmod(self):
+        kind, entries = parse_sitemap(fixture_bytes("sitemap_index.xml"))
+        assert kind == "index"
+        assert [e.loc for e in entries][:2] == [SITEMAP_1, SITEMAP_2]
+        assert entries[1].lastmod.tzinfo == timezone.utc
+        assert entries[3].lastmod is None
+
+    def test_plain_urlset_with_extra_namespace_and_absent_lastmod(self):
+        kind, entries = parse_sitemap(fixture_bytes("sitemap_urlset.xml"))
+        assert kind == "urlset"
+        assert len(entries) == 8
+        by_loc = {e.loc: e for e in entries}
+        assert by_loc[NO_LASTMOD_URL].lastmod is None
+        assert by_loc[NEW_URL].lastmod is not None
+
+    def test_truncated_xml_is_rejected(self):
+        with pytest.raises(ValueError, match="well-formed"):
+            parse_sitemap(fixture_bytes("sitemap_malformed.xml"))
+
+    def test_a_doctype_with_entities_is_refused_before_parsing(self):
+        with pytest.raises(ValueError, match="DOCTYPE"):
+            parse_sitemap(fixture_bytes("sitemap_entity.xml"))
+
+    def test_an_unknown_root_is_rejected(self):
+        with pytest.raises(ValueError, match="root"):
+            parse_sitemap(b"<html><body/></html>")
+
+    def test_lastmod_formats(self):
+        assert parse_lastmod("2026-02-19").tzinfo == timezone.utc
+        assert parse_lastmod("2026-02-19T11:04:22+05:30").hour == 5
+        assert parse_lastmod("not a date") is None
+        assert parse_lastmod(None) is None
+
+    @pytest.mark.parametrize("value", ["5", "2026-13-01", "19/02/2026", "yesterday", "2026-02-30"])
+    def test_lastmod_has_no_lenient_fallback(self, value):
+        assert parse_lastmod(value) is None
+
+    @pytest.mark.parametrize(
+        "value", ["2026", "2026-02", "2026-02-19T11:04", "2026-02-19T11:04:22.5Z"]
+    )
+    def test_lastmod_accepts_the_w3c_forms(self, value):
+        assert parse_lastmod(value).year == 2026
+
+    def test_a_utf8_byte_order_mark_is_accepted(self):
+        body = b"\xef\xbb\xbf" + fixture_bytes("sitemap_urlset.xml")
+        assert parse_sitemap(body)[0] == "urlset"
+
+    def test_a_declared_encoding_other_than_utf8_or_ascii_is_refused(self):
+        body = b'<?xml version="1.0" encoding="UTF-16"?><urlset/>'
+        with pytest.raises(ValueError, match="encoding"):
+            parse_sitemap(body)
+
+    def test_empty_loc_is_counted(self):
+        counters: dict[str, int] = {}
+        parse_sitemap(fixture_bytes("sitemap_oddities.xml"), counters)
+        assert counters == {"empty_loc": 1}
+
+
+ENTITY_DOC = (
+    '<?xml version="1.0"?>'
+    '<!DOCTYPE urlset [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    "<url><loc>https://www.vishvasnews.com/viral/&b;/</loc></url></urlset>"
+)
+
+
+class TestEncodingBypass:
+    """A byte search for DOCTYPE cannot see UTF-16, so the encoding is checked first."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            ENTITY_DOC.encode("utf-16-le"),
+            ENTITY_DOC.encode("utf-16-be"),
+            ENTITY_DOC.encode("utf-16"),
+            b"\xff\xfe" + ENTITY_DOC.encode("utf-16-le"),
+            b"\xfe\xff" + ENTITY_DOC.encode("utf-16-be"),
+            ENTITY_DOC.encode("utf-32"),
+        ],
+        ids=["utf16le", "utf16be", "utf16-bom", "utf16le-bom", "utf16be-bom", "utf32"],
+    )
+    def test_nothing_parses(self, body, monkeypatch):
+        import xml.etree.ElementTree as ET
+
+        def never(*args, **kwargs):
+            raise AssertionError("the parser was reached")
+
+        monkeypatch.setattr(ET, "fromstring", never)
+        with pytest.raises(ValueError):
+            parse_sitemap(body)
+
+    def test_the_run_counts_it_as_malformed(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(200, ENTITY_DOC.encode("utf-16"))
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_MALFORMED.value] == 1
+
+
+class TestDiscovery:
+    def test_index_is_followed_and_filters_apply(self, tmp_path, web):
+        backfill = make_backfill(tmp_path)
+        found = backfill.candidates(DOMAIN)
+        urls = [e.loc for e in found]
+        # Newest first. The page with no lastmod sorts last.
+        assert urls == [NEWER_URL, NEW_URL, STORED_URL, NO_LASTMOD_URL]
+        stats = backfill.stats[DOMAIN]
+        assert stats.discovered == 4
+        # page-sitemap.xml fails the sitemap pattern. The 2021 child fails the
+        # lastmod cutoff. The off-domain child is refused.
+        assert stats.sitemaps_filtered_pattern == 1
+        assert stats.sitemaps_skipped_old == 1
+        assert stats.dropped[DropReason.SITEMAP_OFF_DOMAIN.value] >= 1
+        assert stats.filtered_lastmod == 1
+        assert stats.filtered_pattern == 2
+        assert stats.lastmod_absent_kept == 1
+        assert SITEMAP_1 not in web.calls
+        assert web.articles() == []
+
+    def test_urls_already_stored_are_not_candidates(self, tmp_path, web):
+        known = {record_for_url(STORED_URL, DOMAIN)["id"]}
+        backfill = make_backfill(tmp_path, known=known)
+        urls = [e.loc for e in backfill.candidates(DOMAIN)]
+        assert STORED_URL not in urls
+        assert backfill.stats[DOMAIN].already_present == 1
+
+    def test_limit_bound_keeps_the_newest_and_counts_the_rest(self, tmp_path, web):
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 2
+        backfill = make_backfill(tmp_path, config)
+        urls = [e.loc for e in backfill.candidates(DOMAIN)]
+        assert urls == [NEWER_URL, NEW_URL]
+        assert backfill.stats[DOMAIN].dropped[DropReason.BACKFILL_BOUND_REACHED.value] == 2
+
+    def test_publisher_bound_can_be_tighter_than_the_global_one(self, tmp_path, web):
+        config = make_config(block={"max_urls": 1})
+        backfill = make_backfill(tmp_path, config)
+        assert [e.loc for e in backfill.candidates(DOMAIN)] == [NEWER_URL]
+
+    def test_min_lastmod_null_reads_the_old_child_too(self, tmp_path, web):
+        config = make_config()
+        config["backfill"]["min_lastmod"] = None
+        backfill = make_backfill(tmp_path, config)
+        urls = [e.loc for e in backfill.candidates(DOMAIN)]
+        assert "https://www.vishvasnews.com/viral/fact-check-too-old/" in urls
+        assert SITEMAP_1 in web.calls
+
+    def test_sitemap_budget_is_counted(self, tmp_path, web):
+        config = make_config()
+        config["backfill"]["max_sitemaps_per_publisher"] = 1
+        backfill = make_backfill(tmp_path, config)
+        backfill.candidates(DOMAIN)
+        assert SITEMAP_2 not in web.calls
+        stats = backfill.stats[DOMAIN]
+        assert stats.sitemaps_read == 1
+        assert stats.dropped[DropReason.SITEMAP_BUDGET_EXHAUSTED.value] >= 1
+
+    def test_a_sitemap_index_that_lists_itself_terminates(self, tmp_path, monkeypatch):
+        import requests
+
+        loop = (
+            b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            b"<sitemap><loc>" + INDEX_URL.encode() + b"</loc></sitemap></sitemapindex>"
+        )
+        routes = base_routes()
+        routes[INDEX_URL] = Response(200, loop)
+        monkeypatch.setattr(requests, "get", FakeWeb(routes))
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+
+    def test_a_malformed_sitemap_is_counted_and_the_run_continues(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(200, fixture_bytes("sitemap_malformed.xml"))
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_MALFORMED.value] == 1
+        assert backfill.extractor.dropped[DropReason.SITEMAP_MALFORMED.value] == 1
+
+    def test_an_entity_bomb_is_counted_as_malformed(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(200, fixture_bytes("sitemap_entity.xml"))
+        backfill = make_backfill(tmp_path)
+        backfill.candidates(DOMAIN)
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_MALFORMED.value] == 1
+
+    def test_an_unreachable_sitemap_is_counted_not_raised(self, tmp_path, web):
+        web.routes[SITEMAP_2] = ConnectionError("down")
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_UNREACHABLE.value] == 1
+
+    def test_an_error_status_is_unreachable(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(503)
+        backfill = make_backfill(tmp_path)
+        backfill.candidates(DOMAIN)
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_UNREACHABLE.value] == 1
+
+    def test_an_oversize_sitemap_is_counted(self, tmp_path, web):
+        config = make_config()
+        config["backfill"]["max_sitemap_bytes"] = 100
+        web.routes[INDEX_URL] = Response(200, fixture_bytes("sitemap_index.xml"))
+        backfill = make_backfill(tmp_path, config)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_TOO_LARGE.value] == 1
+
+    def test_robots_disallow_stops_before_any_sitemap_is_fetched(self, tmp_path, web):
+        web.routes[ROBOTS_URL] = Response(200, b"User-agent: *\nDisallow: /\n")
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.ROBOTS_DISALLOWED.value] == 1
+        assert web.calls == [ROBOTS_URL]
+
+    def test_unreachable_robots_is_not_called_a_disallow(self, tmp_path, web):
+        web.routes[ROBOTS_URL] = Response(500)
+        backfill = make_backfill(tmp_path)
+        backfill.candidates(DOMAIN)
+        assert backfill.stats[DOMAIN].dropped[DropReason.ROBOTS_UNREACHABLE.value] == 1
+
+    def test_missing_sitemaps_and_wrong_tier_are_counted(self, tmp_path, web):
+        no_sitemaps = make_backfill(tmp_path, make_config(block={"sitemaps": []}))
+        assert no_sitemaps.candidates(DOMAIN) == []
+        assert no_sitemaps.stats[DOMAIN].dropped[DropReason.NO_BACKFILL_CONFIG.value] == 1
+
+        config = make_config()
+        config["publishers"][DOMAIN]["tier"] = "rss_tag"
+        wrong_tier = make_backfill(tmp_path, config)
+        assert wrong_tier.candidates(DOMAIN) == []
+        assert wrong_tier.stats[DOMAIN].dropped[DropReason.NO_BACKFILL_CONFIG.value] == 1
+
+
+class BoundedStream(Response):
+    """A body of unlimited length that fails the test when read past a limit."""
+
+    def __init__(self, fail_after: int):
+        super().__init__(200, b"")
+        self.fail_after = fail_after
+        self.consumed = 0
+
+    def iter_content(self, chunk_size: int = 1):
+        while True:
+            self.consumed += chunk_size
+            if self.consumed > self.fail_after:
+                raise AssertionError(f"read {self.consumed} bytes past the bound")
+            yield b"x" * chunk_size
+
+
+class TestSizeBound:
+    def test_reading_stops_at_the_bound_not_after_the_full_body(self, tmp_path, web):
+        config = make_config()
+        bound = 200_000
+        config["backfill"]["max_sitemap_bytes"] = bound
+        stream = BoundedStream(fail_after=bound + 65536)
+        web.routes[INDEX_URL] = stream
+        backfill = make_backfill(tmp_path, config)
+        assert backfill.candidates(DOMAIN) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_TOO_LARGE.value] == 1
+        assert bound < stream.consumed <= bound + 65536
+        assert stream.closed
+
+
+class TestRedirects:
+    def test_a_sitemap_that_ends_off_domain_is_discarded(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(
+            200, fixture_bytes("sitemap_urlset.xml"), final_url="https://evil.example/s.xml"
+        )
+        backfill = make_backfill(tmp_path)
+        assert backfill.candidates(DOMAIN) == []
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.BACKFILL_OFF_DOMAIN_REDIRECT.value] == 1
+
+    def test_a_sitemap_redirect_from_apex_to_www_succeeds(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(
+            200, fixture_bytes("sitemap_urlset.xml"), final_url="https://vishvasnews.com/s.xml"
+        )
+        backfill = make_backfill(tmp_path)
+        assert len(backfill.candidates(DOMAIN)) == 4
+
+    def test_an_article_that_ends_off_domain_is_discarded_and_not_cached(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(
+            200, fixture_bytes("hindi_claimreview.html"), final_url="https://evil.example/x"
+        )
+        backfill = make_backfill(tmp_path)
+        verdicts = list(backfill.run())
+        assert len(verdicts) == 3
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.BACKFILL_OFF_DOMAIN_REDIRECT.value] == 1
+        assert not backfill.extractor._cache_path(NEW_URL).exists()
+
+    def test_an_article_redirect_from_apex_to_www_succeeds(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(
+            200,
+            fixture_bytes("hindi_claimreview.html"),
+            final_url="https://vishvasnews.com/viral/fact-check-new-one/",
+        )
+        backfill = make_backfill(tmp_path)
+        assert len(list(backfill.run())) == 4
+
+    def test_the_daily_path_does_not_check_the_final_domain(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(
+            200, fixture_bytes("hindi_claimreview.html"), final_url="https://other.example/x"
+        )
+        extractor = make_backfill(tmp_path).extractor
+        assert extractor.fetch_html(NEW_URL) is not None
+
+
+class TestClaimLanguages:
+    def test_a_marathi_row_is_excluded_and_counted_by_language(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        web.routes[NEW_URL] = Response(200, fixture_bytes("english_claimreview.html"))
+        backfill = make_backfill(tmp_path, make_config(block={"claim_languages": ["hi"]}))
+        verdicts = list(backfill.run())
+        assert {v.claim_lang for v in verdicts} == {"hi"}
+        assert len(verdicts) == 2
+        stats = backfill.stats[DOMAIN]
+        assert stats.language_excluded == {"mr": 1, "en": 1}
+        assert stats.dropped[DropReason.BACKFILL_LANGUAGE_EXCLUDED.value] == 2
+        assert stats.verdicts == 2
+        assert backfill.extractor.dropped[DropReason.BACKFILL_LANGUAGE_EXCLUDED.value] == 2
+
+    def test_nothing_is_excluded_without_the_setting(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        backfill = make_backfill(tmp_path)
+        assert len(list(backfill.run())) == 4
+
+    def test_the_cli_reports_excluded_languages(self, tmp_path, web, monkeypatch):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        settings = Settings(data_dir=tmp_path)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        config = make_config(block={"claim_languages": ["hi"]})
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: config)
+        result = CliRunner().invoke(cli.app, ["factchecks", "--backfill", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "'mr': 1" in result.output
+
+
+class TestReportedCounts:
+    def test_unreadable_lastmod_empty_and_duplicate_loc(self, tmp_path, web):
+        web.routes[SITEMAP_2] = Response(200, fixture_bytes("sitemap_oddities.xml"))
+        backfill = make_backfill(tmp_path)
+        urls = [e.loc for e in backfill.candidates(DOMAIN)]
+        stats = backfill.stats[DOMAIN]
+        # The unreadable date keeps the page, as an absent date does.
+        assert "https://www.vishvasnews.com/viral/fact-check-bad-date/" in urls
+        assert stats.lastmod_unparseable == 1
+        assert stats.empty_loc == 1
+        assert stats.duplicate_loc == 1
+        assert urls.count("https://www.vishvasnews.com/viral/fact-check-twice/") == 1
+
+    def test_sitemaps_left_unread_when_the_wanted_count_is_reached(self, tmp_path, web):
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 1
+        backfill = make_backfill(tmp_path, config)
+        backfill.candidates(DOMAIN)
+        assert backfill.stats[DOMAIN].sitemaps_unread >= 1
+
+
+class TestRun:
+    def test_a_hindi_page_gives_the_same_row_as_the_rss_path(self, tmp_path, web):
+        backfill = make_backfill(tmp_path)
+        verdicts = list(backfill.run())
+        assert len(verdicts) == 4
+        row = verdicts[0].as_row()
+        assert row["claim_lang"] == "hi"
+        assert row["tier"] == "claimreview"
+        assert row["label"] == "false"
+        assert row["publisher"] == "Vishvas News"
+        assert row["domain"] == DOMAIN
+        assert row["record_id"] == f"news:{_article_id(NEWER_URL)}"
+        assert row["reviewed_at"] == "2026-02-19"
+
+        rss_path = FactCheckExtractor(
+            settings=Settings(data_dir=tmp_path / "rss"), config=make_config()
+        )
+        html = fixture_bytes("hindi_claimreview.html").decode()
+        reference = rss_path.from_html(
+            {"id": row["record_id"], "url": NEWER_URL, "source_detail": DOMAIN}, html
+        )
+        assert set(row) == set(reference.as_row())
+        assert {k: v for k, v in row.items() if k != "extracted_at"} == {
+            k: v for k, v in reference.as_row().items() if k != "extracted_at"
+        }
+
+    def test_per_publisher_counts(self, tmp_path, web):
+        backfill = make_backfill(tmp_path, known={record_for_url(STORED_URL, DOMAIN)["id"]})
+        list(backfill.run())
+        stats = backfill.stats[DOMAIN]
+        assert (stats.discovered, stats.already_present) == (4, 1)
+        assert (stats.fetched, stats.verdicts) == (3, 3)
+        assert STORED_URL not in web.articles()
+
+    def test_a_publisher_without_a_block_is_counted(self, tmp_path, web):
+        backfill = make_backfill(tmp_path)
+        list(backfill.run())
+        assert backfill.extractor.dropped[DropReason.NO_BACKFILL_CONFIG.value] == 1
+
+    def test_page_drops_are_counted_per_publisher(self, tmp_path, web):
+        web.routes[NEW_URL] = Response(200, b"<html></html>")
+        web.routes[NEWER_URL] = ConnectionError("down")
+        backfill = make_backfill(tmp_path)
+        verdicts = list(backfill.run())
+        assert len(verdicts) == 2
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.NO_CLAIMREVIEW.value] == 1
+        assert dropped[DropReason.FETCH_FAILED.value] == 1
+
+    def test_a_page_robots_disallow_is_counted(self, tmp_path, web):
+        web.routes[ROBOTS_URL] = Response(200, b"User-agent: *\nDisallow: /viral/\n")
+        backfill = make_backfill(tmp_path)
+        list(backfill.run())
+        # Two of the four candidate pages are under /viral/.
+        assert backfill.stats[DOMAIN].dropped[DropReason.ROBOTS_DISALLOWED.value] == 2
+        assert NEW_URL not in web.calls
+
+    def test_a_rerun_creates_no_duplicates_and_fetches_nothing(self, tmp_path, web):
+        settings = Settings(data_dir=tmp_path)
+        first = make_backfill(tmp_path)
+        write_factchecks(list(first.run()), settings)
+        assert len(existing_record_ids(settings)) == 4
+
+        web.calls.clear()
+        second = make_backfill(tmp_path, known=existing_record_ids(settings))
+        assert list(second.run()) == []
+        assert web.articles() == []
+        assert len(existing_record_ids(settings)) == 4
+
+    def test_a_rerun_after_a_cache_hit_needs_no_page_request(self, tmp_path, web):
+        list(make_backfill(tmp_path).run())
+        web.calls.clear()
+        again = list(make_backfill(tmp_path).run())
+        assert len(again) == 4
+        assert web.articles() == []
+
+
+class TestCli:
+    runner = CliRunner()
+
+    @pytest.fixture
+    def env(self, tmp_path, web, monkeypatch):
+        settings = Settings(data_dir=tmp_path)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: make_config())
+        return settings
+
+    def test_dry_run_writes_nothing(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "nothing written" in result.output
+        assert not (env.data_dir / "factchecks").exists()
+
+    def test_backfill_writes_rows_and_reports_counts(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert result.exit_code == 0, result.output
+        assert "backfill per publisher" in result.output
+        assert "Vishvas News" in result.output
+        assert len(existing_record_ids(env)) == 4
+
+    def test_limit_stops_after_n_verdicts(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill", "--limit", "2"])
+        assert result.exit_code == 0, result.output
+        assert len(existing_record_ids(env)) == 2
+
+    def test_a_second_backfill_adds_nothing(self, env, web):
+        self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        web.calls.clear()
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert result.exit_code == 0, result.output
+        assert web.articles() == []
+        assert len(existing_record_ids(env)) == 4
+
+    def test_no_backfill_block_is_an_error(self, env, monkeypatch):
+        config = make_config()
+        del config["publishers"][DOMAIN]["backfill"]
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: config)
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert result.exit_code == 1

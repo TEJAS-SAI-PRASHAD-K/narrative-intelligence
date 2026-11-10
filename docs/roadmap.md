@@ -16,7 +16,7 @@ the module being quietly described as present.
 | source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
-| fact-check verdicts | partial | 2 of 4 extraction tiers, 4 of 8 publishers |
+| fact-check verdicts | partial | 2 of 4 extraction tiers, 4 of 8 publishers, sitemap backfill for Vishvas News |
 | embeddings and clustering | done | MiniLM, HDBSCAN, narrative identity across runs |
 | misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
 | stance classifier | training path only | fine-tune is GPU work, zero-shot baseline exists |
@@ -132,6 +132,19 @@ the honest entry in that cell, not a zero.
 
 ### Ingestion
 
+- **Hindi fact-check backfill.** The Hindi evaluation gate needs at least 50 Hindi
+  claims, and the corpus has 13. RSS feeds hold only recent items. The command
+  `python -m ingest.cli factchecks --backfill` reads publisher sitemaps and sends each
+  archive URL through the tier 1 ClaimReview path. Vishvas News is configured. The
+  operator runs the backfill on the data host. Until that run, the Hindi count is
+  not changed. The backfill budget is `backfill.max_urls_per_publisher`. It is separate
+  from `fetch.max_articles`. The Vishvas entry sets `claim_languages: [hi]`, so the
+  backfill writes no English or Marathi row. The Hindi set will then come mostly from one
+  publisher. A Hindi result will therefore reflect the claims that Vishvas News chose to
+  check, not Hindi misinformation in general. Fact Crescendo and the BOOM Hindi site are not configured. Fact Crescendo
+  shows a ClaimReview on only some pages. The BOOM Hindi site lists only the newest
+  articles in its sitemaps. To add a publisher, add a `backfill` block to
+  `configs/factcheck.yaml`. No code change is necessary.
 - **Fact-check extraction tiers 3 and 4.** Newschecker publishes no JSON-LD but
   renders a visible `Claim` block in the article body. Alt News and Factly
   publish neither, and their verdict lives in the headline predicate. Tier 3

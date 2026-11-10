@@ -79,6 +79,28 @@ python -m ingest.cli factchecks --dry-run   # report what it would write
 python -m ingest.cli factchecks
 ```
 
+RSS feeds hold only recent items. To reach older articles, run the archive backfill. It reads
+the sitemaps that `configs/factcheck.yaml` lists for a publisher. It fetches each new
+article page and extracts the ClaimReview verdict. It reads only publishers with a `backfill`
+block and `tier: claimreview`. It does not run in `make collect-daily`.
+
+```bash
+python -m ingest.cli factchecks --backfill --dry-run   # report, write no rows, still cache pages
+python -m ingest.cli factchecks --backfill             # add the new verdicts
+python -m ingest.cli factchecks --backfill --limit 100 # stop after 100 verdicts
+```
+
+The report shows these counts for each publisher: URLs discovered, URLs already present,
+pages fetched, verdicts, and each drop reason. A rerun does not fetch a URL that is
+already in `factchecks.parquet`.
+
+The option `--dry-run` writes no rows. It does fetch pages and save them in the HTML cache.
+The backfill has its own budget, `backfill.max_urls_per_publisher`. That budget is separate
+from `fetch.max_articles`, which limits only the daily pass. A publisher can set
+`claim_languages`. The backfill then writes no row with another detected language and reports
+the count for each language. The backfill refuses a response that ends on another domain after
+redirects. It keeps a page with an absent or unreadable `lastmod` and counts it.
+
 Single source, bounded, which is what to use while developing an adapter. `news_rss`
 carries the Indian feeds and is the one to reach for first:
 

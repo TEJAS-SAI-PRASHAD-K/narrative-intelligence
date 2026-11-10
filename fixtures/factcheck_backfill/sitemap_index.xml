@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="//example.test/main-sitemap.xsl"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.vishvasnews.com/post-sitemap.xml</loc><lastmod>2021-03-01T10:00:00+00:00</lastmod></sitemap>
+  <sitemap><loc>https://www.vishvasnews.com/post-sitemap2.xml</loc><lastmod>2026-02-19T11:04:22+00:00</lastmod></sitemap>
+  <sitemap><loc>https://www.vishvasnews.com/page-sitemap.xml</loc><lastmod>2026-02-19T11:04:22+00:00</lastmod></sitemap>
+  <sitemap><loc>https://elsewhere.example/post-sitemap.xml</loc></sitemap>
+</sitemapindex>
