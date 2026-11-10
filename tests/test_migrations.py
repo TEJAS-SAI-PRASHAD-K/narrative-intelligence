@@ -274,3 +274,47 @@ def test_running_migrations_does_not_silence_existing_loggers(api_env, allow_loc
     command.current(config)
 
     assert not existing.disabled
+
+
+@requires_postgres
+def test_dropping_media_checks_deletes_old_job_rows_and_downgrade_restores_the_table(migrated_db):
+    """The media_checks revision removes `media.deepfake` jobs and is reversible.
+
+    The deleted job rows do not come back on downgrade. The table does, empty and
+    with the same columns and indexes.
+    """
+    from alembic.config import Config
+    from sqlalchemy import inspect, text
+
+    from alembic import command
+    from app.db import get_sync_engine
+
+    config = Config("alembic.ini")
+    config.set_main_option("script_location", "alembic")
+    engine = get_sync_engine()
+
+    command.downgrade(config, "5082670cff5d")
+    inspector = inspect(engine)
+    assert "media_checks" in inspector.get_table_names(schema=migrated_db)
+    columns = {c["name"]: c for c in inspector.get_columns("media_checks", schema=migrated_db)}
+    assert len(columns) == 21
+    assert columns["post_id"]["type"].length == 512
+    indexes = {i["name"] for i in inspector.get_indexes("media_checks", schema=migrated_db)}
+    assert indexes == {"ix_media_checks_pending_purge", "ix_media_checks_submitted"}
+    reflected = inspector.get_foreign_keys("media_checks", schema=migrated_db)
+    foreign_keys = {fk["referred_table"] for fk in reflected}
+    assert foreign_keys == {"jobs", "projects"}
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO jobs (kind, status) VALUES "
+                "('media.deepfake', 'succeeded'), ('score.fusion', 'succeeded')"
+            )
+        )
+
+    command.upgrade(config, "head")
+    assert "media_checks" not in inspect(engine).get_table_names(schema=migrated_db)
+    with engine.connect() as connection:
+        kinds = [row[0] for row in connection.execute(text("SELECT kind FROM jobs"))]
+    assert kinds == ["score.fusion"]

@@ -38,7 +38,6 @@ class ScoredLoadReport:
     narratives: int = 0
     narrative_posts: int = 0
     network_edges: int = 0
-    media_checks: int = 0
     embeddings: int = 0
     skipped: dict[str, str] = field(default_factory=dict)
 
@@ -523,70 +522,6 @@ def load_network_edges(session: Session, scored_dir: Path, project_id: uuid.UUID
     return count or 0
 
 
-def load_media_scores(session: Session, scored_dir: Path, project_id: uuid.UUID) -> int:
-    """``media_scores`` -> ``media_checks``.
-
-    These are checks of media already in the corpus, so there is no uploaded
-    file and nothing to purge: ``storage_path`` stays null and the retention
-    task passes over them.
-    """
-    rows = _read(scored_dir, "media_scores")
-    if not rows:
-        return 0
-
-    payload = []
-    for row in rows:
-        probability = row.get("deepfake_prob")
-        payload.append(
-            {
-                "id": uuid.uuid5(
-                    uuid.NAMESPACE_URL, f"{project_id}:{row['record_id']}:{row['media_url']}"
-                ),
-                "project_id": project_id,
-                "post_id": row["record_id"],
-                "filename": row["media_url"].rsplit("/", 1)[-1][:512],
-                "verdict": _verdict(probability, row.get("face_detected")),
-                "confidence": probability,
-                "manipulation_type": row.get("manipulation_type"),
-                "frames_analyzed": row.get("frames_analyzed"),
-                "face_detected": row.get("face_detected"),
-                "explanation": row.get("explanation"),
-                "limitations": _deepfake_limitations(row),
-                "model": "xception-deepfake",
-                "model_version": _version_of(row.get("model_versions")),
-                "submitted_at": row.get("scored_at"),
-                "completed_at": row.get("scored_at"),
-            }
-        )
-
-    _bulk_upsert(
-        session,
-        """
-        INSERT INTO media_checks (
-            id, project_id, post_id, filename, verdict, confidence, manipulation_type,
-            frames_analyzed, face_detected, explanation, limitations, model,
-            model_version, submitted_at, completed_at
-        ) VALUES (
-            :id, :project_id, :post_id, :filename, :verdict, :confidence, :manipulation_type,
-            :frames_analyzed, :face_detected, :explanation, :limitations, :model,
-            :model_version, :submitted_at, :completed_at
-        )
-        ON CONFLICT (id) DO UPDATE SET
-            verdict = EXCLUDED.verdict,
-            confidence = EXCLUDED.confidence,
-            manipulation_type = EXCLUDED.manipulation_type,
-            explanation = EXCLUDED.explanation,
-            completed_at = EXCLUDED.completed_at
-        """,
-        payload,
-    )
-    count = session.execute(
-        text("SELECT count(*) FROM media_checks WHERE project_id = :p"), {"p": project_id}
-    ).scalar()
-    log.info("media_checks: %d rows", count)
-    return count or 0
-
-
 def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> int:
     """Phase 2's embedding cache -> the pgvector table.
 
@@ -751,7 +686,6 @@ def load_all(session: Session, *, project: str) -> ScoredLoadReport:
         session, settings.scored_dir, project_id
     )
     report.network_edges = load_network_edges(session, settings.scored_dir, project_id)
-    report.media_checks = load_media_scores(session, settings.scored_dir, project_id)
     report.embeddings = load_embeddings(session, settings.data_dir, project_id)
 
     # Narrative counts on domains need narratives, which only exist now.
@@ -839,40 +773,3 @@ def _snap(value, hours: int):
     epoch = value.replace(hour=0, minute=0, second=0, microsecond=0)
     offset = int((value - epoch).total_seconds() // (hours * 3600))
     return epoch + timedelta(hours=hours * offset)
-
-
-def _verdict(probability: float | None, face_detected: bool | None) -> str | None:
-    """Probability -> the four-value verdict the UI renders.
-
-    "No face found" is `inconclusive`, never `likely_authentic`. A frame with no
-    face is a frame the model could not assess, and reporting that as authentic
-    is the single most misleading thing this module could do.
-    """
-    if face_detected is False:
-        return "inconclusive"
-    if probability is None:
-        return None
-    if probability >= 0.75:
-        return "likely_manipulated"
-    if probability >= 0.5:
-        return "possibly_manipulated"
-    return "likely_authentic"
-
-
-def _deepfake_limitations(row: dict[str, Any]) -> list[str]:
-    limitations = [
-        "Trained on FaceForensics++ and DFDC; generators outside those sets are "
-        "out of distribution.",
-        "Heavy compression produces artefacts similar to manipulation.",
-    ]
-    if row.get("face_detected") is False:
-        limitations.append(
-            "No face was detected, so no verdict is possible. This is not evidence "
-            "that the media is authentic."
-        )
-    if (row.get("frames_analyzed") or 0) < 10:
-        limitations.append(
-            f"Only {row.get('frames_analyzed')} frame(s) were analysed; the confidence "
-            "is correspondingly weak."
-        )
-    return limitations
