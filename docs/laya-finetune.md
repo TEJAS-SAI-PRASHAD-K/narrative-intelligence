@@ -20,7 +20,7 @@ result.
 | `configs/models.yaml → laya` | written: routing, question, train knobs, precision target |
 | Training JSONL exporter | written (`LayaTrainingExporter`), tested |
 | `data/benchmarks/` | `make benchmarks` supplies LIAR (zip, unattended), the CoAID repository clone, and the FakeNewsNet repository clone. The FakeNewsNet clone has the label CSVs and the crawler, not article text. Each download is pinned to a commit or checksum, and a mismatch stops the script. (`make benchmarks` also fetches FNC-1 into `stance/`; it is not used here.) Checksums go in `data/benchmarks/manifest.json` |
-| The fine-tune | not run |
+| The fine-tune | ran on 2026-11-09. See `artifacts/model_cards/laya.md` for the result |
 | Scoring integration | `modeling/scoring.py` has **no Laya stage**. `LayaScorer.checkpoint_for` returns the directory set in `configs/models.yaml` under `laya.finetuned_checkpoints.<lang>`, and the base checkpoint when that key is null. A path that does not exist skips the record with `checkpoint_missing`. The fine-tuned directory is reachable from the scorer, not yet from `modeling/scoring.py` |
 | The eval harness for the three-way comparison | written: `modeling/eval/factcheck_eval.py`, run with `python -m modeling.cli evaluate-factchecks` (step 6d). It reads scores that are already computed. `scripts/run_comparison.py` produces the score files (6a, step 6e). It is tested with fakes and has **not run on a GPU** |
 

@@ -1,69 +1,42 @@
 # Model card — misinformation-likelihood classifier
 
-**Module:** `modeling/text/misinfo_clf.py` · **Version:** `v0.1.0`
+**Module:** `modeling/text/misinfo_clf.py` · **Version:** `v0.2.0`
 **Output:** `record_scores.misinfo_prob` — a calibrated probability in [0, 1]
 
 ---
 
 ## Status
 
-**A real run happened. Its weights are gone, and the artifacts here are still
-the demo run.** All three statements are true at once, which is why this section
-is longer than it should be.
+**The transformer clears the TF-IDF baseline at the precision 0.85 operating point.**
+This card reports the comparison run of 2026-11-09. The full report is
+[docs/results/factcheck-comparison.md](../../docs/results/factcheck-comparison.md).
 
-**The benchmarks are on disk now** — `data/benchmarks/` holds liar,
-fakenewsnet and coaid — so the blocker this card was originally written about is
-resolved.
+The checkpoint is a `roberta-base` fine-tune. Training saved the last epoch. The
+checkpoint sha256 is `be9cc846c5d019881269bce7b1b007e5ffd937bc520a70a8e0b28dcaba5d70e6`.
+The weights are on the GPU host only. No private Hugging Face copy exists yet, so a
+new clone must train again.
 
-**A full-scale fine-tune was run on 2026-08-19.** `models/misinfo/v0.1.0/registry.json`
-records it, and it is not a demo run (`is_demo: false`):
+The weights of the older `v0.1.0` run are lost. That run recorded macro F1 0.8062
+[0.7956, 0.8161] on the same split. It is not reproducible, and `v0.2.0` replaces it.
+
+Test split at the default threshold of 0.5:
 
 | metric | value | 95% CI |
 |---|---|---|
-| macro F1 | **0.8062** | [0.7956, 0.8161] |
-| PR-AUC | 0.7967 | — |
-| ROC-AUC | 0.9020 | — |
-| Brier | 0.1131 | — |
+| macro F1 | **0.7967** | [0.7862, 0.8078] |
+| ROC-AUC | 0.8978 | [0.8903, 0.9049] |
+| PR-AUC | 0.7872 | [0.7701, 0.8026] |
+| Brier | 0.1151 | not computed |
 
 Split: `grouped by group_id (30148 groups; train/val/test = 26777/3596/7085; seed=20260813)` · n_test 7085 · positive rate 0.2991
 
 | class | precision | recall | F1 | support |
 |---|---|---|---|---|
-| not-misinformation | 0.882 | 0.889 | 0.885 | 4966 |
-| misinformation-like | 0.734 | 0.720 | 0.727 | 2119 |
-
-**But the checkpoint's weights are no longer on disk.** `models/misinfo/v0.1.0/`
-holds `config.json`, `tokenizer.json`, `calibrator.json`, `training.json` and
-`registry.json` — and no `model.safetensors`. So:
-
-- The table above **cannot be reproduced or re-derived** from anything in this
-  repository. It is a recorded summary, not verifiable evidence.
-- `nlp/availability.py` correctly reports `misinfo` as **degraded**, serving
-  precomputed Parquet rather than scoring new text. (It used to report `ready`,
-  because the weight-file check counted any `*.json`; that is fixed, and
-  `tests/test_calibration_guards.py` pins it down.)
-- **The full-scale TF-IDF comparison was never made**, so the headline finding
-  below — that the fine-tune does not clear TF-IDF — still rests entirely on the
-  55-row demo fixture and is not established either way at scale.
-
-**Everything in the Metrics section below is the DEMO FIXTURE run** (n_test 55,
-2026-08-13) and is *not a result*. The eval artifacts under
-`artifacts/eval/misinfo/v0.1.0/` are that same demo run.
-
-**To close this properly, retrain.** It is a pretrained-encoder fine-tune, not a
-model built from scratch, and `notebooks/colab_finetune.ipynb` runs it on a
-Colab T4 in well under an hour (~10 h on 8 GB Apple Silicon over MPS, measured
-at ~2 pairs/sec). `configs/models.yaml` lists stronger bases than the
-`roberta-base` that produced 0.806 — `microsoft/deberta-v3-base`, and
-`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` whose FEVER pretraining is fact
-verification, the closest task-adjacent signal available for this label.
-
-**The bar is unchanged:** select on validation, and if the transformer does not
-clear full-scale TF-IDF + logistic regression, it should not ship — it costs
-orders of magnitude more inference for no measured gain.
+| not-misinformation | 0.868 | 0.900 | 0.884 | 4966 |
+| misinformation-like | 0.743 | 0.680 | 0.710 | 2119 |
 
 ```bash
-python -m modeling.cli train misinfo    # or notebooks/colab_finetune.ipynb
+python scripts/run_comparison.py all    # needs a GPU, see docs/laya-finetune.md
 ```
 
 ## Intended use
@@ -139,34 +112,46 @@ differ.
 
 Reported with 95% bootstrap confidence intervals. **Accuracy is deliberately
 absent**: on an imbalanced target it rewards predicting the majority class.
-PR-AUC leads because it degrades exactly when the model starts crying wolf.
 
-Current committed numbers, from `artifacts/eval/misinfo/v0.1.0/`:
+The ship rule compares macro F1 against TF-IDF plus logistic regression on the shared
+test split. Each model uses its own threshold, from its own validation rows, at
+precision 0.85. The 95% paired-bootstrap interval of the difference must be above 0.
 
-| metric | value | 95% CI |
+| model | threshold | validation recall | test macro F1 | difference to TF-IDF |
+|---|---|---|---|---|
+| `misinfo` v0.2.0 | 0.7389 | 0.482 | 0.753 [0.741, 0.764] | **+0.150 [0.135, 0.164]** |
+| TF-IDF + logreg | 0.8573 | 0.244 | 0.603 [0.590, 0.616] | baseline |
+
+**Decision: ship.** The lower limit is 0.1354.
+
+Read the size of this difference with care. At the default threshold, TF-IDF has
+macro F1 0.764 [0.753, 0.773], and the transformer has 0.797. That gap is 0.033. The
+gap is larger at precision 0.85 because TF-IDF reaches that precision only at a
+recall of 0.244. The operating point is the decision rule, and the default-threshold
+gap is the conservative figure.
+
+### Fact-check set and the unlabelled corpus
+
+The set has 101 known-false claims, and the frozen manifest is
+`configs/factcheck_eval_manifest.csv`. This model scores the 88 English claims and
+skips the 13 Hindi claims with `unsupported_language`.
+
+| measure, English titles | `misinfo` v0.2.0 | TF-IDF + logreg |
 |---|---|---|
-| macro F1 | 0.908 | [0.821, 0.978] |
-| PR-AUC | 0.988 | [0.959, 1.000] |
+| recall on known-false claims | 0.489 [0.386, 0.591] | 0.034 [0.000, 0.080] |
+| flag rate on 374 corpus titles | 0.115 [0.083, 0.150] | 0.003 [0.000, 0.008] |
+| lift | 4.250 [2.994, 6.072] | 12.750 [0.000, no upper limit] |
 
-Split: grouped by `group_id`, 243 groups, train/val/test = 224/31/55, seed
-20260813. **Demo fixture — not a result.**
+A TF-IDF lift has no useful meaning here, because the model flags almost no corpus
+title. The fact-check set holds only claims that publishers chose to debunk. Lift is
+not accuracy on the corpus, and the corpus has no labels. These 374 titles come from
+one source type in a short collection window.
 
-### Baselines
+The operating threshold is a value of the comparison report. The scored tables hold
+the calibrated probability, and `configs/models.yaml` does not store this threshold.
 
-| baseline | macro F1 | delta | verdict |
-|---|---|---|---|
-| majority class | 0.368 [0.312, 0.415] | +0.540 | beats |
-| TF-IDF + logreg | 0.927 [0.852, 0.982] | −0.019 | **not separable at this test size** |
-
-**The fine-tune does not clear TF-IDF + logistic regression.** On 55 test rows
-the intervals overlap heavily, so the honest reading is "no measurable
-difference", not "slightly worse". This is reported here rather than tuned away.
-
-On fixture data that outcome is unsurprising — the synthetic text is trivially
-separable and a linear model saturates it. On real benchmarks the comparison has
-to be re-run, and **if the transformer still fails to clear TF-IDF there, the
-transformer should not ship**: it costs orders of magnitude more inference for no
-measured gain.
+The files under `artifacts/eval/misinfo/v0.1.0/` are from the 55-row demo fixture.
+They are not a result.
 
 ## Calibration
 
@@ -175,8 +160,8 @@ validation rows — isotonic fits a step function to noise on small validation
 sets and emits confident 0.0/1.0 outputs. The fallback fired on the demo run (31
 validation rows) and is recorded in the report.
 
-Demo run: Platt on 31 rows, Brier 0.0756 → 0.0570 (improved). Reliability
-diagram in `artifacts/eval/misinfo/v0.1.0/reliability.png`.
+Demo run: Platt on 31 rows, Brier 0.0756 → 0.0570 (improved). The real run has a
+test Brier of 0.1151.
 
 **A checkpoint without a `calibrator.json` is refused at load time.**
 `misinfo_prob` is contractually a calibrated probability that Phase 4 multiplies
