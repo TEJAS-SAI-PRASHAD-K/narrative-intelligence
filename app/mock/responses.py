@@ -1060,7 +1060,9 @@ def narrative_score(narrative: MockNarrative):
     card = narrative.scorecard
     missing = list(card["missing"])
     severity = round((card["toxicity"] or 0.3) * 0.5 + (card["negative_sentiment"] or 0.4) * 0.5, 4)
-    coordination = round((card["bot_like"] or 0.2) * 0.6 + (card["anomalous"] or 0.3) * 0.4, 4)
+    coordinated = narrative.coordinated_author_ratio
+    coordination = round((coordinated if coordinated is not None else 0.2) * 0.6
+                         + (card["anomalous"] or 0.3) * 0.4, 4)
     authenticity = None if "authenticity" in missing else round(0.18 + 0.4 * narrative.coherence, 4)
 
     raw_weights = {"narrative_severity": 0.45, "coordination": 0.35, "authenticity": 0.20}
@@ -1102,7 +1104,10 @@ def narrative_score(narrative: MockNarrative):
                     "g(coordinated_author_ratio, co_post_similarity_density, temporal_burstiness, "
                     "cohort_concentration)"
                 ),
-                {"temporal_burstiness": card["anomalous"]},
+                {
+                    "coordinated_author_ratio": coordinated,
+                    "temporal_burstiness": card["anomalous"],
+                },
             ),
             (
                 "authenticity",

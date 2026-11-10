@@ -172,6 +172,9 @@ class MockNarrative:
     top_hashtags: list[str] = field(default_factory=list)
     engagement_total: int = 0
     scorecard: dict[str, Any] = field(default_factory=dict)
+    #: Share of scored member authors with a coordination score above 0.5. None
+    #: when no member author has a score, matching the real signal.
+    coordinated_author_ratio: float | None = None
     coherence: float = 0.0
     velocity: float = 0.0
     has_compass: bool = True
@@ -509,6 +512,14 @@ def corpus() -> MockCorpus:
         member_authors = [a for a in authors if a.author_id in narrative.author_ids]
         bot_scores = [a.bot_score for a in member_authors if a.bot_score is not None]
 
+        coordination_scores = [
+            a.coordination_score for a in member_authors if a.coordination_score is not None
+        ]
+        narrative.coordinated_author_ratio = (
+            round(sum(1 for c in coordination_scores if c > 0.5) / len(coordination_scores), 3)
+            if coordination_scores
+            else None
+        )
         bot_like = (
             round(sum(1 for b in bot_scores if b > 0.6) / len(bot_scores), 3)
             if bot_scores
