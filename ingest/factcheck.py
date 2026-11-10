@@ -98,6 +98,25 @@ class DropReason(str, Enum):
     #: A JSON-LD block nested deeper than the JSON parser can read. The page is
     #: kept in the cache, so without a count it would fail the same way each run.
     JSONLD_TOO_DEEP = "jsonld_too_deep"
+    #: A backfill publisher has no usable `backfill` block, or its tier is not
+    #: `claimreview`. Counted once per publisher, so a missing block is visible.
+    NO_BACKFILL_CONFIG = "no_backfill_config"
+    #: A sitemap could not be fetched: network error, bad status, or the
+    #: domain's failure limit.
+    SITEMAP_UNREACHABLE = "sitemap_unreachable"
+    #: A sitemap body is not well-formed XML, has an unknown root element, or
+    #: declares a DOCTYPE or entity (refused, never expanded).
+    SITEMAP_MALFORMED = "sitemap_malformed"
+    #: A sitemap body is larger than `backfill.max_sitemap_bytes`.
+    SITEMAP_TOO_LARGE = "sitemap_too_large"
+    #: A sitemap index nests deeper than `backfill.max_sitemap_depth`.
+    SITEMAP_TOO_DEEP = "sitemap_too_deep"
+    #: A sitemap or page URL listed by a sitemap is on another registrable domain.
+    SITEMAP_OFF_DOMAIN = "sitemap_off_domain"
+    #: The sitemap budget was spent before this child sitemap was read.
+    SITEMAP_BUDGET_EXHAUSTED = "sitemap_budget_exhausted"
+    #: A discovered URL was left out because the per-publisher URL bound was full.
+    BACKFILL_BOUND_REACHED = "backfill_bound_reached"
 
 
 @dataclass
@@ -415,17 +434,8 @@ class FactCheckExtractor:
             return None
 
         self._budget -= 1
-        time.sleep(float(config.get("request_delay_seconds", 1.0)))
         try:
-            import requests
-
-            response = requests.get(
-                url,
-                headers={"User-Agent": self.settings.user_agent},
-                timeout=float(config.get("timeout_seconds", 30)),
-            )
-            response.raise_for_status()
-            html = response.text
+            html = self._http_get(url)
         except Exception as exc:
             self._fetch_failures[domain] = self._fetch_failures.get(domain, 0) + 1
             self.drop(DropReason.FETCH_FAILED, f"{url}: {type(exc).__name__}: {exc}")
@@ -435,6 +445,28 @@ class FactCheckExtractor:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(html, encoding="utf-8")
         return html
+
+    def _http_get(self, url: str, as_bytes: bool = False) -> Any:
+        """One polite GET: the configured delay, the project User-Agent, the timeout.
+
+        Raises on a network error or a bad status. The caller counts the failure.
+        Returns the raw body when ``as_bytes`` is set, so XML keeps its own encoding.
+        """
+        config = self.config.get("fetch") or {}
+        time.sleep(float(config.get("request_delay_seconds", 1.0)))
+        import requests
+
+        response = requests.get(
+            url,
+            headers={"User-Agent": self.settings.user_agent},
+            timeout=float(config.get("timeout_seconds", 30)),
+        )
+        response.raise_for_status()
+        return response.content if as_bytes else response.text
+
+    def set_budget(self, articles: int) -> None:
+        """Set the number of live article fetches left in this run."""
+        self._budget = int(articles)
 
     def _cache_path(self, url: str) -> Path:
         import hashlib

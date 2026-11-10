@@ -184,12 +184,18 @@ def stats(source: str | None = typer.Argument(None, help="limit to one source"))
 def factchecks(
     limit: int | None = typer.Option(None, "--limit", "-n", help="stop after N verdicts"),
     dry_run: bool = typer.Option(False, "--dry-run", help="extract and report, write nothing"),
+    backfill: bool = typer.Option(
+        False,
+        "--backfill",
+        help="read publisher sitemaps for archive URLs instead of the news records on disk",
+    ),
 ) -> None:
     """Extract published fact-check verdicts into `data/factchecks/`.
 
     An enrichment pass over the news records already on disk, not a fetch of
     new ones -- see ingest/factcheck.py for why these are a side artifact
-    rather than a new source.
+    rather than a new source. With `--backfill` the URLs come from the
+    sitemaps in configs/factcheck.yaml, and only tier 1 publishers are read.
     """
     from ingest.factcheck import (
         CollapseReason,
@@ -202,30 +208,45 @@ def factchecks(
     )
 
     settings = get_settings()
-    store = ParquetStore(settings)
-    frame = store.read_all("news")
-    if frame is None or not len(frame):
-        console.print("[yellow]no news records on disk. run `python -m ingest.cli fetch news_rss`.")
-        raise typer.Exit(code=0)
-
     extractor = FactCheckExtractor(settings)
     if not extractor.publishers:
         console.print("[red]configs/factcheck.yaml has no publishers configured.")
         raise typer.Exit(code=1)
 
-    records = list(
-        records_from_corpus(
-            frame,
-            extractor.publishers,
-            on_duplicate=lambda record_id: extractor.drop(
-                DropReason.DUPLICATE_RECORD, record_id
-            ),
+    backfiller = None
+    if backfill:
+        from ingest.factcheck_backfill import SitemapBackfill, existing_record_ids
+
+        backfiller = SitemapBackfill(extractor, existing_record_ids(settings))
+        if not backfiller.eligible():
+            console.print("[red]no publisher in configs/factcheck.yaml has a backfill block.")
+            raise typer.Exit(code=1)
+        console.print(f"backfill publishers: {', '.join(backfiller.eligible())}")
+        stream = backfiller.run()
+    else:
+        store = ParquetStore(settings)
+        frame = store.read_all("news")
+        if frame is None or not len(frame):
+            console.print(
+                "[yellow]no news records on disk. run `python -m ingest.cli fetch news_rss`."
+            )
+            raise typer.Exit(code=0)
+        records = list(
+            records_from_corpus(
+                frame,
+                extractor.publishers,
+                on_duplicate=lambda record_id: extractor.drop(
+                    DropReason.DUPLICATE_RECORD, record_id
+                ),
+            )
         )
-    )
-    console.print(f"eligible records: {len(records):,} from {len(extractor.publishers)} publishers")
+        console.print(
+            f"eligible records: {len(records):,} from {len(extractor.publishers)} publishers"
+        )
+        stream = extractor.run(records)
 
     verdicts = []
-    for verdict in extractor.run(records):
+    for verdict in stream:
         verdicts.append(verdict)
         if limit and len(verdicts) >= limit:
             break
@@ -255,6 +276,31 @@ def factchecks(
             "trainable binary dataset. Negatives must come from elsewhere; see the "
             "README section on fact-check supervision."
         )
+
+    if backfiller is not None:
+        report = Table(title="backfill per publisher", header_style="bold")
+        columns = ("publisher", "discovered", "already present", "fetched", "verdicts")
+        for column in columns:
+            report.add_column(column, justify="left" if column == "publisher" else "right")
+        for stat in backfiller.stats.values():
+            report.add_row(
+                stat.publisher,
+                f"{stat.discovered:,}",
+                f"{stat.already_present:,}",
+                f"{stat.fetched:,}",
+                f"{stat.verdicts:,}",
+            )
+        console.print(report)
+        for stat in backfiller.stats.values():
+            console.print(
+                f"{stat.publisher}: sitemaps read {stat.sitemaps_read}, "
+                f"skipped as old {stat.sitemaps_skipped_old}, "
+                f"filtered by sitemap pattern {stat.sitemaps_filtered_pattern}, "
+                f"filtered by pattern {stat.filtered_pattern}, "
+                f"filtered by lastmod {stat.filtered_lastmod}, "
+                f"kept with no lastmod {stat.lastmod_absent_kept}"
+            )
+            console.print(f"{stat.publisher} dropped: {dict(sorted(stat.dropped.items()))}")
 
     summary = extractor.summary()
     console.print(f"dropped: {summary['dropped']}")

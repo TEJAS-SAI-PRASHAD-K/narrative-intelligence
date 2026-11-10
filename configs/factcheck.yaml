@@ -61,10 +61,53 @@ publishers:
     # Claims come back in Devanagari, so this path produces Hindi supervision
     # and not merely Hindi text. That is the point of the India retarget.
     languages: [hi, en]
+    # Archive backfill, run on request by `ingest.cli factchecks --backfill`.
+    # Verified live 2026-11-10: robots.txt allows the sitemap and the article
+    # paths, `sitemap_index.xml` lists 22 `post-sitemap*.xml` files of about 1000
+    # URLs each, and 3 of 3 sampled Hindi pages carried a Hindi ClaimReview with
+    # rating `False`. One sitemap mixes every language the site publishes. Hindi
+    # pages sit at the site root and other languages sit under a language
+    # directory, so `exclude_pattern` removes the other languages.
+    backfill:
+      sitemaps:
+        - https://www.vishvasnews.com/sitemap_index.xml
+      # The index also lists page, video, category and news sitemaps.
+      sitemap_pattern: "/post-sitemap[0-9]*\\.xml$"
+      exclude_pattern: "^https://www\\.vishvasnews\\.com/(english|urdu|punjabi|gujarati|odia|assamese|bangla|bengali|marathi|telugu|tamil|malayalam|kannada|nepali)/"
+      # Slugs of fact-check articles begin with `fact-check` in most sections.
+      url_pattern: "/fact-check"
   factcrescendo.com:
     name: Fact Crescendo
     tier: rss_tag
     languages: [hi, en]
+
+# ---------------------------------------------------------------------------
+# Archive backfill
+# ---------------------------------------------------------------------------
+# RSS feeds hold only recent items. A publisher with a `backfill` block above is
+# also read through its sitemaps, and each discovered URL goes through the same
+# tier 1 ClaimReview path as an RSS-sourced record. Nothing here runs in the
+# daily pass. Run it with `python -m ingest.cli factchecks --backfill`.
+#
+# Publisher `backfill` keys:
+#   sitemaps         URLs of sitemap indexes or sitemaps (required)
+#   sitemap_pattern  regex, a child sitemap URL must match it (optional)
+#   url_pattern      regex, a page URL must match it (optional)
+#   exclude_pattern  regex, a page URL must not match it (optional)
+#   max_urls         lower bound than the global cap, for this publisher (optional)
+#   min_lastmod      later cutoff than the global one, for this publisher (optional)
+# Only publishers with `tier: claimreview` are read. Page URLs and sitemap URLs
+# on another registrable domain are refused and counted.
+backfill:
+  # Most URLs one publisher can add in one run. The newest pages go first.
+  max_urls_per_publisher: 300
+  # Most sitemap files one publisher can read in one run.
+  max_sitemaps_per_publisher: 8
+  max_sitemap_depth: 3
+  max_sitemap_bytes: 50000000
+  # Pages and child sitemaps last modified before this date are skipped. A page
+  # with no `lastmod` is kept and counted. Set to null to read the full archive.
+  min_lastmod: "2022-01-01"
 
 # ---------------------------------------------------------------------------
 # Verdict -> label
