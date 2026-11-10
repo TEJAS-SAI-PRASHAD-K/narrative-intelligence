@@ -137,7 +137,11 @@ the honest entry in that cell, not a zero.
   `python -m ingest.cli factchecks --backfill` reads publisher sitemaps and sends each
   archive URL through the tier 1 ClaimReview path. Vishvas News is configured. The
   operator runs the backfill on the data host. Until that run, the Hindi count is
-  not changed. Fact Crescendo and the BOOM Hindi site are not configured. Fact Crescendo
+  not changed. The backfill budget is `backfill.max_urls_per_publisher`. It is separate
+  from `fetch.max_articles`. The Vishvas entry sets `claim_languages: [hi]`, so the
+  backfill writes no English or Marathi row. The Hindi set will then come mostly from one
+  publisher. A Hindi result will therefore reflect the claims that Vishvas News chose to
+  check, not Hindi misinformation in general. Fact Crescendo and the BOOM Hindi site are not configured. Fact Crescendo
   shows a ClaimReview on only some pages. The BOOM Hindi site lists only the newest
   articles in its sitemaps. To add a publisher, add a `backfill` block to
   `configs/factcheck.yaml`. No code change is necessary.
