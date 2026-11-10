@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url><loc>https://www.vishvasnews.com/viral/fact-check-new-one/</loc><lastmod>2026-02-19T11:59:32+00:00</lastmod><image:image><image:loc>https://www.vishvasnews.com/a.webp</image:loc></image:image></url>
+  <url><loc>https://www.vishvasnews.com/politics/fact-check-newer-one/</loc><lastmod>2026-02-20T09:00:00+00:00</lastmod></url>
+  <url><loc>https://www.vishvasnews.com/politics/fact-check-no-lastmod/</loc></url>
+  <url><loc>https://www.vishvasnews.com/viral/fact-check-too-old/</loc><lastmod>2019-05-01T00:00:00+00:00</lastmod></url>
+  <url><loc>https://www.vishvasnews.com/english/viral/fact-check-english-page/</loc><lastmod>2026-02-21T00:00:00+00:00</lastmod></url>
+  <url><loc>https://www.vishvasnews.com/society/just-news-not-a-check/</loc><lastmod>2026-02-21T00:00:00+00:00</lastmod></url>
+  <url><loc>https://elsewhere.example/viral/fact-check-off-domain/</loc><lastmod>2026-02-21T00:00:00+00:00</lastmod></url>
+  <url><loc>https://www.vishvasnews.com/viral/fact-check-already-stored/</loc><lastmod>2026-02-18T00:00:00+00:00</lastmod></url>
+</urlset>

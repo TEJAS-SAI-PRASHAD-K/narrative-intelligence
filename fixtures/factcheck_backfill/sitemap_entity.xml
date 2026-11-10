@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE urlset [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">]>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://www.vishvasnews.com/viral/&b;/</loc></url></urlset>
