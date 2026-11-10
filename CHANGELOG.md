@@ -78,6 +78,9 @@ decision.
     sub-signals, `domain_risk_agg` at 0.5833 and `anonymous_author_ratio` at
     0.4167. The config version is `fusion-v1.2.0`. A narrative that had no media
     checks keeps its score, apart from rounding below 0.01 points.
+    The explanation payload changes for that narrative. The `missing` list of
+    `components[authenticity]` no longer names `deepfake_hits`. The value of
+    `weights_renormalized` is now false. The `deepfake_hits` input key is gone.
   - The `media` extra, `modeling/media/`, the DFDC and FaceForensics++ loaders,
     the `deepfake` trainer, the `media` scoring stage and the `media_scores` table
     are removed. A leftover `data/scored/media_scores` directory is ignored.

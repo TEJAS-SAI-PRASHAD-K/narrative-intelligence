@@ -1171,7 +1171,7 @@ API responses themselves.
 
 ### Related documents
 
-- [`docs/data-model.md`](data-model.md) — the 27 database tables in detail
+- [`docs/data-model.md`](data-model.md) — the 26 database tables in detail
 - [`docs/scoring.md`](scoring.md) — the fusion score reference
 - [`docs/api.md`](api.md) — the API walkthrough
 - [`README.md`](../README.md) — the full technical README for Phases 1 and 2

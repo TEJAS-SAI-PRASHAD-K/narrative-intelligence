@@ -64,6 +64,10 @@ The two weights keep the 0.35 to 0.25 proportion that these signals had in
 component. A narrative that had no value for that signal gets the same score
 in `fusion-v1.2.0`, apart from rounding below 0.01 points.
 
+The explanation payload changes for that narrative. The `missing` list of
+`components[authenticity]` no longer names `deepfake_hits`. The value of
+`weights_renormalized` is now false. The `deepfake_hits` input key is gone.
+
 `misinfo_likelihood_agg` is engagement-weighted because a false claim nobody saw
 is not the same problem as one that reached a hundred thousand people. The weight
 is `1 + likes + shares`, so a zero-engagement post still contributes its own
