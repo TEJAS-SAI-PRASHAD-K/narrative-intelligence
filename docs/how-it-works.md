@@ -734,7 +734,7 @@ score = 100 × ( 0.45 × how harmful  +  0.35 × how coordinated  +  0.20 × how
 
 | Sub-signal | Weight | What it is |
 |---|---|---|
-| `coordinated_author_ratio` | 0.35 | Share of member accounts with a coordination score above 0.50, **out of accounts that have a score**. An account with no score is excluded, not counted as zero. If no account has a score, the signal is `null` |
+| `coordinated_author_ratio` | 0.35 | Share of member accounts with a coordination score above 0.50, **out of accounts that have a score**. An account that the detector saw and linked to nobody has a score of 0. An account the detector did not see has no score and is excluded. If no account has a score, the signal is `null`. The 0.50 cutoff is a placeholder that is not tuned |
 | `co_post_similarity_density` | 0.25 | How densely the member accounts are linked by near-duplicate posting |
 | `temporal_burstiness` | 0.25 | Share of volume in spikes above 3× the narrative's own average. Coordination looks like a spike |
 | `cohort_concentration` | 0.15 | Share of posts from the single largest cohort. A narrative carried entirely by one segment is a different thing from one with broad reach |

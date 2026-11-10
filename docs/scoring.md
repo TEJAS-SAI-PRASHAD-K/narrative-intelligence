@@ -65,18 +65,23 @@ is not the same problem as one that reached a hundred thousand people. The weigh
 is `1 + likes + shares`, so a zero-engagement post still contributes its own
 weight rather than vanishing from the average.
 
-`coordinated_author_ratio` divides by the authors that have a coordination score,
-not by all authors. Only authors with an edge in the coordination graph have a
-score. An author with no score is not an author with a score of zero. If no member
-author has a score, the signal is `null`. The fusion then treats it like each other
-missing signal and shares its weight among the other coordination signals.
+`coordinated_author_ratio` divides by the authors that have a coordination score.
+An author that the detector saw but linked to nobody has a score of 0.0. That is a
+measured zero and it stays in the denominator. An author that the detector did not
+see has no score. Examples are an author from a source that is not eligible, such
+as news, and any author when the coordination stage did not run. Those authors are
+excluded. If no member author has a score, the signal is `null`. The fusion then
+treats it like each other missing signal and shares its weight among the other
+coordination signals.
 
 The score of an author is the mean of three terms in [0, 1]. The terms are the size
 of the community of the author, the mean edge weight of the author, and the share
 of the posts of the author in an edge. The threshold is
 `thresholds.coordination_score_threshold` in `configs/fusion.yaml`. Its value is 0.50.
-That value is the midpoint of the scale. It is not tuned on labelled data. A score
-equal to the threshold is not above it.
+The value is a placeholder. It is not tuned. It has not been measured on a real
+score distribution. An author with an edge has a floor from the size term and the
+participation term, so most authors with an edge can exceed 0.50. A score equal to
+the threshold is not above it.
 
 **Why the bot ratio left the formula.** The bot classifier does not generalize.
 Its mean-fold macro-F1 is 0.416, and it flags 39 percent of genuine accounts
