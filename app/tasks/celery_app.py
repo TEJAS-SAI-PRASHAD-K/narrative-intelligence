@@ -129,8 +129,8 @@ celery.conf.update(
             "kwargs": {"batch": True},
             "options": {"queue": "io"},
         },
-        # Uploaded media is imagery of real people. This is the task that makes
-        # the retention promise in the API real rather than aspirational.
+        # Clears files that a deployment uploaded before the upload route was
+        # removed. Files are images of real people, so they must not stay forever.
         "purge-uploads": {
             "task": "maint.purge_uploads",
             "schedule": 3600.0,

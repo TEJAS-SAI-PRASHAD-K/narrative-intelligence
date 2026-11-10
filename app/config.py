@@ -134,8 +134,8 @@ class ApiSettings(BaseSettings):
     # --- media -----------------------------------------------------------
     uploads_dir: Path = Path("uploads")
     media_max_bytes: int = 100 * 1024 * 1024
-    #: Uploaded media is imagery of real people. Indefinite retention in a
-    #: research project is not defensible; the purge beat task enforces this.
+    #: Files that an earlier version accepted as uploads are images of real people.
+    #: The purge beat task deletes every entry under ``uploads_dir`` older than this.
     media_retention_hours: int = 24
 
     # --- llm (compass + summarize) --------------------------------------
