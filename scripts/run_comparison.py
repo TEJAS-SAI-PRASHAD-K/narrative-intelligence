@@ -1727,7 +1727,12 @@ def stage_calibrate_laya(ctx: Context) -> None:
     directory other than the comparison's own checkpoint directory, whose identity hash
     must not change. A rejected fit writes nothing and fails the stage.
     """
-    from modeling.text.laya_calibration import LayaCalibratorError, fit_calibrator, write_calibrator
+    from modeling.text.laya_calibration import (
+        CALIBRATOR_FILES,
+        LayaCalibratorError,
+        fit_calibrator,
+        write_calibrator,
+    )
 
     split_info = require_prepared(ctx)
     raw = getattr(ctx.args, "checkpoint_dir", None)
@@ -1736,12 +1741,24 @@ def stage_calibrate_laya(ctx: Context) -> None:
     target = Path(raw).expanduser().resolve()
     if not target.is_dir():
         raise StageError(EXIT_FAILED, f"--checkpoint-dir {target} is not a directory")
-    own = ctx.laya_checkpoint_dir("multilingual").resolve()
-    if target == own or own in target.parents or target in own.parents:
+    models_root = ctx.models_dir.resolve()
+    if target == models_root or models_root in target.parents or target in models_root.parents:
         raise StageError(
             EXIT_FAILED,
-            f"--checkpoint-dir {target} is or contains the comparison checkpoint {own}. "
-            "Copy the checkpoint to its own directory first. Nothing was written.",
+            f"--checkpoint-dir {target} is or contains the comparison models directory "
+            f"{models_root}. Copy the checkpoint to its own directory outside it. "
+            "Nothing was written.",
+        )
+    own = directory_identity(ctx.laya_checkpoint_dir("multilingual"))
+    if own is None:
+        raise StageError(EXIT_FAILED, "[calibrate-laya] the laya_multi checkpoint is not present")
+    served = directory_identity(target, ignore=CALIBRATOR_FILES)
+    if served is None or (served["sha256"], served["files"]) != (own["sha256"], own["files"]):
+        raise StageError(
+            EXIT_FAILED,
+            f"[calibrate-laya] {target} does not hold the comparison checkpoint "
+            f"(identity {(served or {}).get('sha256')}, comparison {own['sha256']}). "
+            "Copy the checkpoint with `cp -r`. Nothing was written.",
         )
 
     problem = provenance_problem(ctx, "laya_multi", split_info, current_inputs_hash(ctx))
@@ -1754,7 +1771,11 @@ def stage_calibrate_laya(ctx: Context) -> None:
         filters=[("part", "==", "val")],
     )
     usable = val.loc[val["score"].notna() & val["label"].notna()]
-    ctx.say(f"[calibrate-laya] validation rows {len(val)}, with a score and a label {len(usable)}")
+    dropped = len(val) - len(usable)
+    ctx.say(
+        f"[calibrate-laya] validation rows {len(val)}, with a score and a label {len(usable)}, "
+        f"dropped for a null score or label {dropped}"
+    )
     if not len(usable):
         raise StageError(EXIT_FAILED, "[calibrate-laya] no validation row has a score and a label")
     try:
@@ -1767,13 +1788,16 @@ def stage_calibrate_laya(ctx: Context) -> None:
         **report,
         "model": "laya_multi",
         "source_score_file": score_file(ctx, "laya_multi").name,
-        "comparison_checkpoint": checkpoint_identity(ctx, "laya_multi"),
+        "comparison_checkpoint": own,
         "split_sha256": split_fingerprint(split_info),
         "fit_part": "val",
+        "dropped_null_rows": dropped,
         "fitted_at": datetime.now(timezone.utc),
     }
     report = json.loads(json.dumps(report, default=str))
-    path = write_calibrator(target, calibrator, report)
+    path = write_calibrator(
+        target, calibrator, report, demo=ctx.demo, checkpoint_identity=own
+    )
     ctx.say(
         f"[calibrate-laya] {report['method']} on {report['rows']} rows: "
         f"Brier {report['brier_before']} -> {report['brier_after']}, "

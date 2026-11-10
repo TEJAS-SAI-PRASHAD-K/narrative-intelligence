@@ -1491,7 +1491,9 @@ def test_a_root_level_tokenizer_config_stays_in_the_checkpoint_identity(tmp_path
 # ---------------------------------------------------------------------------
 # calibrate-laya
 # ---------------------------------------------------------------------------
-def _synthetic_laya_scores(out: Path, test_scores=None) -> None:
+def _synthetic_laya_scores(
+    out: Path, test_scores=None, invert: bool = False, null_rows: int = 0
+) -> None:
     """Replace the laya_multi score file with synthetic validation rows and its provenance."""
     from tests.test_laya_stage import synthetic_validation
 
@@ -1503,9 +1505,13 @@ def _synthetic_laya_scores(out: Path, test_scores=None) -> None:
         if r["part"] != "val"
     ]
     scores, labels = synthetic_validation()
+    if invert:
+        scores = 1.0 - scores
     for i, (score, label) in enumerate(zip(scores, labels, strict=True)):
         rows.append({"part": "val", "id": f"syn{i}", "lang": "en", "label": int(label),
                      "score": float(score), "source_detail": None, "skip_reason": None})
+    for r in [r for r in rows if r["id"].startswith("syn")][:null_rows]:
+        r["score"] = None
     if test_scores is not None:
         for r in rows:
             if r["part"] == "test":
@@ -1518,9 +1524,10 @@ def _synthetic_laya_scores(out: Path, test_scores=None) -> None:
 
 
 @pytest.fixture
-def promoted(tmp_path):
+def promoted(scored, tmp_path):
+    """A copy of the comparison checkpoint outside the comparison output, as the runbook says."""
     directory = tmp_path / "promoted" / f"multi-{LAYA_V}"
-    directory.mkdir(parents=True)
+    shutil.copytree(scored / "models" / "laya" / f"multi-{LAYA_V}", directory)
     return directory
 
 
@@ -1532,7 +1539,12 @@ def _calibrate(out, directory):
 
 
 def test_calibrate_laya_writes_the_state_and_the_report(scored, promoted):
-    from modeling.text.laya_calibration import CALIBRATOR_FILE, REPORT_FILE, load_calibrator
+    from modeling.text.laya_calibration import (
+        CALIBRATOR_FILE,
+        REPORT_FILE,
+        LayaCalibratorError,
+        load_calibrator,
+    )
 
     _synthetic_laya_scores(scored)
     own = scored / "models" / "laya" / f"multi-{LAYA_V}"
@@ -1541,9 +1553,15 @@ def test_calibrate_laya_writes_the_state_and_the_report(scored, promoted):
     assert code == 0, text
     report = json.loads((promoted / REPORT_FILE).read_text())
     assert report["rows"] == 400 and report["fit_part"] == "val"
+    assert report["demo"] is True  # the demo flow fits, and the stage refuses the result
+    assert report["dropped_null_rows"] == 0
+    assert report["checkpoint_identity"]["sha256"] == identity["sha256"]
+    assert json.loads((promoted / CALIBRATOR_FILE).read_text())["demo"] is True
     assert {"method", "brier_before", "brier_after", "ece_before", "ece_after"} <= set(report)
     assert "English" in report["label_statement"] and "not measured" in report["label_statement"]
-    assert load_calibrator(promoted).method == report["method"]
+    with pytest.raises(LayaCalibratorError) as info:
+        load_calibrator(promoted)
+    assert info.value.reason == "calibrator_demo"
     assert (promoted / CALIBRATOR_FILE).exists()
     assert rc.directory_identity(own) == identity, "the comparison checkpoint must not change"
     assert not (own / CALIBRATOR_FILE).exists()
@@ -1558,7 +1576,7 @@ def test_calibrate_laya_never_reads_test_rows(scored, promoted, tmp_path):
     assert code == 0, text
     expected, _ = fit_calibrator(*synthetic_validation())
     state = json.loads((promoted / CALIBRATOR_FILE).read_text())
-    assert state == json.loads(json.dumps(expected.state()))
+    assert {k: state[k] for k in expected.state()} == json.loads(json.dumps(expected.state()))
 
 
 def test_calibrate_laya_writes_nothing_when_the_fit_is_rejected(scored, promoted, monkeypatch):
@@ -1572,15 +1590,54 @@ def test_calibrate_laya_writes_nothing_when_the_fit_is_rejected(scored, promoted
     monkeypatch.setattr(LC, "fit_calibrator", reject)
     code, _ = _calibrate(scored, promoted)
     assert code != 0
-    assert list(promoted.iterdir()) == []
+    assert sorted(p.name for p in promoted.iterdir()) == ["run_summary.json"]
 
 
-def test_calibrate_laya_refuses_the_comparison_checkpoint_directory(scored):
+@pytest.mark.parametrize("where", ["checkpoint", "models_root", "inside"])
+def test_calibrate_laya_refuses_a_directory_in_the_comparison_models(scored, where):
     own = scored / "models" / "laya" / f"multi-{LAYA_V}"
     _synthetic_laya_scores(scored)
-    code, _ = _calibrate(scored, own)
+    target = {
+        "checkpoint": own,
+        "models_root": scored / "models",
+        "inside": scored / "models" / "laya" / "copy",
+    }[where]
+    if where == "inside":
+        shutil.copytree(own, target)
+    code, _ = _calibrate(scored, target)
     assert code != 0
-    assert not (own / "misinfo_prob_calibrator.json").exists()
+    assert not (target / "misinfo_prob_calibrator.json").exists()
+
+
+def test_calibrate_laya_refuses_a_directory_with_other_weights(scored, promoted):
+    _synthetic_laya_scores(scored)
+    (promoted / "run_summary.json").write_text('{"other": true}')
+    code, _ = _calibrate(scored, promoted)
+    assert code != 0
+    assert not (promoted / "misinfo_prob_calibrator.json").exists()
+
+
+def test_calibrate_laya_ignores_calibrator_files_already_in_the_directory(scored, promoted):
+    _synthetic_laya_scores(scored)
+    assert _calibrate(scored, promoted)[0] == 0
+    assert _calibrate(scored, promoted)[0] == 0
+
+
+def test_calibrate_laya_refuses_inverted_scores_and_writes_nothing(scored, promoted):
+    _synthetic_laya_scores(scored, invert=True)
+    code, _ = _calibrate(scored, promoted)
+    assert code != 0
+    assert not (promoted / "misinfo_prob_calibrator.json").exists()
+    assert not (promoted / "misinfo_prob_calibration_report.json").exists()
+
+
+def test_calibrate_laya_counts_the_dropped_null_rows(scored, promoted):
+    from modeling.text.laya_calibration import REPORT_FILE
+
+    _synthetic_laya_scores(scored, null_rows=7)
+    assert _calibrate(scored, promoted)[0] == 0
+    report = json.loads((promoted / REPORT_FILE).read_text())
+    assert report["dropped_null_rows"] == 7 and report["rows"] == 393
 
 
 def test_calibrate_laya_refuses_a_stale_score_file(scored, promoted):
@@ -1591,4 +1648,4 @@ def test_calibrate_laya_refuses_a_stale_score_file(scored, promoted):
     sidecar.write_text(json.dumps(recorded))
     code, _ = _calibrate(scored, promoted)
     assert code != 0
-    assert list(promoted.iterdir()) == []
+    assert sorted(p.name for p in promoted.iterdir()) == ["run_summary.json"]

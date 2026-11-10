@@ -68,6 +68,11 @@ class LayaSkipReason(SkipReason):
     CALIBRATOR_MISSING = "calibrator_missing"
     CALIBRATOR_UNREADABLE = "calibrator_unreadable"
     CALIBRATOR_REJECTED = "calibrator_rejected"
+    #: The record has no usable title. The stage scores titles only.
+    NO_TITLE = "no_title"
+    #: The calibrator file is marked demo, or was fitted for other weights.
+    CALIBRATOR_DEMO = "calibrator_demo"
+    CALIBRATOR_CHECKPOINT_MISMATCH = "calibrator_checkpoint_mismatch"
     #: The raw score is not a finite number in [0, 1].
     INVALID_SCORE = "invalid_score"
 
