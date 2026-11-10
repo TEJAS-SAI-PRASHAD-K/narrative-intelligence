@@ -162,13 +162,10 @@ GROUP BY mc.narrative_id, t.total
 _AUTHENTICITY = """
 SELECT
     np.narrative_id,
-    count(*) FILTER (WHERE mc.confidence > :deepfake_threshold)::float
-      / NULLIF(count(mc.id), 0)                        AS deepfake_hits,
     avg(d.risk_score) / 100.0                           AS domain_risk_agg
 FROM narrative_posts np
 JOIN posts p ON p.id = np.post_id
 JOIN narratives n ON n.id = np.narrative_id
-LEFT JOIN media_checks mc ON mc.post_id = p.id
 LEFT JOIN LATERAL unnest(p.domains) AS dom(domain) ON true
 LEFT JOIN domains d ON d.domain = lower(dom.domain) AND d.project_id = :project_id
 WHERE n.project_id = :project_id
@@ -192,7 +189,6 @@ def collect(
         "project_id": project_id,
         "bot_threshold": float(thresholds.get("bot_like", 0.6)),
         "coordination_threshold": float(thresholds.get("coordination_score_threshold", 0.5)),
-        "deepfake_threshold": float(thresholds.get("deepfake", 0.5)),
         "burst_multiple": float(thresholds.get("burst_multiple", 3.0)),
     }
 
@@ -232,7 +228,6 @@ def collect(
 
     for row in session.execute(text(_AUTHENTICITY), params):
         item = entry(row.narrative_id)
-        item.deepfake_hits = _f(row.deepfake_hits)
         item.domain_risk_agg = _f(row.domain_risk_agg)
 
     for row in session.execute(text(_COMPASS_STATUS), params):
@@ -251,7 +246,6 @@ def populations(signals: dict[str, NarrativeSignals]) -> dict[str, list[float | 
         "co_post_similarity_density",
         "temporal_burstiness",
         "cohort_concentration",
-        "deepfake_hits",
         "domain_risk_agg",
         "anonymous_author_ratio",
     )

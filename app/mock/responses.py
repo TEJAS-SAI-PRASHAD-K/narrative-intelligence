@@ -1111,9 +1111,9 @@ def narrative_score(narrative: MockNarrative):
             ),
             (
                 "authenticity",
-                "h(deepfake_hits, domain_risk_agg, anonymous_author_ratio)",
+                "h(domain_risk_agg, anonymous_author_ratio)",
                 (
-                    {"reason": "deepfake module did not run over this narrative's media"}
+                    {"reason": "no domain or author data is available for this narrative"}
                     if authenticity is None
                     else {"coherence": narrative.coherence}
                 ),
@@ -1677,7 +1677,7 @@ def comparisons_list():
 
 
 # ---------------------------------------------------------------------------
-# jobs, media, alerts, reports, ingest
+# jobs, alerts, reports, ingest
 # ---------------------------------------------------------------------------
 def job(kind: str, status: str = "succeeded", job_id: str | None = None):
     from app.mock.corpus import _stable_uuid
@@ -1705,60 +1705,8 @@ def jobs_list():
         job("nlp.cluster", "succeeded"),
         job("score.fusion", "succeeded"),
         job("ingest.load", "running"),
-        job("media.deepfake", "failed"),
+        job("domain.enrich", "failed"),
     ]
-
-
-def media_check(job_id: str, status: str = "succeeded"):
-    from app.schemas.media import MediaCheckOut
-
-    settings = get_api_settings()
-    if status != "succeeded":
-        return MediaCheckOut(
-            job_id=job_id,
-            status=status,  # type: ignore[arg-type]
-            submitted_at=DEMO_NOW - timedelta(minutes=1),
-            retention={
-                "deletes_at": (
-                    DEMO_NOW + timedelta(hours=settings.media_retention_hours)
-                ).isoformat(),
-                "retention_hours": settings.media_retention_hours,
-            },
-        )
-    return MediaCheckOut(
-        job_id=job_id,
-        status="succeeded",
-        filename="clip.mp4",
-        media_type="video/mp4",
-        size_bytes=4_812_004,
-        submitted_at=DEMO_NOW - timedelta(minutes=9),
-        completed_at=DEMO_NOW - timedelta(minutes=4),
-        verdict="possibly_manipulated",
-        confidence=0.68,
-        manipulation_type="face_swap",
-        frames_analyzed=48,
-        face_detected=True,
-        explanation=(
-            "48 frames were sampled at one-second intervals and a face was found in 44 "
-            "of them. The classifier scored 31 of those faces above its manipulation "
-            "threshold, concentrated in the middle third of the clip where the subject "
-            "turns. That pattern is consistent with a face swap, but heavy compression "
-            "produces similar artefacts, so this is a lead for manual review rather "
-            "than a determination."
-        ),
-        model="xception-deepfake",
-        model_version="v0.1.0",
-        limitations=[
-            "Trained on FaceForensics++ and DFDC; generators outside those sets are "
-            "out of distribution.",
-            "Below 480p the false-positive rate rises sharply.",
-            "No face detected means no verdict, not an authentic verdict.",
-        ],
-        retention={
-            "deletes_at": (DEMO_NOW + timedelta(hours=settings.media_retention_hours)).isoformat(),
-            "retention_hours": settings.media_retention_hours,
-        },
-    )
 
 
 def alert_rules():

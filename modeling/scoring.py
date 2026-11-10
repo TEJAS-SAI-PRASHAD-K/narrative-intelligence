@@ -1325,47 +1325,6 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
     return [{"stage": "accounts", "table": "author_scores", **written, "note": ctx.note(note)}]
 
 
-@stage("media")
-def _media_stage(ctx: StageContext) -> list[dict[str, Any]]:
-    """Deepfake scoring over records carrying media."""
-    from modeling.config import module_config
-    from modeling.media.deepfake_clf import DeepfakeScorer
-    from modeling.registry import resolve
-
-    if "media_urls" not in ctx.records.columns:
-        return [{"stage": "media", "note": ctx.note("corpus carries no media_urls column")}]
-    from modeling.io import as_list
-
-    with_media = ctx.records.loc[ctx.records["media_urls"].map(lambda v: bool(as_list(v)))]
-    if not len(with_media):
-        return [{"stage": "media", "note": ctx.note("no records carry media")}]
-
-    version = str(module_config("deepfake").get("version"))
-    checkpoint = resolve("deepfake", version, required=False)
-    scorer = DeepfakeScorer(ctx.settings)
-    rows = scorer.score_records(with_media, checkpoint.path if checkpoint else None)
-    if not rows:
-        return [
-            {
-                "stage": "media",
-                "table": "media_scores",
-                "note": ctx.note(
-                    f"{len(with_media)} record(s) carry media but none could be scored "
-                    "(no checkpoint, or remote fetching disabled in configs/scoring.yaml)"
-                ),
-            }
-        ]
-
-    frame = pd.DataFrame(rows)
-    if ctx.dry_run:
-        return [{"stage": "media", "table": "media_scores",
-                 "note": ctx.note(f"dry-run; would write {len(frame)} rows")}]
-    written = ctx.store.write(
-        "media_scores", frame, known_keys=ctx.known_record_ids or None, merge=False
-    )
-    return [{"stage": "media", "table": "media_scores", **written, "note": ctx.note("")}]
-
-
 # ---------------------------------------------------------------------------
 # helpers shared by the stages
 # ---------------------------------------------------------------------------

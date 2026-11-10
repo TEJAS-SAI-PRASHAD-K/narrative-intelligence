@@ -2,8 +2,7 @@
 
 Every benchmark this project uses is access-gated or manual-download. LIAR is a
 direct download; FakeNewsNet ships ids and a crawler; CoAID is a git clone;
-TwiBot-22, Cresci-2017, FaceForensics++, DFDC and Celeb-DF are all behind a
-request form or a signed agreement.
+TwiBot-22 and Cresci-2017 are behind a request form or a signed agreement.
 
 The consequence is a hard rule: **no loader may download anything.** A loader
 takes a path, validates what it finds, and either returns data or raises

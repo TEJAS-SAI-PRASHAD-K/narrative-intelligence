@@ -13,7 +13,6 @@ module        group key
 misinfo       claim / story id, and outlet for domain shift
 stance        claim id
 bot           account id (and botnet/campaign id where known)
-deepfake      source video id
 narrative     n/a -- unsupervised, no split
 ============  =========================================
 
@@ -397,8 +396,7 @@ def domain_holdout(
     """Train on every domain except ``held_out``; test only on ``held_out``.
 
     This is how the honest numbers get produced: FakeNewsNet PolitiFact ->
-    GossipCop, FF++ three manipulation methods -> the fourth. In-domain F1
-    flatters; cross-domain F1 is what a reviewer should be shown.
+    GossipCop. In-domain F1 flatters; cross-domain F1 is what a reviewer should be shown.
 
     ``val`` is carved out of the training domains, so the held-out domain stays
     genuinely unseen until test time.

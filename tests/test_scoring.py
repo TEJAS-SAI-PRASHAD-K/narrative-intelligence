@@ -49,7 +49,6 @@ def _signals(**overrides) -> NarrativeSignals:
         "co_post_similarity_density": 0.3,
         "temporal_burstiness": 0.5,
         "cohort_concentration": 0.7,
-        "deepfake_hits": 0.2,
         "domain_risk_agg": 0.6,
         "anonymous_author_ratio": 0.1,
     }
@@ -66,7 +65,7 @@ def test_a_fully_populated_narrative_scores_by_the_documented_formula(config, ra
 
     severity = 0.8 * 0.40 + 1.0 * 0.25 + 0.5 * 0.20 + 0.6 * 0.15
     coordination = 0.4 * 0.35 + 0.3 * 0.25 + 0.5 * 0.25 + 0.7 * 0.15
-    authenticity = 0.2 * 0.40 + 0.6 * 0.35 + 0.1 * 0.25
+    authenticity = 0.6 * 0.5833 + 0.1 * 0.4167
     expected = 100 * (severity * 0.45 + coordination * 0.35 + authenticity * 0.20)
 
     assert result.score == pytest.approx(expected, abs=0.01)
@@ -117,7 +116,6 @@ def test_the_score_is_bounded(config, raw):
             "co_post_similarity_density",
             "temporal_burstiness",
             "cohort_concentration",
-            "deepfake_hits",
             "domain_risk_agg",
             "anonymous_author_ratio",
         )
@@ -153,13 +151,13 @@ def test_components_and_weights_reconcile_with_the_score(config, raw):
 # missing inputs -- the property the acceptance criteria single out
 # ---------------------------------------------------------------------------
 def test_a_missing_component_renormalizes_and_is_never_zeroed(config, raw):
-    """The deepfake module never ran. That is not a score of zero.
+    """No domain or author data exists. That is not a score of zero.
 
     Zeroing would make every un-analysed narrative look cleaner than one that
     was analysed and came back clean, which inverts the signal exactly where it
     matters most.
     """
-    signals = _signals(deepfake_hits=None, domain_risk_agg=None, anonymous_author_ratio=None)
+    signals = _signals(domain_risk_agg=None, anonymous_author_ratio=None)
     result = fusion_score(signals, config=config, normalizers=raw)
 
     assert result.missing == ["authenticity"]
@@ -175,11 +173,34 @@ def test_a_missing_component_renormalizes_and_is_never_zeroed(config, raw):
     # And the score is strictly higher than the same narrative with authenticity
     # forced to zero -- which is the whole point.
     zeroed = fusion_score(
-        _signals(deepfake_hits=0.0, domain_risk_agg=0.0, anonymous_author_ratio=0.0),
+        _signals(domain_risk_agg=0.0, anonymous_author_ratio=0.0),
         config=config,
         normalizers=raw,
     )
     assert result.score > zeroed.score
+
+
+def test_authenticity_weights_match_the_old_weights_when_the_third_signal_was_absent(config, raw):
+    """fusion-v1.2.0 scores a narrative as fusion-v1.1.0 did when it had no media checks.
+
+    The old sub-weights were 0.40, 0.35 and 0.25. With the first signal absent, the
+    weighted mean renormalized the other two, so the old component value is computed
+    here from the old weights directly.
+    """
+    old_weights = {"deepfake_hits": 0.40, "domain_risk_agg": 0.35, "anonymous_author_ratio": 0.25}
+    top = config["weights"]
+    for domain, anonymous in [(0.6, 0.1), (0.0, 1.0), (1.0, 0.0), (0.33, 0.77)]:
+        signals = _signals(domain_risk_agg=domain, anonymous_author_ratio=anonymous)
+        result = fusion_score(signals, config=config, normalizers=raw)
+        parts = {"domain_risk_agg": domain, "anonymous_author_ratio": anonymous}
+        old_authenticity, _, _ = weighted_mean(parts, old_weights)
+        by_name = {c["name"]: c["value"] for c in result.components["components"]}
+        old_score = 100 * (
+            by_name["narrative_severity"] * top["narrative_severity"]
+            + by_name["coordination"] * top["coordination"]
+            + old_authenticity * top["authenticity"]
+        )
+        assert result.score == pytest.approx(old_score, abs=0.01)
 
 
 @pytest.mark.parametrize(
@@ -207,7 +228,7 @@ def test_every_missing_component_combination(config, raw, absent):
             "temporal_burstiness",
             "cohort_concentration",
         ],
-        "authenticity": ["deepfake_hits", "domain_risk_agg", "anonymous_author_ratio"],
+        "authenticity": ["domain_risk_agg", "anonymous_author_ratio"],
     }
     overrides: dict = {}
     for component in absent:
@@ -285,7 +306,7 @@ def test_changing_a_weight_changes_the_score_and_the_version(config, raw):
 
     tweaked = {
         **config,
-        "version": "fusion-v1.1.0-test",
+        "version": "fusion-v1.2.0-test",
         "weights": {
             "narrative_severity": 0.20,
             "coordination": 0.60,
@@ -295,7 +316,7 @@ def test_changing_a_weight_changes_the_score_and_the_version(config, raw):
     after = fusion_score(_signals(), config=tweaked, normalizers=raw)
 
     assert after.score != baseline.score
-    assert after.scoring_version == "fusion-v1.1.0-test"
+    assert after.scoring_version == "fusion-v1.2.0-test"
     assert baseline.scoring_version == config["version"]
 
 

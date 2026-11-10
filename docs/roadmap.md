@@ -25,8 +25,9 @@ the module being quietly described as present.
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
 | Laya scorer | Hindi titles only | calibrated stage in modeling/scoring.py, English stays with roberta, see the model card |
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation, coordination input is the weak coordination score, not the bot ratio |
-| API | done | 69 paths, 80 operations, contract tested under `DEMO_MODE` |
-| database | done | 27 tables, 4 migrations, round-trip asserted in CI |
+| API | done | 66 paths, 77 operations, contract tested under `DEMO_MODE` |
+| database | done | 26 tables, 5 migrations, round-trip asserted in CI |
+| deepfake module | removed | code, API, table and dependency tree are gone. `maint.purge_uploads` stays until every deployment has passed one retention window |
 | dashboard | done | separate repo, built against the committed contract |
 | CI | done | lint, suite on 3.11 and 3.12, OpenAPI drift, Postgres suite |
 
@@ -180,9 +181,11 @@ the honest entry in that cell, not a zero.
 
 ### Backend and frontend
 
-- **Remove the deepfake module.** It is out of scope, carries the heaviest
-  dependency tree in the project, and its detector is uncalibrated with an
-  operating point of 0.99 that belongs to one specific checkpoint.
+- **Remove `maint.purge_uploads`.** The deepfake module is gone, together with its
+  API, its table and its dependency tree. The upload sweep stays only to delete
+  files that a deployment stored before the removal. Remove the task, its beat
+  schedule, `uploads_dir` and `media_retention_hours` after every deployment has
+  passed one retention window.
 - **Surface the language gate in the dashboard.** The scored tables cover a
   subset of the corpus while Hindi goes unscored, and nothing in the interface
   currently says so.

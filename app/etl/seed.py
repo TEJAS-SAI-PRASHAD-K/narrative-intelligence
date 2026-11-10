@@ -104,7 +104,6 @@ def build_demo_project(session: Session, *, slug: str = "demo") -> dict[str, Any
         "narratives": scored.narratives,
         "narrative_posts": scored.narrative_posts,
         "network_edges": scored.network_edges,
-        "media_checks": scored.media_checks,
         "embeddings": scored.embeddings,
     }
 

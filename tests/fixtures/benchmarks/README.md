@@ -23,11 +23,5 @@ artifacts are written. Every eval artifact produced from them is stamped
 | `stance/` | SemEval-2016 Task 6 annotations | latin-1, unseen target in the test file |
 | `twibot/` | TwiBot-22 `label.csv` + `user.json` | nested `public_metrics`, as in the real release |
 | `cresci/` | Cresci-2017 `<class>.csv/users.csv` | five campaign directories, legacy Twitter date format |
-| `faceforensics/` | FF++ `original_sequences` + 4 methods | PNG stills, `<target>_<source>` naming preserved |
-| `dfdc/` | one DFDC part with `metadata.json` | includes one untied fake the loader must drop |
-
-The media fixtures are stills rather than video on purpose: a valid `.mp4`
-requires a codec dependency the test suite must not need, and video bytes do not
-belong in git. Frame extraction is the only step they do not exercise.
 
 Regenerate with `python scripts/make_fixtures.py`.

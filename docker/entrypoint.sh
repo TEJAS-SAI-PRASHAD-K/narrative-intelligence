@@ -59,7 +59,7 @@ case "$ROLE" in
       --proxy-headers --forwarded-allow-ips='*'
     ;;
   worker)
-    # Queues are explicit: a 40-minute deepfake job must not be able to starve
+    # Queues are explicit: a 40-minute GPU job must not be able to starve
     # 15-minute alert evaluation. Split the queues across replicas in prod.
     exec celery -A app.tasks.celery_app.celery worker \
       --loglevel="${CELERY_LOG_LEVEL:-info}" \

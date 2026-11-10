@@ -205,76 +205,6 @@ def write_cresci() -> None:
 
 
 # ---------------------------------------------------------------------------
-# media benchmarks
-# ---------------------------------------------------------------------------
-FACE_SIZE = 64
-
-
-def _face(seed: int, manipulated: bool = False):
-    """A deterministic synthetic face-like still.
-
-    No per-pixel noise: it defeats PNG compression and buys nothing. The signal
-    the fixture carries is the blend seam, which is the artefact class these
-    models actually key on.
-    """
-    from PIL import Image
-
-    rng = np.random.default_rng(seed)
-    size = FACE_SIZE
-    img = np.full((size, size, 3), 200, dtype=np.uint8)
-    yy, xx = np.mgrid[0:size, 0:size]
-    head = ((xx - size / 2) ** 2 / (size * 0.30) ** 2
-            + (yy - size / 2) ** 2 / (size * 0.38) ** 2) <= 1
-    img[head] = np.clip(np.array([215, 180, 150]) + rng.integers(-20, 20, 3), 0, 255)
-    for cx in (size * 0.37, size * 0.63):
-        img[((xx - cx) ** 2 + (yy - size * 0.44) ** 2) <= (size * 0.06) ** 2] = [40, 40, 45]
-    img[(abs(yy - size * 0.66) < size * 0.03) & (abs(xx - size / 2) < size * 0.14)] = [150, 70, 70]
-    if manipulated:
-        band = (yy > size * 0.55) & (yy < size * 0.61) & head
-        img[band] = np.clip(img[band].astype(int) + int(rng.integers(10, 26)), 0, 255)
-    return Image.fromarray(img.astype(np.uint8))
-
-
-FF_METHODS = ("Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures")
-
-
-def write_faceforensics() -> None:
-    root = ROOT / "faceforensics"
-    originals = root / "original_sequences" / "youtube" / "c23" / "videos"
-    originals.mkdir(parents=True, exist_ok=True)
-    targets = [f"{i:03d}" for i in range(12)]
-    for i, target in enumerate(targets):
-        _face(i).save(originals / f"{target}.png", optimize=True)
-    for m_i, method in enumerate(FF_METHODS):
-        out = root / "manipulated_sequences" / method / "c23" / "videos"
-        out.mkdir(parents=True, exist_ok=True)
-        for i, target in enumerate(targets):
-            source = targets[(i + 3) % len(targets)]
-            # <target>_<source>, exactly as FF++ names manipulated clips: the
-            # loader's pairing logic depends on parsing this.
-            _face(1000 + m_i * 100 + i, True).save(out / f"{target}_{source}.png", optimize=True)
-
-
-def write_dfdc() -> None:
-    out = ROOT / "dfdc" / "dfdc_train_part_00"
-    out.mkdir(parents=True, exist_ok=True)
-    metadata: dict[str, dict] = {}
-    reals = [f"real_{i:02d}.png" for i in range(8)]
-    for i, name in enumerate(reals):
-        _face(5000 + i).save(out / name, optimize=True)
-        metadata[name] = {"label": "REAL", "split": "train"}
-    for i in range(10):
-        name = f"fake_{i:02d}.png"
-        _face(6000 + i, True).save(out / name, optimize=True)
-        metadata[name] = {"label": "FAKE", "split": "train", "original": reals[i % len(reals)]}
-    # One deliberately untied fake: the loader must drop it rather than let an
-    # ungroupable clip into the split.
-    metadata["fake_untied.png"] = {"label": "FAKE", "split": "train"}
-    _face(7000, True).save(out / "fake_untied.png", optimize=True)
-    (out / "metadata.json").write_text(json.dumps(metadata, indent=1, sort_keys=True) + "\n")
-
-
-# ---------------------------------------------------------------------------
 # demo corpus (Phase-1-shaped, for `modeling ... --demo`)
 # ---------------------------------------------------------------------------
 #: Three narratives with distinct vocabulary, one coordinated cluster of
@@ -528,8 +458,6 @@ BUILDERS = {
     "fnc1": write_fnc1,
     "twibot": write_twibot,
     "cresci": write_cresci,
-    "faceforensics": write_faceforensics,
-    "dfdc": write_dfdc,
 }
 
 

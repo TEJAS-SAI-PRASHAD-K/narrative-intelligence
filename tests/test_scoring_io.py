@@ -66,6 +66,17 @@ def test_every_contract_table_has_keys_and_a_clock():
             assert not table.schema.field(key).nullable, f"{name}.{key} must be non-nullable"
 
 
+def test_a_leftover_media_scores_directory_is_ignored(store):
+    """A host that ran an older version can still hold ``media_scores``. Nothing reads it."""
+    stale = store.root / "media_scores" / "part-0.parquet"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"not parquet")
+    store.write("record_scores", make_record_scores(["reddit:a"]), known_keys={"reddit:a"})
+
+    assert "media_scores" not in TABLES
+    assert [row["table"] for row in store.summary()] == ["record_scores"]
+
+
 def test_round_trip_preserves_nested_types(store):
     frame = make_record_scores(["reddit:a", "reddit:b"])
     store.write("record_scores", frame, known_keys={"reddit:a", "reddit:b"})

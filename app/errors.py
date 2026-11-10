@@ -70,18 +70,6 @@ class RateLimited(ApiError):
     message = "Rate limit exceeded for this API key."
 
 
-class PayloadTooLarge(ApiError):
-    status_code = 413
-    code = "payload_too_large"
-    message = "The uploaded file exceeds the size limit."
-
-
-class UnsupportedMedia(ApiError):
-    status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
-    code = "unsupported_media_type"
-    message = "The uploaded file type is not supported."
-
-
 class ScorerUnavailable(ApiError):
     """A model checkpoint this route needs is not on disk.
 

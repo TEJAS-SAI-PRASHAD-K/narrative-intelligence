@@ -1,6 +1,6 @@
 # Data model
 
-27 tables. Every one exists to answer a question on one of the five pillars, or
+26 tables. Every one exists to answer a question on one of the five pillars, or
 to record what the system did.
 
 ```
@@ -19,7 +19,6 @@ projects ─┬─ posts ─────┬─ post_scores
           ├─ alerts ── alert_rules
           ├─ reports
           ├─ ingest_runs
-          ├─ media_checks
           └─ jobs
                           api_keys   (unscoped: auth is global, not per project)
 ```
@@ -48,7 +47,6 @@ projects ─┬─ posts ─────┬─ post_scores
 | `domains` | Domains | risk score plus best-effort WHOIS/TLS enrichment |
 | `network_edges` | Networks | time-bucketed interaction graph |
 | `network_layouts` | Networks | precomputed node positions |
-| `media_checks` | Manipulation | deepfake verdicts and their retention deadline |
 | `alert_rules` / `alerts` | ops | thresholds and what fired |
 | `jobs` | ops | one row per async operation, whatever kind |
 | `ingest_runs` | ops | per-source load accounting, including every rejection |

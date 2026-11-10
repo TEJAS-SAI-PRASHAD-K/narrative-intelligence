@@ -38,7 +38,6 @@ TASK_NAMES: dict[str, str] = {
     "graph.layout": "graph.layout",
     "compass.generate": "compass.generate",
     "domain.enrich": "domain.enrich",
-    "media.deepfake": "media.deepfake",
     "alerts.evaluate": "alerts.evaluate",
     "reports.render": "reports.render",
     "maint.purge_uploads": "maint.purge_uploads",

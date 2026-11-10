@@ -34,7 +34,6 @@ stages:
   - summarize               # -> narratives.label / .summary
   - coordination            # -> coordination_edges
   - accounts                # -> author_scores (needs cluster + coordination)
-  - media                   # -> media_scores
 
 # Per-source notes that change what may legitimately be computed. These are not
 # preferences; they are properties of Phase 1's data.
@@ -57,12 +56,6 @@ source_policy:
     # code rather than producing a number.
     author_is_outlet: true
   gdelt_authors: {}
-
-media:
-  # Deepfake scoring runs on records carrying media_urls. Remote fetching is
-  # off by default: batch scoring must not depend on third-party availability.
-  fetch_remote: false
-  max_videos: 100
 
 quality_gates:
   # Refuse to write a scored table if more than this fraction of rows are null

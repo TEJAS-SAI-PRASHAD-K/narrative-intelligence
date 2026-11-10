@@ -10,7 +10,7 @@
 # bumping `version` below, which is written onto every row the run produces --
 # that is how a stale score is detectable rather than merely suspected.
 
-version: fusion-v1.1.0
+version: fusion-v1.2.0
 
 # ---------------------------------------------------------------------------
 # Normalization
@@ -42,7 +42,7 @@ normalization:
 # ---------------------------------------------------------------------------
 # They sum to 1.0. When a component cannot be computed its weight is
 # redistributed over the others in proportion -- never treated as zero, which
-# would systematically under-flag every narrative the deepfake module never saw.
+# would systematically under-flag every narrative that lacks one of its inputs.
 weights:
   narrative_severity: 0.45
   coordination: 0.35
@@ -64,9 +64,11 @@ coordination:
   cohort_concentration: 0.15
 
 authenticity:
-  deepfake_hits: 0.40
-  domain_risk_agg: 0.35
-  anonymous_author_ratio: 0.25
+  # 0.5833 and 0.4167 keep the 0.35 : 0.25 proportion that these two signals had
+  # when a third signal shared the component. A narrative that lacked that third
+  # signal scores the same as before.
+  domain_risk_agg: 0.5833
+  anonymous_author_ratio: 0.4167
 
 # ---------------------------------------------------------------------------
 # Thresholds
@@ -97,21 +99,6 @@ thresholds:
   coordination_score_threshold: 0.50
   toxic: 0.60
   anomalous: 0.70
-  # 0.99, not 0.50, and that is not a typo.
-  #
-  # `deepfake_prob` comes from a pre-existing detector used with no
-  # fine-tuning, and its Platt calibration was REJECTED for inverting the
-  # ranking (see modeling/eval/calibrate.py), so this column is a raw softmax
-  # rather than a probability. Raw softmax from that detector sits above 0.5
-  # for almost every video -- at 0.50 this threshold flags ~100% of media and
-  # carries no information.
-  #
-  # 0.99 is the operating point measured on a held-apart half of DFDC at a
-  # 0.85 precision target: precision 0.850, recall 0.773. It is recorded in
-  # models/deepfake/<version>/model.json and in the eval report, and it must be
-  # re-derived whenever the mounted detector changes. Treat it as belonging to
-  # that specific checkpoint, not as a general-purpose cut-off.
-  deepfake: 0.99
   # A burst is a bucket this many times the narrative's own mean volume.
   burst_multiple: 3.0
 

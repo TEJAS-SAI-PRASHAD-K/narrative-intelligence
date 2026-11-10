@@ -82,7 +82,7 @@ def weighted_mean(
     Returns ``(value, missing, renormalized)``.
 
     The rule this function exists to enforce: **a missing input is not a zero.**
-    If the deepfake module never ran, authenticity is absent and the remaining
+    If no input of a component exists, that component is absent and the remaining
     weights are scaled up to sum to one, so a narrative is scored on the evidence
     that exists rather than penalised for evidence that does not. Treating
     absence as a zero would systematically under-flag exactly the narratives

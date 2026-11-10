@@ -49,7 +49,6 @@ api = [
     "pgvector>=0.3",
     "celery[redis]>=5.4",
     "redis>=5.0",
-    "python-multipart>=0.0.9",
     "argon2-cffi>=23.1",     # api key hashing; falls back to pbkdf2 if absent
     "httpx>=0.27",
 ]
@@ -74,17 +73,9 @@ modeling = [
     "networkx>=3.3",
     "matplotlib>=3.8",
 ]
-# Deepfake module. Heaviest tree in the project and needed by exactly one
-# module, so it is opt-in; modeling/media/* imports it lazily and degrades with
-# a clear message.
-media = [
-    "timm>=1.0",
-    "opencv-python>=4.9",
-    "pillow>=10.0",
-]
 # Laya, the System One decision model. Opt-in because it is only needed by
 # modeling/text/laya_clf.py, which lazy-imports it and marks itself
-# unavailable when absent -- same treatment as the `media` tree.
+# unavailable when absent.
 #
 # Installing this RAISES THE EFFECTIVE transformers FLOOR. The wheel declares
 # `transformers>=4.48.0` and `torch>=2.0.0`, both satisfied by the `modeling`

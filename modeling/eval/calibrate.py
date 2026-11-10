@@ -137,8 +137,8 @@ class Calibrator:
         # maps a higher raw score to a lower probability -- silently inverting
         # the model. Brier does not catch it: predicting near the base rate
         # improves Brier even while the ranking is destroyed, which is exactly
-        # how this slipped through (deepfake: Brier 0.182 -> 0.151 "improved",
-        # while test ROC-AUC went 0.665 -> 0.335 = 1 - 0.665).
+        # how this slipped through once, on a past detector: Brier went 0.182 ->
+        # 0.151 ("improved") while test ROC-AUC went 0.665 -> 0.335 = 1 - 0.665.
         #
         # Isotonic is non-decreasing by construction, so in practice this only
         # ever fires for Platt. Checked on a grid rather than by reading the

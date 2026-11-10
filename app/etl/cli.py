@@ -246,7 +246,6 @@ def load_scores(
         ("narratives", report.narratives),
         ("narrative_posts", report.narrative_posts),
         ("network_edges", report.network_edges),
-        ("media_checks", report.media_checks),
         ("embeddings", report.embeddings),
     ):
         table.add_row(name, str(count), style=None if count else "yellow")

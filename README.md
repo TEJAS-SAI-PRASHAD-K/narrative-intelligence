@@ -391,8 +391,7 @@ Eighteen Indian feeds in two roles, and the roles are not interchangeable:
 ### YouTube
 
 - **Gives you:** view/like/comment counts (the only source here that reports views at
-  all), channel identity, and threaded comments. `media_urls` is the watchable video URL —
-  the hook for Phase 2's deepfake module.
+  all), channel identity, and threaded comments. `media_urls` is the watchable video URL.
 - **Costs:** 10,000 quota units per UTC day, hard. The costs are wildly asymmetric:
 
   | call | units | use |
@@ -704,7 +703,7 @@ stay reviewable), then run it.
 ## Quickstart
 
 ```bash
-pip install -e ".[modeling]"          # add ".[media]" for deepfake, ".[llm]" for summaries
+pip install -e ".[modeling]"          # add ".[llm]" for summaries
 python -m modeling.cli warm-cache      # pre-download the auxiliary models, once
 python -m modeling.cli score --all     # -> data/scored/
 ```
@@ -741,7 +740,6 @@ Partitioned Parquet under `data/scored/`, plus a manifest mirroring Phase 1's pa
 | `narrative_membership` | record × narrative | `membership_prob`, `is_representative` |
 | `author_scores` | one row per author | `bot_prob`, `bot_top_features`, `coordination_score`, `community_id` |
 | `coordination_edges` | account pair × evidence | `weight`, `evidence`, `observations`, window |
-| `media_scores` | record × media url | `deepfake_prob`, `face_detected`, `explanation` |
 
 Four contract rules, enforced in `modeling/io.py` rather than by convention:
 
@@ -768,7 +766,6 @@ nothing looks wrong. So the unit of a split is never a post:
 | misinfo | speaker, claim id, outlet | one politician's statements share phrasing and history |
 | stance | claim/target | SemEval's unseen-target structure is the entire benchmark |
 | bot | **campaign**, not account | each Cresci spambot directory is one botnet running one template |
-| deepfake | **source video**, not frame | frames of one clip in both splits is *the* cause of fake 99% accuracy |
 
 `tests/test_splits.py` proves the leakage detector fires on a post-level split, on a
 frame-level split, and on the second-order case where two rows carry different claim ids
@@ -785,7 +782,6 @@ and the same sentence. It also **scans the source tree** and fails if any module
 | `toxicity` | an off-the-shelf classifier's output, **uncalibrated** | a judgement that an account is abusive |
 | `anomaly_score` | a **within-corpus percentile rank** | a probability; it cannot be multiplied into one |
 | `severity` | engagement-weighted mean of a narrative's top-quartile `misinfo_prob` | a mean, or a percentile — both fail on real narrative shape |
-| `deepfake_prob` | top-k frame score for a detected face | evidence a video is authentic; `null` means "could not look" |
 
 ## Retraining a module
 
@@ -859,23 +855,8 @@ changed the code:
   the only honest answer to "did fine-tuning buy anything". Run it with
   `notebooks/colab_finetune.ipynb`: measured at ~2 pairs/sec on 8 GB Apple Silicon over
   MPS, the 50k-pair fine-tune is ~20 h locally versus well under an hour on a T4.
-- **Deepfake is evaluated, with a pre-existing detector and no training.** FaceForensics++
-  is still 17 GB behind a signed agreement, and the DFDC copy on disk still cannot support
-  honest *training* — the dropped `original` field means a fake cannot be tied to the real
-  clip it came from, and DFDC swaps faces between actors in shared sessions, so a trained
-  model could memorise a face and be scored on it from the other side of the split. But it
-  can support honest *testing*: nothing is fitted, so there is no boundary to leak across,
-  and that is exactly the cross-dataset check this module was always meant to be. Mounting
-  `dima806/deepfake_vs_real_image_detection` and scoring 381 videos at video grain gives
-  **macro-F1 0.564 [0.485, 0.638], ROC-AUC 0.665 [0.567, 0.756]** — beating the
-  majority-class baseline (0.442) by +0.12. Weak, as cross-dataset transfer always is, but
-  measured. Two things make it readable rather than misleading, and both are in the card:
-  **read ROC-AUC, not PR-AUC** (at an 80% positive rate a random ranker already scores
-  PR-AUC ≈ 0.80 — a rejected candidate detector scored PR-AUC 0.825 on a ROC-AUC of
-  0.512, i.e. nothing at all), and **`deepfake_prob` is uncalibrated with an operating
-  point of 0.99, not 0.5**, because its Platt fit inverted the ranking and was rejected.
 - **A calibrator can silently invert a model, and Brier does not catch it.** Found while
-  evaluating the above: the Platt fit mapped higher raw scores to *lower* probabilities,
+  evaluating a pretrained detector that the repository has since removed: the Platt fit mapped higher raw scores to *lower* probabilities,
   turning a test ROC-AUC of 0.665 into 0.335 — while Brier *improved* (0.182 → 0.151),
   because predicting near the base rate always does. `modeling/eval/calibrate.py` now
   checks that a calibration preserves ranking and rejects it if not, falling back to raw
@@ -1078,10 +1059,6 @@ error rather than an obvious one.
   context and no citations. That is the designed behaviour, not a bug — there is
   no heuristic fallback, because a keyword-assembled fact-check would be worse
   than none.
-- **No deepfake checkpoint is mounted**, so `/media/check` records the upload,
-  purges it on schedule, and returns `inconclusive` with an explanation saying
-  no model ran. It never returns `likely_authentic` for a file it did not
-  analyse.
 - **Retrieval for Compass reads only the in-corpus reputable outlets.** A live
   web-search retriever is the obvious extension and is deliberately absent: it
   needs a search key, a fetch budget and a source policy, and half-building it

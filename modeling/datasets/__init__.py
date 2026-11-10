@@ -15,8 +15,6 @@ or violate a dataset licence. When the data is absent, the loader raises
 from modeling.datasets import (  # noqa: F401  (registration side effect)
     coaid,
     cresci,
-    dfdc,
-    faceforensics,
     fakenewsnet,
     fnc1,
     liar,

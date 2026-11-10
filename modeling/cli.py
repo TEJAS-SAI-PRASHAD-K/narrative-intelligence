@@ -224,7 +224,7 @@ def score(
 # ---------------------------------------------------------------------------
 @app.command()
 def train(
-    module: str = typer.Argument(..., help="misinfo | stance | bot | deepfake"),
+    module: str = typer.Argument(..., help="misinfo | stance | bot"),
     data: Path | None = typer.Option(None, help="Local benchmark path."),
     demo: bool = typer.Option(False, "--demo", help="Train on the committed fixture."),
     epochs: int | None = typer.Option(None, help="Override the configured epochs."),

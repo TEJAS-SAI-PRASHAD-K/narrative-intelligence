@@ -23,8 +23,6 @@ ALL_KEYS = [
     "stance",
     "twibot",
     "cresci",
-    "faceforensics",
-    "dfdc",
 ]
 
 
@@ -271,52 +269,6 @@ def test_twibot_ids_join_between_users_and_labels():
     loaded = get_dataset("twibot").load(demo=True)
     assert len(loaded) > 0
     assert loaded.dropped.get("unlabeled_user", 0) == 0
-
-
-# ---------------------------------------------------------------------------
-# media loaders -- the split key is the thing
-# ---------------------------------------------------------------------------
-def test_faceforensics_ties_each_fake_to_its_target_identity():
-    loaded = get_dataset("faceforensics").load(demo=True)
-    assert loaded.group_col == "source_video"
-    originals = loaded.frame.loc[loaded.frame["label"] == 0, "source_video"]
-    fakes = loaded.frame.loc[loaded.frame["label"] == 1, "source_video"]
-    # Every fake's group key must correspond to a real original, or the split
-    # cannot keep the identity on one side.
-    assert set(fakes) <= set(originals)
-
-
-def test_faceforensics_exposes_all_four_methods_for_the_cross_method_table():
-    loaded = get_dataset("faceforensics").load(demo=True)
-    methods = set(loaded.frame["method"].unique())
-    assert {"Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures"} <= methods
-    assert "original" in methods
-
-
-def test_faceforensics_cross_method_holdout_is_possible():
-    from modeling.datasets.splits import domain_holdout
-
-    loaded = get_dataset("faceforensics").load(demo=True)
-    work, split = domain_holdout(
-        loaded.frame, domain_col="method", held_out="NeuralTextures", group_col="source_video"
-    )
-    assert set(work["method"].iloc[split.test]) == {"NeuralTextures"}
-    assert "NeuralTextures" not in set(work["method"].iloc[split.train])
-
-
-def test_dfdc_drops_fakes_with_no_named_original():
-    """An untied fake cannot be grouped with its source, so including it risks
-    putting the same face on both sides of the split."""
-    loaded = get_dataset("dfdc").load(demo=True)
-    assert loaded.dropped["fake_without_original"] == 1
-    assert "fake_untied" not in set(loaded.frame["video_id"])
-
-
-def test_dfdc_fakes_group_with_their_source_real():
-    loaded = get_dataset("dfdc").load(demo=True)
-    reals = set(loaded.frame.loc[loaded.frame["label"] == 0, "video_id"])
-    fake_groups = set(loaded.frame.loc[loaded.frame["label"] == 1, "source_video"])
-    assert fake_groups <= reals
 
 
 # ---------------------------------------------------------------------------

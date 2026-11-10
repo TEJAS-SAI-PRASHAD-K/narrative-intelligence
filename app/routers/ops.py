@@ -11,7 +11,7 @@ The distinction between the two matters operationally and is not cosmetic:
   a full outage.
 * **/readyz** answers "should this container receive traffic", and reports the
   database, Redis and each model checkpoint. A missing checkpoint makes it
-  ``degraded``, not ``down``: the narrative API works fine without a deepfake
+  ``degraded``, not ``down``: the narrative API works fine without one
   model, and taking the container out of rotation for that would be wrong.
 """
 
@@ -141,7 +141,7 @@ async def readyz(response: Response) -> ReadinessResponse:
         not c["available"] for c in capabilities
     ):
         # Still 200. A degraded readiness that returns 503 takes the container
-        # out of rotation for a missing deepfake checkpoint, which would make
+        # out of rotation for a missing model checkpoint, which would make
         # the whole narrative API unreachable for no reason.
         overall = "degraded"
     else:

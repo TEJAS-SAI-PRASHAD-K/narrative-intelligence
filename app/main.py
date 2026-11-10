@@ -45,7 +45,7 @@ def configure_logging(level: str) -> None:
         format="%(asctime)s %(levelname)-7s %(name)-28s %(message)s",
         datefmt="%H:%M:%S",
     )
-    for noisy in ("urllib3", "botocore", "asyncio", "multipart"):
+    for noisy in ("urllib3", "botocore", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown.
 
     Startup deliberately does *not* fail on a missing checkpoint or an
-    unreachable model. A missing deepfake checkpoint must not stop the narrative
+    unreachable model. A missing model checkpoint must not stop the narrative
     API from serving; it marks that scorer `unavailable` in /readyz and the
     routes that need it return 503 with a message naming the checkpoint.
     """

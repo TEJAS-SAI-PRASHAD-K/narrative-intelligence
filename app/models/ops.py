@@ -100,7 +100,7 @@ class Job(Base):
 
     Unified rather than per-task so the frontend polls one endpoint shape
     regardless of what it started: one progress component, one polling hook, one
-    error surface for ingest, reclustering and deepfake checks alike.
+    error surface for ingest, reclustering and report rendering alike.
     """
 
     __tablename__ = "jobs"
@@ -291,58 +291,3 @@ class Report(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (Index("ix_reports_project_created", "project_id", text("created_at DESC")),)
-
-
-class MediaCheck(Base):
-    """A deepfake check and its retention deadline.
-
-    ``deletes_at`` is a column rather than a computed value because the purge
-    task must be able to find expired uploads with an index scan, and because
-    the API promises a specific deletion time in every response. A retention
-    policy that is only a config value is a policy nobody can verify was applied.
-    """
-
-    __tablename__ = "media_checks"
-
-    id: Mapped[uuid.UUID] = uuid_pk()
-    job_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
-    )
-    project_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
-    )
-    post_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
-
-    filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    media_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    manipulation_type: Mapped[str | None] = mapped_column(String(48), nullable=True)
-    frames_analyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    face_detected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    #: Required on a completed check. A bare probability is not an acceptable
-    #: answer to "is this video fake", and the UI spec says so explicitly.
-    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
-    limitations: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default="{}")
-    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    model_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-
-    submitted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    #: When the *file* is deleted. The verdict row survives; the imagery does not.
-    deletes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    __table_args__ = (
-        Index("ix_media_checks_submitted", text("submitted_at DESC")),
-        Index(
-            "ix_media_checks_pending_purge",
-            "deletes_at",
-            postgresql_where=text("purged_at IS NULL AND storage_path IS NOT NULL"),
-        ),
-    )

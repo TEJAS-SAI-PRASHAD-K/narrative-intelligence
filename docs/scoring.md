@@ -24,13 +24,13 @@ per run rather than baked into code.
 fusion = 100 * (w1*narrative_severity + w2*coordination + w3*authenticity)
 ```
 
-with, from `configs/fusion.yaml` at `version: fusion-v1.1.0`:
+with, from `configs/fusion.yaml` at `version: fusion-v1.2.0`:
 
 | component | weight | what it measures |
 |---|---:|---|
 | `narrative_severity` | 0.45 | how harmful the content is |
 | `coordination` | 0.35 | how inauthentically it spread |
-| `authenticity` | 0.20 | whether its evidence is what it claims to be |
+| `authenticity` | 0.20 | whether its sources are what they claim to be |
 
 Each component is itself a weighted mean of named sub-signals:
 
@@ -56,9 +56,17 @@ Each component is itself a weighted mean of named sub-signals:
 
 | sub-signal | weight | definition |
 |---|---:|---|
-| `deepfake_hits` | 0.40 | share of checked media flagged as manipulated |
-| `domain_risk_agg` | 0.35 | mean risk score of linked domains |
-| `anonymous_author_ratio` | 0.25 | share of member authors deleted or without a handle |
+| `domain_risk_agg` | 0.5833 | mean risk score of linked domains |
+| `anonymous_author_ratio` | 0.4167 | share of member authors deleted or without a handle |
+
+The two weights keep the 0.35 to 0.25 proportion that these signals had in
+`fusion-v1.1.0`. In that version, a third signal (`deepfake_hits`) shared the
+component. A narrative that had no value for that signal gets the same score
+in `fusion-v1.2.0`, apart from rounding below 0.01 points.
+
+The explanation payload changes for that narrative. The `missing` list of
+`components[authenticity]` no longer names `deepfake_hits`. The value of
+`weights_renormalized` is now false. The `deepfake_hits` input key is gone.
 
 `misinfo_likelihood_agg` is engagement-weighted because a false claim nobody saw
 is not the same problem as one that reached a hundred thousand people. The weight
@@ -123,7 +131,7 @@ The rule, enforced in `app/scoring/normalize.py:weighted_mean`:
 
 > **A missing input is not a zero. The weights renormalize over what is present.**
 
-If the deepfake module never ran, `authenticity` is `null`, it appears in
+If `authenticity` has no input, it is `null`, it appears in
 `missing`, and `narrative_severity` and `coordination` are scaled from 0.45/0.35
 to 0.5625/0.4375 so they still sum to 1.
 
@@ -159,7 +167,7 @@ priorities.
 Narrative `6cd364c8-9412-5c99-995c-a281a23cad0d` from the loaded corpus, scored
 by `score.fusion` at `fusion-v1.0.0`. That version still used `bot_like_ratio` in
 the coordination component. The arithmetic of the combination is the same at
-`fusion-v1.1.0`.
+`fusion-v1.2.0`.
 
 Component values as returned by `GET /api/v1/narratives/{id}/score`:
 
@@ -186,10 +194,9 @@ By hand:
 `weights_renormalized` is `false`, so the applied weights equal the configured
 ones.
 
-Note `authenticity = 0.0`, not `null`. That is a **measured** zero: this
-narrative's media was checked and none of it was flagged, and its linked domains
-scored low. A null would mean nothing was checked. The response distinguishes
-them and so must any reader.
+Note `authenticity = 0.0`, not `null`. That is a **measured** zero: its linked
+domains scored low. A null would mean that nothing was measured. The response
+distinguishes them and so must any reader.
 
 ## 7. Changing the weights
 

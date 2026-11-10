@@ -18,7 +18,7 @@ Three rules, all enforced here rather than by convention:
 2. **Missing inputs propagate.** A component that could not be computed is
    ``None``, is named in ``missing``, and the remaining weights renormalize over
    it. Treating "not measured" as "measured zero" would systematically
-   under-flag every narrative whose deepfake pass never ran.
+   under-flag every narrative that lacks one of its inputs.
 3. **Everything normalizes the same way**, through ``app/scoring/normalize.py``,
    because mixing normalizations makes scores incomparable in a way that is
    invisible until somebody tries to reconcile two of them.
@@ -49,9 +49,8 @@ COMPONENT_DEFINITIONS = {
         "authors are in a single cohort."
     ),
     "authenticity": (
-        "Whether its evidence is what it claims to be: deepfake detections on "
-        "attached media, aggregated risk of the domains it links, and the share "
-        "of its authors that are anonymous or deleted."
+        "Whether its sources are what they claim to be: aggregated risk of the "
+        "domains it links, and the share of its authors that are anonymous or deleted."
     ),
 }
 
@@ -87,7 +86,6 @@ SUB_DEFINITIONS = {
         "carried entirely by one segment is a different object from one with "
         "broad reach."
     ),
-    "deepfake_hits": "Share of checked media on member posts flagged as manipulated.",
     "domain_risk_agg": "Mean risk score of the domains member posts link to.",
     "anonymous_author_ratio": (
         "Share of member authors that are deleted or carry no handle. Absence of "
@@ -120,7 +118,6 @@ class NarrativeSignals:
     temporal_burstiness: float | None = None
     cohort_concentration: float | None = None
 
-    deepfake_hits: float | None = None
     domain_risk_agg: float | None = None
     anonymous_author_ratio: float | None = None
 
@@ -214,7 +211,6 @@ def fusion_score(
         ),
     }
     authenticity_parts = {
-        "deepfake_hits": normalizers.get("deepfake_hits")(signals.deepfake_hits),
         "domain_risk_agg": normalizers.get("domain_risk_agg")(signals.domain_risk_agg),
         "anonymous_author_ratio": normalizers.get("anonymous_author_ratio")(
             signals.anonymous_author_ratio

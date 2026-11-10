@@ -182,25 +182,6 @@ COORDINATION_EDGES = ScoredTable(
     ),
 )
 
-MEDIA_SCORES = ScoredTable(
-    name="media_scores",
-    keys=("record_id", "media_url"),
-    foreign_key="record_id",
-    schema=pa.schema(
-        [
-            pa.field("record_id", pa.string(), nullable=False),
-            pa.field("media_url", pa.string(), nullable=False),
-            pa.field("deepfake_prob", pa.float32()),
-            pa.field("manipulation_type", pa.string()),
-            pa.field("frames_analyzed", pa.int64()),
-            pa.field("face_detected", pa.bool_()),
-            pa.field("explanation", pa.string()),
-            pa.field("model_versions", _MODEL_VERSIONS_TYPE),
-            pa.field("scored_at", pa.timestamp("us", tz="UTC"), nullable=False),
-        ]
-    ),
-)
-
 #: Author cohort schema, deliberately unpopulated. The 135-cohort ideological
 #: taxonomy is a labeling project of its own and is out of scope for Phase 2
 #: (see the anti-goals). The schema is written down so Phase 4 can plan against
@@ -229,7 +210,6 @@ TABLES: dict[str, ScoredTable] = {
         NARRATIVE_MEMBERSHIP,
         AUTHOR_SCORES,
         COORDINATION_EDGES,
-        MEDIA_SCORES,
         AUTHOR_COHORTS,
     )
 }
