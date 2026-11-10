@@ -220,3 +220,16 @@ which version produced each.
   `/authors/{id}/score`.
 
 The score is a triage aid. The drilldown is the product.
+
+
+## 9. Scoring stage
+
+The `laya` batch stage in `modeling/scoring.py` adds `record_scores.misinfo_prob` for Hindi records. It runs after the `misinfo` stage and before `cluster`. The `scoring_languages` key of the `laya` module in `configs/models.yaml` sets its languages. The value is `[hi]`.
+
+The stage scores a record only when its language is in `scoring_languages` and `misinfo` did not score it. It never writes for English. It never overwrites a non-null `misinfo_prob`.
+
+The stage writes the output of a calibrator, not the raw Laya score. The raw score has a mean confidence of about 0.97 and an expected calibration error of 0.159. The calibrator file is in the checkpoint directory. The command `python scripts/run_comparison.py calibrate-laya` fits it on the validation rows of the comparison.
+
+The stage refuses to score in four cases. These are: `laya` is not installed, the checkpoint is missing, the calibrator is missing or unreadable, and the calibrator is rejected. Each Hindi record then gets a `laya:<reason>` skip reason, a null `misinfo_prob`, and no `laya` stamp.
+
+The calibrator is fitted on English benchmark validation labels. Its calibration on Hindi is not measured. A Hindi value and an English value come from different models and different calibrations. Fusion mixes both values in `misinfo_likelihood_agg`. A narrative with many Hindi posts has a less certain severity value.

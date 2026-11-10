@@ -59,3 +59,15 @@ read a Laya score as a calibrated probability.
 
 Laya scores are not a determination that a claim is false. Do not use them for
 moderation or enforcement.
+
+## Scoring stage
+
+The `laya` stage in `modeling/scoring.py` scores Hindi records only. It runs after the `misinfo` stage. The English slot belongs to the `misinfo` module, and the stage never writes for English.
+
+The stage writes `record_scores.misinfo_prob` from a calibrator, never from the raw Laya score. The calibrator file `misinfo_prob_calibrator.json` must be in the checkpoint directory. Without it, the stage writes no score. It gives each Hindi record the reason `laya:calibrator_missing`, or another `laya:` reason.
+
+The calibrator is fitted on the validation labels of the English benchmarks. No Hindi label took part. The calibration on Hindi is not measured. Use a Hindi value as a rank within Hindi records. Do not read it as a measured probability.
+
+A Hindi value and an English value come from different models and different calibrations. The two values are not comparable. Fusion mixes them, and the narrative score inherits this limit.
+
+The stage never overwrites a non-null `misinfo_prob` from another module. The stamp `model_versions["laya"]` names the checkpoint directory and the calibrator. An example is `v0.2.1+finetuned:multi-v0.2.1+isotonic@1a2b3c4d`.
