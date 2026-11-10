@@ -13,12 +13,14 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from app.config import get_api_settings
 from app.tasks.base import TrackedTask
 from app.tasks.celery_app import celery
+from ingest.config import REPO_ROOT
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +29,13 @@ log = logging.getLogger(__name__)
 REASON_DELETE_FAILED = "delete_failed"
 REASON_STAT_FAILED = "stat_failed"
 REASON_LIST_FAILED = "uploads_dir_unreadable"
+
+#: Reason codes for a run that the guard refused. A refused run deletes nothing.
+REASON_INVALID_RETENTION = "invalid_retention"
+REASON_UNSAFE_DIR = "unsafe_uploads_dir"
+
+#: A shorter window would delete files that a client uploaded moments ago.
+MIN_RETENTION_HOURS = 1
 
 
 @celery.task(name="maint.purge_uploads", base=TrackedTask, bind=True)
@@ -37,7 +46,11 @@ def purge_uploads(self, *, job_id: str | None = None, **params: Any) -> dict:
     after the table that once recorded each upload deadline is gone.
     """
     settings = get_api_settings()
-    result = sweep_uploads(settings.uploads_dir, settings.media_retention_hours)
+    result = sweep_uploads(
+        settings.uploads_dir,
+        settings.media_retention_hours,
+        protected_dirs=(settings.data_dir, settings.models_dir, settings.reports_dir),
+    )
     result["retention_hours"] = settings.media_retention_hours
     if result["deleted"] or result["failed"]:
         log.info(
@@ -49,13 +62,30 @@ def purge_uploads(self, *, job_id: str | None = None, **params: Any) -> dict:
     return result
 
 
-def sweep_uploads(uploads_dir: Path, retention_hours: int, *, now: float | None = None) -> dict:
+def sweep_uploads(
+    uploads_dir: Path,
+    retention_hours: int,
+    *,
+    protected_dirs: Iterable[Path] = (),
+    now: float | None = None,
+) -> dict:
     """Delete the direct children of ``uploads_dir`` whose mtime passed the cutoff.
 
     A child can be a file or a directory. A symbolic link is removed as a link and
     its target is never followed. An entry that cannot be examined or deleted is
     logged, counted under a reason code and left in place for the next run.
+
+    Before any deletion, a guard refuses a retention below one hour and a root that
+    equals or contains the repository, the user home, the file system root or any of
+    ``protected_dirs``. A refused run deletes nothing, logs an error and returns the
+    reason code. It does not raise.
     """
+    refusal = _refusal(uploads_dir, retention_hours, protected_dirs)
+    if refusal is not None:
+        reason, detail = refusal
+        log.error("upload sweep refused: %s: %s", reason, detail)
+        return {"deleted": 0, "failed": 1, "reasons": {reason: 1}, "bytes_freed": 0}
+
     deleted = 0
     bytes_freed = 0
     reasons: dict[str, int] = {}
@@ -99,6 +129,22 @@ def sweep_uploads(uploads_dir: Path, retention_hours: int, *, now: float | None 
         "reasons": reasons,
         "bytes_freed": bytes_freed,
     }
+
+
+def _refusal(
+    uploads_dir: Path, retention_hours: int, protected_dirs: Iterable[Path]
+) -> tuple[str, str] | None:
+    """Return ``(reason, detail)`` when the sweep must not run, else ``None``."""
+    if retention_hours < MIN_RETENTION_HOURS:
+        return REASON_INVALID_RETENTION, f"retention {retention_hours}h is below 1h"
+    root = uploads_dir.resolve()
+    if root == Path(root.anchor):
+        return REASON_UNSAFE_DIR, f"{root} is the file system root"
+    guarded = [REPO_ROOT, Path.home(), *protected_dirs]
+    for path in guarded:
+        if path.resolve().is_relative_to(root):
+            return REASON_UNSAFE_DIR, f"{root} equals or contains {path}"
+    return None
 
 
 def _tree_size(path: Path) -> int:
