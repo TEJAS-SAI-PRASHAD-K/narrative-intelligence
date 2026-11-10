@@ -364,6 +364,36 @@ def test_coordination_scores_are_bounded_and_explainable(isolated_settings):
     assert min(amplifier_scores) > 0.0
 
 
+def test_a_no_edge_eligible_account_scores_zero_and_an_ineligible_one_scores_none(
+    isolated_settings,
+):
+    """Seen and unlinked is a measured 0.0. Never seen has no measurement."""
+    corpus = coordinated_corpus()
+    outlet = corpus.iloc[[0]].copy()
+    outlet["id"] = "news:out-0"
+    outlet["author_id"] = "news:outlet"
+    outlet["source"] = "news"
+    corpus = pd.concat([corpus, outlet], ignore_index=True)
+
+    result = CoordinationDetector(isolated_settings).detect(corpus, run_null_model=False)
+
+    assert "mastodon:resident0" not in result.scores
+    assert result.score_for("mastodon:resident0") == 0.0
+    assert result.score_for("mastodon:amplifier0") == result.scores["mastodon:amplifier0"]
+    assert result.score_for("mastodon:amplifier0") > 0.0
+    assert "news:outlet" not in result.seen_accounts
+    assert result.score_for("news:outlet") is None
+    assert result.score_for("mastodon:never-in-the-corpus") is None
+
+
+def test_a_run_with_no_edges_still_measures_every_account_it_saw(isolated_settings):
+    organic = coordinated_corpus(n_amplifiers=0)
+    result = CoordinationDetector(isolated_settings).detect(organic, run_null_model=False)
+
+    assert result.edges == []
+    assert result.score_for("mastodon:resident0") == 0.0
+
+
 def test_hashtag_evidence_needs_a_sequence_not_one_tag(isolated_settings):
     """One common hashtag links half a corpus and means nothing."""
     from modeling.accounts.coordination import _hashtag_keys

@@ -741,6 +741,9 @@ def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
     detector = CoordinationDetector(ctx.settings)
     result = detector.detect(ctx.records)
+    # Set before any early return: a run with no edges still measured every
+    # account it saw, and the accounts stage must score those as 0.0, not skip them.
+    ctx.coordination = result
     if not result.edges:
         return [
             {
@@ -773,9 +776,6 @@ def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
         model_versions={"coordination": detector.version},
         extra={"is_demo": ctx.demo, **result.summary()},
     )
-    # Stash for the accounts stage, which folds community_id and
-    # coordination_score into author_scores.
-    ctx.coordination = result
     return [
         {"stage": "coordination", "table": "coordination_edges", **written, "note": ctx.note(note)}
     ]
@@ -918,6 +918,11 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
     if coordination is None:
         for account in features.account_ids:
             reasons[account].append("coordination:not_run")
+    else:
+        versions["coordination"] = str(module_config("coordination").get("version"))
+        for account in features.account_ids:
+            if coordination.score_for(account) is None:
+                reasons[account].append("coordination:not_in_detector_input")
 
     # --- aggregates from record_scores ------------------------------------
     scores = ctx.store.read("record_scores")
@@ -937,7 +942,7 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 "bot_prob": bot_probs.get(account),
                 "bot_top_features": top_features.get(account),
                 "coordination_score": (
-                    coordination.scores.get(account) if coordination else None
+                    coordination.score_for(account) if coordination else None
                 ),
                 "community_id": (
                     coordination.communities.get(account) if coordination else None

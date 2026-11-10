@@ -93,6 +93,20 @@ class CoordinationResult:
     n_records: int
     excluded_sources: dict[str, int] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    #: Every account that was in the detector's input after eligibility
+    #: filtering, whether or not it ended up with an edge.
+    seen_accounts: frozenset[str] = frozenset()
+
+    def score_for(self, account: str) -> float | None:
+        """The coordination score of one account, or None when it was not measured.
+
+        An account the detector saw but linked to nobody is a measured 0.0.
+        An account it never saw (ineligible source, deleted author) has no
+        measurement, and None keeps it out of any ratio's denominator.
+        """
+        if account in self.scores:
+            return self.scores[account]
+        return 0.0 if account in self.seen_accounts else None
 
     @property
     def exceeds_null(self) -> bool:
@@ -116,6 +130,12 @@ class CoordinationResult:
             "excluded_sources": self.excluded_sources,
             **self.diagnostics,
         }
+
+
+def _seen(work: pd.DataFrame) -> frozenset[str]:
+    if "author_id" not in work.columns:
+        return frozenset()
+    return frozenset(work["author_id"].astype(str))
 
 
 class CoordinationDetector:
@@ -302,7 +322,8 @@ class CoordinationDetector:
         work, excluded = self.eligible_records(records)
         if len(work) < 2:
             return CoordinationResult([], {}, {}, {}, 0.0, 0.0, 0.0, 0, 0, excluded,
-                                      {"note": "no eligible records"})
+                                      {"note": "no eligible records"},
+                                      seen_accounts=_seen(work))
 
         edges = self.build_edges(work)
         graph = self._to_graph(edges)
@@ -311,6 +332,7 @@ class CoordinationDetector:
                 [], {}, {}, {}, 0.0, 0.0, 0.0,
                 int(work["author_id"].nunique()), len(work), excluded,
                 {"note": "no edges above the weight floor"},
+                seen_accounts=_seen(work),
             )
 
         communities = nx.community.louvain_communities(
@@ -351,6 +373,7 @@ class CoordinationDetector:
                 "evidence_counts": dict(Counter(e.evidence for e in edges)),
                 "largest_community": max(sizes.values()) if sizes else 0,
             },
+            seen_accounts=_seen(work),
         )
         log.info("coordination: %s", result.summary())
         if not result.exceeds_null and run_null_model:
