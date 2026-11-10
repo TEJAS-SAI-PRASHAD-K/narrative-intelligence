@@ -48,7 +48,17 @@ Hindi claims and a title lift interval with a lower limit above 1. The set grew 
 - The English recall on the fact-check set is 0.045 [0.011, 0.091] for both Laya
   fine-tunes. The English result does not prove any transfer to Hindi.
 
-## Calibration
+## Real run of the stage
+
+On 2026-11-10 the stage scored 156 Hindi titles on the GPU host. No raw value fell
+outside the fitted range, and the stage wrote 24 distinct calibrated values. The mean
+of the calibrated Hindi values was 0.458, and the mean of the English `misinfo` values
+was 0.451. These means do not measure accuracy, because the corpus has no labels.
+
+The calibrator had a raw ROC-AUC of 0.854 on 3,558 English validation rows. Brier went
+from 0.173 to 0.134. The calibration error of 0 after the fit is an in-sample value.
+
+## Calibration of the raw model
 
 The temperature fit reached the upper clamp of 5 on both fine-tunes, and the report
 records this issue. Expected calibration error on validation is 0.152 for the English

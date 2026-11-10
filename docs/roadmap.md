@@ -23,7 +23,7 @@ the module being quietly described as present.
 | bot classifier | does not generalize | see below |
 | coordination detection | no signal on this corpus | see below |
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
-| Laya scorer | fine-tuned, not shipped | see the comparison result, no stage in modeling/scoring.py |
+| Laya scorer | Hindi titles only | calibrated stage in modeling/scoring.py, English stays with roberta, see the model card |
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation, coordination input is the weak coordination score, not the bot ratio |
 | API | done | 69 paths, 80 operations, contract tested under `DEMO_MODE` |
 | database | done | 27 tables, 4 migrations, round-trip asserted in CI |
