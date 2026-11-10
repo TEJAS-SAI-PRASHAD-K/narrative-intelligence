@@ -1486,3 +1486,109 @@ def test_a_root_level_tokenizer_config_stays_in_the_checkpoint_identity(tmp_path
 
     (tmp_path / "tokenizer_config.json").write_text('{"model_max_length": 512}')
     assert rc.directory_identity(tmp_path) != before
+
+
+# ---------------------------------------------------------------------------
+# calibrate-laya
+# ---------------------------------------------------------------------------
+def _synthetic_laya_scores(out: Path, test_scores=None) -> None:
+    """Replace the laya_multi score file with synthetic validation rows and its provenance."""
+    from tests.test_laya_stage import synthetic_validation
+
+    path = out / "scores" / "laya_multi.parquet"
+    frame = pd.read_parquet(path).astype(object)
+    rows = [
+        {k: (None if isinstance(v, float) and v != v else v) for k, v in r.items()}
+        for r in frame.to_dict(orient="records")
+        if r["part"] != "val"
+    ]
+    scores, labels = synthetic_validation()
+    for i, (score, label) in enumerate(zip(scores, labels, strict=True)):
+        rows.append({"part": "val", "id": f"syn{i}", "lang": "en", "label": int(label),
+                     "score": float(score), "source_detail": None, "skip_reason": None})
+    if test_scores is not None:
+        for r in rows:
+            if r["part"] == "test":
+                r["score"] = test_scores
+    rc.write_score_file(path, rows)
+    sidecar = out / "scores" / "laya_multi.provenance.json"
+    recorded = json.loads(sidecar.read_text())
+    recorded["score_file_sha256"] = rc.file_sha256(path)
+    sidecar.write_text(json.dumps(recorded))
+
+
+@pytest.fixture
+def promoted(tmp_path):
+    directory = tmp_path / "promoted" / f"multi-{LAYA_V}"
+    directory.mkdir(parents=True)
+    return directory
+
+
+def _calibrate(out, directory):
+    deps, _, _, text = make_deps()
+    code = run(["calibrate-laya", "--demo", "--out", str(out), "--checkpoint-dir", str(directory)],
+               deps)
+    return code, text.getvalue()
+
+
+def test_calibrate_laya_writes_the_state_and_the_report(scored, promoted):
+    from modeling.text.laya_calibration import CALIBRATOR_FILE, REPORT_FILE, load_calibrator
+
+    _synthetic_laya_scores(scored)
+    own = scored / "models" / "laya" / f"multi-{LAYA_V}"
+    identity = rc.directory_identity(own)
+    code, text = _calibrate(scored, promoted)
+    assert code == 0, text
+    report = json.loads((promoted / REPORT_FILE).read_text())
+    assert report["rows"] == 400 and report["fit_part"] == "val"
+    assert {"method", "brier_before", "brier_after", "ece_before", "ece_after"} <= set(report)
+    assert "English" in report["label_statement"] and "not measured" in report["label_statement"]
+    assert load_calibrator(promoted).method == report["method"]
+    assert (promoted / CALIBRATOR_FILE).exists()
+    assert rc.directory_identity(own) == identity, "the comparison checkpoint must not change"
+    assert not (own / CALIBRATOR_FILE).exists()
+
+
+def test_calibrate_laya_never_reads_test_rows(scored, promoted, tmp_path):
+    from modeling.text.laya_calibration import CALIBRATOR_FILE, fit_calibrator
+    from tests.test_laya_stage import synthetic_validation
+
+    _synthetic_laya_scores(scored, test_scores=0.0)
+    code, text = _calibrate(scored, promoted)
+    assert code == 0, text
+    expected, _ = fit_calibrator(*synthetic_validation())
+    state = json.loads((promoted / CALIBRATOR_FILE).read_text())
+    assert state == json.loads(json.dumps(expected.state()))
+
+
+def test_calibrate_laya_writes_nothing_when_the_fit_is_rejected(scored, promoted, monkeypatch):
+    import modeling.text.laya_calibration as LC
+
+    _synthetic_laya_scores(scored)
+
+    def reject(scores, labels, method="isotonic"):
+        raise LC.LayaCalibratorError(LC.REJECTED, "inverted ranking")
+
+    monkeypatch.setattr(LC, "fit_calibrator", reject)
+    code, _ = _calibrate(scored, promoted)
+    assert code != 0
+    assert list(promoted.iterdir()) == []
+
+
+def test_calibrate_laya_refuses_the_comparison_checkpoint_directory(scored):
+    own = scored / "models" / "laya" / f"multi-{LAYA_V}"
+    _synthetic_laya_scores(scored)
+    code, _ = _calibrate(scored, own)
+    assert code != 0
+    assert not (own / "misinfo_prob_calibrator.json").exists()
+
+
+def test_calibrate_laya_refuses_a_stale_score_file(scored, promoted):
+    _synthetic_laya_scores(scored)
+    sidecar = scored / "scores" / "laya_multi.provenance.json"
+    recorded = json.loads(sidecar.read_text())
+    recorded["score_file_sha256"] = "0" * 64
+    sidecar.write_text(json.dumps(recorded))
+    code, _ = _calibrate(scored, promoted)
+    assert code != 0
+    assert list(promoted.iterdir()) == []

@@ -8,6 +8,10 @@ Stages, in order (``all`` runs them and stops at the first failure)::
     score          one <model>.parquet per model, in the harness input schema
     evaluate       modeling.eval.factcheck_eval.run_comparison
 
+``calibrate-laya`` is not a stage of ``all``. It fits the ``misinfo_prob`` calibrator of the
+``laya_multi`` checkpoint on the validation rows of its score file and writes it into the
+promoted checkpoint directory that ``--checkpoint-dir`` names.
+
 Every model is scored on the same rows. The first ``score`` run freezes the claim and
 corpus ids in ``score_inputs.parquet``, and later runs reuse them. Each score file has a
 ``<model>.provenance.json`` beside it. It ties the file to the split, the checkpoint and the
@@ -1757,6 +1761,73 @@ def stage_evaluate(ctx: Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# calibrate-laya
+# ---------------------------------------------------------------------------
+def stage_calibrate_laya(ctx: Context) -> None:
+    """Fit the ``misinfo_prob`` calibrator for the promoted ``laya_multi`` checkpoint.
+
+    Reads the validation rows of ``scores/laya_multi.parquet`` and nothing else. Test rows
+    are never read. The state and a report go into ``--checkpoint-dir``, which must be a
+    directory other than the comparison's own checkpoint directory, whose identity hash
+    must not change. A rejected fit writes nothing and fails the stage.
+    """
+    from modeling.text.laya_calibration import LayaCalibratorError, fit_calibrator, write_calibrator
+
+    split_info = require_prepared(ctx)
+    raw = getattr(ctx.args, "checkpoint_dir", None)
+    if raw is None:
+        raise StageError(EXIT_USAGE, "calibrate-laya needs --checkpoint-dir")
+    target = Path(raw).expanduser().resolve()
+    if not target.is_dir():
+        raise StageError(EXIT_FAILED, f"--checkpoint-dir {target} is not a directory")
+    own = ctx.laya_checkpoint_dir("multilingual").resolve()
+    if target == own or own in target.parents or target in own.parents:
+        raise StageError(
+            EXIT_FAILED,
+            f"--checkpoint-dir {target} is or contains the comparison checkpoint {own}. "
+            "Copy the checkpoint to its own directory first. Nothing was written.",
+        )
+
+    problem = provenance_problem(ctx, "laya_multi", split_info, current_inputs_hash(ctx))
+    if problem is not None:
+        raise StageError(problem[0], f"[calibrate-laya] laya_multi: {problem[1]}")
+    # The filter keeps every other part, test included, out of memory.
+    val = pd.read_parquet(
+        score_file(ctx, "laya_multi"),
+        columns=["part", "score", "label"],
+        filters=[("part", "==", "val")],
+    )
+    usable = val.loc[val["score"].notna() & val["label"].notna()]
+    ctx.say(f"[calibrate-laya] validation rows {len(val)}, with a score and a label {len(usable)}")
+    if not len(usable):
+        raise StageError(EXIT_FAILED, "[calibrate-laya] no validation row has a score and a label")
+    try:
+        calibrator, report = fit_calibrator(
+            usable["score"].to_numpy(dtype=float), usable["label"].to_numpy(dtype=int)
+        )
+    except LayaCalibratorError as exc:
+        raise StageError(EXIT_FAILED, f"[calibrate-laya] {exc}. Nothing was written.") from exc
+    report = {
+        **report,
+        "model": "laya_multi",
+        "source_score_file": score_file(ctx, "laya_multi").name,
+        "comparison_checkpoint": checkpoint_identity(ctx, "laya_multi"),
+        "split_sha256": split_fingerprint(split_info),
+        "fit_part": "val",
+        "fitted_at": datetime.now(timezone.utc),
+    }
+    report = json.loads(json.dumps(report, default=str))
+    path = write_calibrator(target, calibrator, report)
+    ctx.say(
+        f"[calibrate-laya] {report['method']} on {report['rows']} rows: "
+        f"Brier {report['brier_before']} -> {report['brier_after']}, "
+        f"ECE {report['ece_before']} -> {report['ece_after']}"
+    )
+    ctx.say(f"[calibrate-laya] wrote {path}")
+    ctx.say(f"[calibrate-laya] {report['label_statement']}")
+
+
+# ---------------------------------------------------------------------------
 # command line
 # ---------------------------------------------------------------------------
 def stage_plan() -> list[tuple[str, Callable[[Context], None]]]:
@@ -1869,6 +1940,19 @@ def build_parser() -> argparse.ArgumentParser:
     _common(p)
     p.add_argument("--models", default=None)
 
+    p = sub.add_parser(
+        "calibrate-laya",
+        help="Fit the misinfo_prob calibrator of laya_multi on its validation rows.",
+    )
+    _common(p)
+    p.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        required=True,
+        help="The promoted checkpoint directory that receives the calibrator files. It must "
+        "not be the comparison's own checkpoint directory.",
+    )
+
     p = sub.add_parser("all", help="Run every stage in order. Stops at the first failure.")
     _common(p)
     _gpu(p)
@@ -1902,6 +1986,8 @@ def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
             stage_score(ctx)
         elif args.command == "evaluate":
             stage_evaluate(ctx)
+        elif args.command == "calibrate-laya":
+            stage_calibrate_laya(ctx)
         else:
             run_all(ctx)
     except StageError as exc:
