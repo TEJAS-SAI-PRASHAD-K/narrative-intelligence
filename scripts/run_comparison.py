@@ -65,6 +65,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # `python scripts/run_comparison.py` has no package root
     sys.path.insert(0, str(REPO_ROOT))
 
+from modeling.checkpoint_identity import directory_identity  # noqa: E402
+from modeling.titles import title_of  # noqa: E402
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
@@ -940,7 +943,7 @@ def read_corpus(ctx: Context) -> tuple[pd.DataFrame, dict[str, int]]:
             {
                 "id": record_id,
                 "text": row.get("text"),
-                "title": _title_of(row.get("raw")),
+                "title": title_of(row.get("raw")),
                 "lang": row["lang"],
                 "source_detail": row.get("source_detail"),
             }
@@ -948,17 +951,6 @@ def read_corpus(ctx: Context) -> tuple[pd.DataFrame, dict[str, int]]:
     frame = pd.DataFrame(records, columns=["id", "text", "title", "lang", "source_detail"])
     counts["kept"] = len(frame)
     return frame, counts
-
-
-def _title_of(raw: Any) -> str | None:
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            return None
-    title = raw.get("title") if isinstance(raw, dict) else None
-    title = str(title).strip() if title is not None else ""
-    return title or None
 
 
 def read_claims(ctx: Context) -> pd.DataFrame:
@@ -1042,12 +1034,6 @@ FROZEN_PARTS = ("claims", "corpus_title", "corpus_text")
 #: The backbone that the comparison requires of the ``misinfo`` checkpoint. The trainer
 #: falls back to ``distilbert-base-uncased`` when it cannot load ``roberta-base``.
 REQUIRED_MISINFO_BACKBONE = "roberta"
-#: Files whose bytes go into a checkpoint identity. All other files count by name and size.
-CHECKPOINT_CONFIG_FILES = ("config.json", "rl_agent_config.json")
-#: Laya's loader rewrites this file in place the first time it loads a saved checkpoint, so
-#: its size differs between the scoring run and the check before evaluation. The rewrite
-#: changes loader keys, not the vocabulary, and ``tokenizer/tokenizer.json`` stays in the listing.
-CHECKPOINT_LOADER_REWRITTEN = frozenset({"tokenizer/tokenizer_config.json"})
 
 
 def _text_sha256(value: Any) -> str:
@@ -1158,36 +1144,6 @@ def split_fingerprint(split_info: dict[str, Any]) -> str:
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def directory_identity(directory: Path) -> dict[str, Any] | None:
-    """The name of a checkpoint directory and a hash of what it holds, or ``None`` if absent.
-
-    The hash covers the file names with sizes and the bytes of the config files. It reads
-    no weights, so it is fast on a large checkpoint. It leaves out the file that the Laya
-    loader rewrites, because loading a checkpoint must not change its identity.
-    """
-    if not directory.is_dir():
-        return None
-    listing = sorted(
-        (relative, path.stat().st_size)
-        for path in directory.rglob("*")
-        if path.is_file()
-        and not path.name.endswith(".tmp")
-        and (relative := path.relative_to(directory).as_posix()) not in CHECKPOINT_LOADER_REWRITTEN
-    )
-    configs = {
-        name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
-        for name in CHECKPOINT_CONFIG_FILES
-        if (directory / name).is_file()
-    }
-    text = json.dumps({"files": listing, "configs": configs}, sort_keys=True)
-    return {
-        "kind": "directory",
-        "name": directory.name,
-        "files": len(listing),
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    }
 
 
 def misinfo_backbone(ctx: Context) -> str:
