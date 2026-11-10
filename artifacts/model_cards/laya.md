@@ -1,7 +1,7 @@
 # Model card — Laya misinformation scorer
 
 **Module:** `modeling/text/laya_clf.py` · **Version:** `v0.2.1`
-**Status:** fine-tuned and compared. The Hindi gate passes. The scoring stage is not built yet.
+**Status:** fine-tuned and compared. The Hindi gate passes. The Hindi scoring stage is built. It scores titles only.
 
 ## Result
 
@@ -64,10 +64,16 @@ moderation or enforcement.
 
 The `laya` stage in `modeling/scoring.py` scores Hindi records only. It runs after the `misinfo` stage. The English slot belongs to the `misinfo` module, and the stage never writes for English.
 
-The stage writes `record_scores.misinfo_prob` from a calibrator, never from the raw Laya score. The calibrator file `misinfo_prob_calibrator.json` must be in the checkpoint directory. Without it, the stage writes no score. It gives each Hindi record the reason `laya:calibrator_missing`, or another `laya:` reason.
+The stage scores the title of a record, not the full text. The Hindi gate passed on `corpus_title` with a lift of 2.233 [1.146, 6.605]. On Hindi full text, the same model has a flag rate of 0.331 and a lift of 0.232 [0.000, 0.805]. Full text is outside what the gate measured.
+
+The stage reads the title as the comparison reads it. A record with no title gets the reason `laya:no_title`. The rule `text_too_short` applies to the title.
+
+The stage writes `record_scores.misinfo_prob` from a calibrator, never from the raw Laya score. The calibrator files are in the checkpoint directory. Without a usable calibrator, the stage writes no score. It gives each Hindi record the reason `laya:calibrator_missing`, or another `laya:` reason.
+
+The fit refuses raw scores with a ROC-AUC of 0.60 or less on the fit rows. The fit and the load both refuse a map with fewer than 5 distinct values. The calibrator file records the identity of the checkpoint that it was fitted for. The stage refuses a calibrator that does not match the served directory, and a calibrator that the demo flow made.
 
 The calibrator is fitted on the validation labels of the English benchmarks. No Hindi label took part. The calibration on Hindi is not measured. Use a Hindi value as a rank within Hindi records. Do not read it as a measured probability.
 
 A Hindi value and an English value come from different models and different calibrations. The two values are not comparable. Fusion mixes them, and the narrative score inherits this limit.
 
-The stage never overwrites a non-null `misinfo_prob` from another module. The stamp `model_versions["laya"]` names the checkpoint directory and the calibrator. An example is `v0.2.1+finetuned:multi-v0.2.1+isotonic@1a2b3c4d`.
+The stage never overwrites a non-null `misinfo_prob` from another module. The stamp `model_versions["laya"]` names the checkpoint directory, the calibrator and the checkpoint identity. An example is `v0.2.1+finetuned:multi-v0.2.1+isotonic@1a2b3c4d`.
