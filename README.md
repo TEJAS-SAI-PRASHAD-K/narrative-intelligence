@@ -79,6 +79,21 @@ python -m ingest.cli factchecks --dry-run   # report what it would write
 python -m ingest.cli factchecks
 ```
 
+RSS feeds hold only recent items. To reach older articles, run the archive backfill. It reads
+the sitemaps that `configs/factcheck.yaml` lists for a publisher. It fetches each new
+article page and extracts the ClaimReview verdict. It reads only publishers with a `backfill`
+block and `tier: claimreview`. It does not run in `make collect-daily`.
+
+```bash
+python -m ingest.cli factchecks --backfill --dry-run   # fetch and report, write no rows
+python -m ingest.cli factchecks --backfill             # add the new verdicts
+python -m ingest.cli factchecks --backfill --limit 100 # stop after 100 verdicts
+```
+
+The report shows these counts for each publisher: URLs discovered, URLs already present,
+pages fetched, verdicts, and each drop reason. A rerun does not fetch a URL that is
+already in `factchecks.parquet`.
+
 Single source, bounded, which is what to use while developing an adapter. `news_rss`
 carries the Indian feeds and is the one to reach for first:
 
