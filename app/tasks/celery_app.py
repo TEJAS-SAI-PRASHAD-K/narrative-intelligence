@@ -5,10 +5,10 @@ work *contends* for rather than by feature:
 
 * ``io``   -- network-bound: Phase 1 adapters, WHOIS. Many can run concurrently.
 * ``cpu``  -- scoring, graph building, report rendering.
-* ``gpu``  -- embedding, clustering, deepfake inference. Serialised in practice.
+* ``gpu``  -- embedding, clustering and other long GPU jobs. Serialised in practice.
 * ``llm``  -- summarization and Compass. Rate-limited by the provider, not by us.
 
-The point is isolation: a forty-minute deepfake job must not be able to starve
+The point is isolation: a forty-minute GPU job must not be able to starve
 fifteen-minute alert evaluation. With one queue it can, and the first time it
 happens the alerts are simply late and nobody notices they were late.
 
@@ -48,7 +48,6 @@ celery = Celery(
         "app.tasks.scoring",
         "app.tasks.graph",
         "app.tasks.compass",
-        "app.tasks.media",
         "app.tasks.domains",
         "app.tasks.alerts",
         "app.tasks.reports",
@@ -79,7 +78,6 @@ celery.conf.update(
         "domain.*": {"queue": "io"},
         "nlp.embed": {"queue": "gpu"},
         "nlp.cluster": {"queue": "gpu"},
-        "media.*": {"queue": "gpu"},
         "nlp.summarize": {"queue": "llm"},
         "compass.*": {"queue": "llm"},
         "score.*": {"queue": "cpu"},
@@ -92,7 +90,6 @@ celery.conf.update(
     # lost forever to one wedged HTTP call.
     task_annotations={
         "*": {"max_retries": 3, "default_retry_delay": 30},
-        "media.deepfake": {"time_limit": 3600, "soft_time_limit": 3300},
         "nlp.embed": {"time_limit": 7200, "soft_time_limit": 7000},
         "nlp.cluster": {"time_limit": 3600, "soft_time_limit": 3400},
         "ingest.fetch": {"time_limit": 3600, "soft_time_limit": 3400},

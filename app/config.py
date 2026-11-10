@@ -115,7 +115,6 @@ class ApiSettings(BaseSettings):
     checkpoint_misinfo: str | None = None
     checkpoint_stance: str | None = None
     checkpoint_bot: str | None = None
-    checkpoint_deepfake: str | None = None
 
     # --- corpus / etl ----------------------------------------------------
     data_dir: Path = Path("data")
@@ -133,7 +132,6 @@ class ApiSettings(BaseSettings):
 
     # --- media -----------------------------------------------------------
     uploads_dir: Path = Path("uploads")
-    media_max_bytes: int = 100 * 1024 * 1024
     #: Files that an earlier version accepted as uploads are images of real people.
     #: The purge beat task deletes every entry under ``uploads_dir`` older than this.
     media_retention_hours: int = 24

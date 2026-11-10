@@ -2,7 +2,7 @@
 
 One endpoint shape for every async operation. The frontend has one polling hook
 and one progress component regardless of whether it started an ingest, a
-recluster or a deepfake check, which is the entire reason the ``jobs`` table is
+recluster or a report render, which is the entire reason the ``jobs`` table is
 unified rather than per-task.
 """
 

@@ -544,8 +544,8 @@ def corpus() -> MockCorpus:
             if scored_members
             else None
         )
-        # Narrative 4 deliberately has no authenticity component: the deepfake
-        # module never ran over it. Its weights renormalize over the remaining
+        # Narrative 4 deliberately has no authenticity component: no domain or
+        # author data exists for it. Its weights renormalize over the remaining
         # two rather than treating authenticity as zero, and the frontend has
         # to render `missing` rather than a suspiciously low score.
         missing = ["authenticity"] if narrative.cluster_id == 4 else []
@@ -558,7 +558,7 @@ def corpus() -> MockCorpus:
             "compass_risk": rng.choice(("high", "medium", "low")),
             "negative_sentiment": negative,
             "fusion_score": fusion,
-            "scoring_version": "fusion-v1.1.0",
+            "scoring_version": "fusion-v1.2.0",
             "computed_at": DEMO_NOW - timedelta(hours=3),
             "missing": missing,
         }

@@ -32,7 +32,6 @@ JobKind = Literal[
     "graph.layout",
     "compass.generate",
     "domain.enrich",
-    "media.deepfake",
     "alerts.evaluate",
     "reports.render",
     "maint.purge_uploads",

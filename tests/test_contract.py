@@ -87,7 +87,7 @@ def test_every_documented_route_is_reachable(demo_client):
     developer reports it.
     """
     documented = set(_routes(demo_client.app))
-    assert len(documented) >= 78, f"expected the full surface, found {len(documented)}"
+    assert len(documented) >= 77, f"expected the full surface, found {len(documented)}"
     for _method, path in documented:
         assert path.startswith(("/api/v1/", "/healthz", "/readyz"))
 
@@ -309,7 +309,7 @@ def test_a_missing_component_renormalizes_rather_than_scoring_zero(demo_client, 
     """The acceptance criterion, asserted on the contract fixture.
 
     Treating "not measured" as "measured zero" would systematically under-flag
-    every narrative the deepfake module never saw, which is the same null-versus-
+    every narrative that lacks one of its inputs, which is the same null-versus-
     zero discipline the corpus enforces on engagement metrics.
     """
     from app.schemas.narratives import NarrativeScoreExplanation
@@ -563,38 +563,6 @@ def test_similar_rejects_an_ambiguous_query(demo_client, demo_ids):
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "ambiguous_query"
-
-
-def test_media(demo_client):
-    from app.schemas.common import JobAccepted, PageResponse
-    from app.schemas.media import MediaCheckOut
-
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 128
-    accepted = demo_client.post(
-        "/api/v1/media/check", files={"file": ("frame.png", png, "image/png")}
-    )
-    assert accepted.status_code == 202
-    job = JobAccepted.model_validate(accepted.json())
-
-    check = MediaCheckOut.model_validate(
-        demo_client.get(f"/api/v1/media/check/{job.job_id}").json()
-    )
-    # A bare number is not an acceptable answer to "is this video fake".
-    assert check.explanation and len(check.explanation) > 80
-    assert check.limitations
-    assert check.retention["retention_hours"]
-
-    PageResponse[MediaCheckOut].model_validate(demo_client.get("/api/v1/media/checks").json())
-
-
-def test_media_rejects_a_file_by_magic_bytes_not_extension(demo_client):
-    """The extension and the Content-Type header are both client-supplied."""
-    response = demo_client.post(
-        "/api/v1/media/check",
-        files={"file": ("payload.png", b"#!/bin/sh\nrm -rf /\n", "image/png")},
-    )
-    assert response.status_code == 415
-    assert response.json()["error"]["code"] == "unsupported_media_type"
 
 
 def test_alerts(demo_client, demo_ids):

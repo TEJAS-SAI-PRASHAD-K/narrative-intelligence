@@ -100,7 +100,7 @@ class Job(Base):
 
     Unified rather than per-task so the frontend polls one endpoint shape
     regardless of what it started: one progress component, one polling hook, one
-    error surface for ingest, reclustering and deepfake checks alike.
+    error surface for ingest, reclustering and report rendering alike.
     """
 
     __tablename__ = "jobs"
