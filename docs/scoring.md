@@ -220,3 +220,28 @@ which version produced each.
   `/authors/{id}/score`.
 
 The score is a triage aid. The drilldown is the product.
+
+
+## 9. Scoring stage
+
+The `laya` batch stage in `modeling/scoring.py` adds `record_scores.misinfo_prob` for Hindi records. It runs after the `misinfo` stage and before `cluster`. The `scoring_languages` key of the `laya` module in `configs/models.yaml` sets its languages. The value is `[hi]`.
+
+The stage scores a record only when its language is in `scoring_languages` and `misinfo` did not score it. It never writes for English. It never overwrites a non-null `misinfo_prob`.
+
+The stage scores the title of the record, not the full text. The Hindi gate passed on titles with a lift of 2.233 [1.146, 6.605]. On Hindi full text, the same model has a flag rate of 0.331 and a lift of 0.232 [0.000, 0.805]. Full text is outside what the gate measured.
+
+The stage reads the title as the comparison script reads `corpus_title`. A record with no title gets a null value and the reason `laya:no_title`. The rule `text_too_short` applies to the title.
+
+The stage writes the output of a calibrator, not the raw Laya score. The raw score has a mean confidence of about 0.97 and an expected calibration error of 0.159. The calibrator files are in the checkpoint directory. The command `python scripts/run_comparison.py calibrate-laya` fits them on the validation rows of the comparison.
+
+The fit refuses raw scores with a ROC-AUC of 0.60 or less. The fit and the load both refuse a map with fewer than 5 distinct values. The calibrator file records the demo flag and the identity of the checkpoint. The fit refuses a directory that does not hold the comparison checkpoint.
+
+The stage refuses to score in these cases. `laya` is not installed (`model_unavailable`). The checkpoint is missing (`checkpoint_missing`).
+
+The calibrator can be missing, unreadable or rejected (`calibrator_missing`, `calibrator_unreadable`, `calibrator_rejected`). The calibrator has the demo mark (`calibrator_demo`). The calibrator was fitted for other weights (`calibrator_checkpoint_mismatch`). Each Hindi record then gets a `laya:<reason>` skip reason, a null `misinfo_prob`, and no `laya` stamp.
+
+The stage reports, and does not refuse, when the values collapse. The summary and the log give the count of raw values outside the fitted range and the count of distinct calibrated values. The log warns when fewer than 5 values are distinct, or when more than half of the raw values are out of range.
+
+The calibrator is fitted on English benchmark validation labels. Its calibration on Hindi is not measured. A Hindi value and an English value come from different models and different calibrations. Fusion mixes both values in `misinfo_likelihood_agg`. A narrative with many Hindi posts has a less certain severity value.
+
+A Hindi row keeps its `misinfo:unsupported_language` skip reason when `laya` writes the value. The field `skip_reasons` records what each module did. The field `model_versions` says which model wrote the value.

@@ -27,11 +27,11 @@ Three things inverted from every other scorer in this tree, each on purpose:
   0.362 on typed-decisions against a 0.461 majority-class baseline -- *worse
   than guessing*. A zero-shot number is a baseline to report, never a model to
   ship, and :meth:`LayaScorer.score` says so in its outcome metadata.
-* **Calibration is not a separate stage.** ``laya.train.finetune`` preprocesses,
-  trains, calibrates and saves in one call, holding out ``calib_frac`` to fit
-  one temperature per (question type, option count). So there is no
-  ``Calibrator`` here of the kind ``misinfo`` carries, and the absence is a
-  property of the library rather than an omission.
+* **Calibration is two things.** ``laya.train.finetune`` fits one temperature per
+  question inside the checkpoint, and :meth:`LayaScorer.score` returns that value.
+  It is not the contract of ``record_scores.misinfo_prob``. The batch stage in
+  ``modeling/scoring.py`` writes only the output of a ``Calibrator`` fitted on
+  validation scores and stored beside the checkpoint. See ``laya_calibration``.
 """
 
 from __future__ import annotations
@@ -62,6 +62,19 @@ class LayaSkipReason(SkipReason):
     #: A fine-tuned checkpoint directory is configured but does not exist.
     #: The base checkpoint is never substituted for it.
     CHECKPOINT_MISSING = "checkpoint_missing"
+    #: The scoring stage found no calibrator beside the checkpoint, or the file is
+    #: unreadable, or it was rejected. See ``laya_calibration``. The raw score is
+    #: never written as ``misinfo_prob``.
+    CALIBRATOR_MISSING = "calibrator_missing"
+    CALIBRATOR_UNREADABLE = "calibrator_unreadable"
+    CALIBRATOR_REJECTED = "calibrator_rejected"
+    #: The record has no usable title. The stage scores titles only.
+    NO_TITLE = "no_title"
+    #: The calibrator file is marked demo, or was fitted for other weights.
+    CALIBRATOR_DEMO = "calibrator_demo"
+    CALIBRATOR_CHECKPOINT_MISMATCH = "calibrator_checkpoint_mismatch"
+    #: The raw score is not a finite number in [0, 1].
+    INVALID_SCORE = "invalid_score"
 
 
 class LayaCheckpointMissing(FileNotFoundError):

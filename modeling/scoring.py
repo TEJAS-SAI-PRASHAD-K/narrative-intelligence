@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ingest.config import REPO_ROOT
@@ -389,10 +390,10 @@ def _text_skip_reason(
 
 
 def _keep_misinfo_skips(frame: pd.DataFrame, existing: pd.DataFrame) -> pd.DataFrame:
-    """Carry the ``misinfo:`` and ``stance:`` entries on disk into a fresh aux frame.
+    """Carry the ``misinfo:``, ``stance:`` and ``laya:`` entries on disk into a fresh aux frame.
 
     ``skip_reasons`` is one list per record, and a merge write replaces the list.
-    The aux pass knows nothing about the misinfo and stance stages, so a rerun of
+    The aux pass knows nothing about the misinfo, laya and stance stages, so a rerun of
     the aux stage would erase the reasons that those stages recorded.
     """
     if not len(existing) or "skip_reasons" not in existing.columns:
@@ -401,7 +402,7 @@ def _keep_misinfo_skips(frame: pd.DataFrame, existing: pd.DataFrame) -> pd.DataF
         str(rid): [
             r
             for r in (str(x) for x in as_list(value))
-            if r.startswith(("misinfo:", "stance:"))
+            if r.startswith(("misinfo:", "stance:", "laya:"))
         ]
         for rid, value in zip(existing["record_id"], existing["skip_reasons"], strict=True)
     }
@@ -449,6 +450,347 @@ def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
         )
     ctx.store.write("record_scores", pd.DataFrame(rows), known_keys=ctx.known_record_ids or None)
     return note
+
+
+# ---------------------------------------------------------------------------
+# laya: Hindi misinfo_prob
+# ---------------------------------------------------------------------------
+def _laya_stage_config(settings: ModelingSettings) -> dict[str, Any]:
+    """The ``laya`` config with the Hindi directory filled in from ``LAYA_HI_CHECKPOINT``.
+
+    The committed ``finetuned_checkpoints.hi`` is null because the path is a property of
+    the host. A value in the file wins. A relative setting resolves against ``MODELS_DIR``.
+    """
+    import copy
+
+    from modeling.config import module_config
+
+    config = copy.deepcopy(module_config("laya"))
+    tuned = dict(config.get("finetuned_checkpoints") or {})
+    override = getattr(settings, "laya_hi_checkpoint", None)
+    if not tuned.get("hi") and override:
+        path = Path(str(override)).expanduser()
+        tuned["hi"] = str(path if path.is_absolute() else settings.models_dir / path)
+    config["finetuned_checkpoints"] = tuned
+    return config
+
+
+def _laya_refusals(
+    scorer: Any, languages: Sequence[str]
+) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, Any]]]:
+    """Per language, ``(reason, message)`` when the stage cannot score it, else a calibrator.
+
+    A Laya checkpoint serves ``misinfo_prob`` only with a calibrator beside it, and only
+    from the fine-tuned directory. The base checkpoint is never a substitute.
+    """
+    from modeling.text.laya_calibration import LayaCalibratorError, load_calibrator
+    from modeling.text.laya_clf import LayaCheckpointMissing, LayaSkipReason
+
+    availability = scorer.available()
+    if not availability.ok:
+        return {
+            lang: (LayaSkipReason.MODEL_UNAVAILABLE, availability.reason) for lang in languages
+        }, {}
+    refused: dict[str, tuple[str, str]] = {}
+    usable: dict[str, tuple[str, Any]] = {}
+    for lang in languages:
+        tuned = scorer.finetuned_path_for(lang)
+        if not tuned:
+            refused[lang] = (
+                LayaSkipReason.CHECKPOINT_MISSING,
+                f"no fine-tuned Laya checkpoint is set for lang={lang}. Set "
+                "LAYA_HI_CHECKPOINT or laya.finetuned_checkpoints.hi. The base checkpoint "
+                "is not a substitute.",
+            )
+            continue
+        try:
+            scorer.checkpoint_for(lang)
+        except LayaCheckpointMissing as exc:
+            refused[lang] = (LayaSkipReason.CHECKPOINT_MISSING, str(exc))
+            continue
+        try:
+            loaded = load_calibrator(Path(tuned).expanduser())
+        except LayaCalibratorError as exc:
+            refused[lang] = (exc.reason, str(exc))
+            continue
+        usable[lang] = (f"{scorer.model_version_for(lang)}+{loaded.stamp}", loaded)
+    return refused, usable
+
+
+@stage("laya")
+def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
+    """Calibrated Laya score of the title -> ``record_scores.misinfo_prob``, for Hindi.
+
+    Scope is the ``scoring_languages`` of the ``laya`` module, Hindi only. The English slot
+    belongs to the ``misinfo`` module, and a record outside the scope gets no value and no
+    reason from this stage. A record that ``misinfo`` scored, or that holds any other
+    non-null ``misinfo_prob``, is left as it is.
+
+    The stage scores the record's title, read by ``modeling.titles.title_of`` as the
+    comparison reads ``corpus_title``. The Hindi gate passed on titles. On Hindi full text the
+    same model had a lift of 0.232 [0.000, 0.805], so full text is outside what the gate
+    measured. A record with no title gets ``laya:no_title``, and ``text_too_short`` applies to
+    the title.
+
+    The value written is the calibrator's output, never the raw score. The calibrator comes
+    from the fine-tuned checkpoint directory and was fitted on English benchmark labels, so
+    its calibration on Hindi is not measured. When the package, the checkpoint or the
+    calibrator is not usable, every in-scope record gets ``laya:<reason>``, a null
+    ``misinfo_prob`` and no ``laya`` stamp, and the stage reports the refusal. The summary
+    counts the raw values outside the fitted range and the distinct calibrated values. It
+    warns on a collapse and does not refuse.
+
+    A record scored under the current stamp is not scored again. A skipped record has its
+    value cleared and its stamp retracted, so ``already_scored`` cannot return it.
+    """
+    from modeling.io import _as_version_dict
+    from modeling.text.laya_calibration import MIN_DISTINCT_OUTPUTS
+    from modeling.text.laya_clf import MIN_CHARS, LayaScorer, LayaSkipReason
+    from modeling.titles import title_of
+
+    config = _laya_stage_config(ctx.settings)
+    languages = [str(lang).strip().lower() for lang in config.get("scoring_languages") or []]
+    declared = {str(lang).lower() for lang in config.get("languages") or []}
+    problem = None
+    if not languages:
+        problem = "laya.scoring_languages is empty"
+    elif "en" in languages:
+        problem = "laya.scoring_languages names en, and the English slot belongs to misinfo"
+    elif not set(languages) <= declared:
+        problem = f"laya.scoring_languages {languages} is not within laya.languages"
+    if problem:
+        log.error("laya stage refused: %s. Nothing was written.", problem)
+        return [
+            {
+                "stage": "laya",
+                "table": "record_scores",
+                "refused": "scoring_languages_invalid",
+                "note": ctx.note(f"REFUSED: {problem}; nothing written"),
+            }
+        ]
+
+    langs = ctx.records["lang"].map(
+        lambda value: None if value is None or value != value else str(value).lower()
+    )
+    in_scope = ctx.records.loc[langs.isin(languages)]
+    if not len(in_scope):
+        return [
+            {
+                "stage": "laya",
+                "table": "record_scores",
+                "note": ctx.note(f"no records in {languages}; nothing to do"),
+            }
+        ]
+
+    existing = ctx.store.read("record_scores")
+    prior_versions: dict[str, dict[str, str]] = {}
+    prior_prob: dict[str, Any] = {}
+    prior_reasons: dict[str, list[str]] = {}
+    if len(existing):
+        for row in existing.to_dict(orient="records"):
+            rid = str(row["record_id"])
+            prior_versions[rid] = _as_version_dict(row.get("model_versions"))
+            value = row.get("misinfo_prob")
+            prior_prob[rid] = None if value is None or value != value else value
+            prior_reasons[rid] = [str(r) for r in as_list(row.get("skip_reasons"))]
+
+    def laya_owned(rid: str) -> bool:
+        return "laya" in prior_versions.get(rid, {})
+
+    def foreign(rid: str) -> bool:
+        """Does another module own this record's misinfo_prob?"""
+        if "misinfo" in prior_versions.get(rid, {}):
+            return True
+        return prior_prob.get(rid) is not None and not laya_owned(rid)
+
+    candidates = [r for r in in_scope.itertuples(index=False) if not foreign(str(r.id))]
+    protected = [r for r in in_scope.itertuples(index=False) if foreign(str(r.id))]
+
+    scorer = LayaScorer(settings=ctx.settings, _config=config)
+    refused: dict[str, tuple[str, str]] = {}
+    usable: dict[str, tuple[str, Any]] = {}
+    if candidates:
+        refused, usable = _laya_refusals(
+            scorer, sorted({str(r.lang).lower() for r in candidates})
+        )
+        for lang, (reason, message) in refused.items():
+            log.error("laya stage refused for lang=%s (laya:%s): %s", lang, reason, message)
+
+    done: dict[str, set[str]] = {
+        lang: {k[0] for k in ctx.store.already_scored("record_scores", {"laya": stamp})}
+        for lang, (stamp, _) in usable.items()
+    }
+
+    if "raw" not in ctx.records.columns:
+        log.warning("laya: the records have no `raw` column, so no record has a title")
+    titles: dict[str, str] = {}
+    reasons: dict[str, str | None] = {}
+    pending = []
+    for row in candidates:
+        rid, lang = str(row.id), str(row.lang).lower()
+        if lang in refused:
+            reasons[rid] = refused[lang][0]
+            continue
+        title = title_of(getattr(row, "raw", None))
+        if title is None:
+            reasons[rid] = LayaSkipReason.NO_TITLE
+            continue
+        reason = _text_skip_reason(ctx.settings, "laya", title, lang, MIN_CHARS)
+        if reason is not None:
+            reasons[rid] = reason
+        elif rid not in done.get(lang, set()):
+            reasons[rid] = None
+            titles[rid] = title
+            pending.append(row)
+
+    if ctx.dry_run:
+        return [
+            {
+                "stage": "laya",
+                "table": "record_scores",
+                "note": ctx.note(f"dry-run; would score {len(pending)} rows"),
+            }
+        ]
+
+    values: dict[str, float] = {}
+    collapse: dict[str, dict[str, Any]] = {}
+    if pending:
+        frame_in = pd.DataFrame(
+            {
+                "id": [str(r.id) for r in pending],
+                "text": [titles[str(r.id)] for r in pending],
+                "lang": pd.Series([str(r.lang).lower() for r in pending], dtype=object),
+            }
+        )
+        outcome = scorer.score(frame_in)
+        by_lang: dict[str, list[tuple[str, float]]] = {}
+        lang_of = dict(zip(frame_in["id"], frame_in["lang"], strict=True))
+        for rid in frame_in["id"]:
+            if rid in outcome.values:
+                raw = float(outcome.values[rid])
+                if raw == raw and 0.0 <= raw <= 1.0:
+                    by_lang.setdefault(lang_of[rid], []).append((rid, raw))
+                else:
+                    reasons[rid] = LayaSkipReason.INVALID_SCORE
+            else:
+                reasons[rid] = outcome.skipped.get(rid) or LayaSkipReason.INFERENCE_ERROR
+        for lang, pairs in by_lang.items():
+            loaded = usable[lang][1]
+            raws = np.array([raw for _, raw in pairs])
+            calibrated = loaded.calibrator.transform(raws)
+            for (rid, _), value in zip(pairs, calibrated, strict=True):
+                values[rid] = float(value)
+                reasons[rid] = None
+            low, high = loaded.fit_range
+            outside = int(np.sum((raws < low) | (raws > high)))
+            distinct = int(len(np.unique(calibrated)))
+            collapsed = distinct < MIN_DISTINCT_OUTPUTS or outside * 2 > len(pairs)
+            collapse[lang] = {
+                "scored": len(pairs),
+                "out_of_range": outside,
+                "distinct_calibrated": distinct,
+                "collapse_warning": collapsed,
+            }
+            (log.warning if collapsed else log.info)(
+                "laya lang=%s: %d scored, %d raw values outside the fitted range "
+                "[%.4f, %.4f], %d distinct calibrated values%s",
+                lang, len(pairs), outside, low, high, distinct,
+                f". COLLAPSE WARNING: fewer than {MIN_DISTINCT_OUTPUTS} distinct values or more "
+                "than half the raw values out of range; the written values carry little "
+                "information"
+                if collapsed
+                else "",
+            )
+
+    def kept(rid: str) -> list[str]:
+        return [r for r in prior_reasons.get(rid, []) if not r.startswith("laya:")]
+
+    rows: list[dict[str, Any]] = []
+    retract: dict[tuple[str, ...], set[str]] = {}
+    now = utcnow_local()
+    for row in candidates:
+        rid = str(row.id)
+        if rid not in reasons:
+            continue
+        entry: dict[str, Any] = {"record_id": rid, "source": str(row.source), "scored_at": now}
+        if rid in values:
+            entry.update(
+                misinfo_prob=values[rid],
+                skip_reasons=kept(rid),
+                model_versions={"laya": usable[str(row.lang).lower()][0]},
+            )
+        else:
+            entry.update(
+                misinfo_prob=None,
+                skip_reasons=[*kept(rid), f"laya:{reasons[rid]}"],
+                model_versions={},
+            )
+            retract[(rid,)] = {"laya"}
+        rows.append(entry)
+
+    # A record that misinfo or another writer now owns must not keep a laya stamp.
+    cleanup = []
+    for row in protected:
+        rid = str(row.id)
+        if laya_owned(rid) or kept(rid) != prior_reasons.get(rid, []):
+            cleanup.append(
+                {
+                    "record_id": rid,
+                    "source": str(row.source),
+                    "skip_reasons": kept(rid),
+                    "model_versions": {},
+                    "scored_at": now,
+                }
+            )
+            retract[(rid,)] = {"laya"}
+
+    counts = pd.Series([r for r in reasons.values() if r is not None], dtype=object)
+    skip_counts = counts.value_counts().to_dict()
+    skip_note = (
+        "; skipped " + ", ".join(f"{n} {reason}" for reason, n in sorted(skip_counts.items()))
+        if skip_counts
+        else ""
+    )
+    refused_note = (
+        "; REFUSED " + ", ".join(f"{lang}: laya:{code}" for lang, (code, _) in refused.items())
+        if refused
+        else ""
+    )
+    totals = {"written": 0, "updated": 0, "unchanged": 0}
+    for part in (rows, cleanup):
+        if part:
+            result = ctx.store.write(
+                "record_scores",
+                pd.DataFrame(part),
+                known_keys=ctx.known_record_ids or None,
+                drop_model_versions=retract,
+            )
+            for key in totals:
+                totals[key] += result[key]
+    if not rows and not cleanup:
+        return [
+            {
+                "stage": "laya",
+                "table": "record_scores",
+                "unchanged": len(in_scope),
+                "note": ctx.note("resumed: nothing to do"),
+            }
+        ]
+    summary: dict[str, Any] = {"stage": "laya", "table": "record_scores", **totals}
+    if refused:
+        summary["refused"] = {lang: code for lang, (code, _) in refused.items()}
+    if collapse:
+        summary["calibration"] = collapse
+        skip_note += "; calibration " + ", ".join(
+            f"{lang}: {c['out_of_range']} out of range, {c['distinct_calibrated']} distinct"
+            + (" COLLAPSE WARNING" if c["collapse_warning"] else "")
+            for lang, c in collapse.items()
+        )
+    summary["note"] = ctx.note(
+        f"scored {len(values)}/{len(in_scope)} in-scope records; left {len(protected)} to other "
+        f"modules" + skip_note + refused_note
+    )
+    return [summary]
 
 
 @stage("stance")

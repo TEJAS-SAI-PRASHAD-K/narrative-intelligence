@@ -23,9 +23,12 @@ batching:
 #   coordination  before accounts     -- author_scores.community_id and
 #                                        .coordination_score come from the graph
 #   aux + misinfo before cluster      -- narrative severity aggregates member misinfo_prob
+#   misinfo       before laya         -- laya never overwrites a misinfo_prob that misinfo wrote
+#   laya          before cluster      -- same reason as misinfo
 stages:
   - aux                     # toxicity, sentiment, emotion, anomaly -> record_scores
   - misinfo                 # -> record_scores.misinfo_prob
+  - laya                    # -> record_scores.misinfo_prob for Hindi only, calibrated
   - stance                  # -> record_scores.stance (null until trained)
   - cluster                 # -> narratives, narrative_membership
   - summarize               # -> narratives.label / .summary

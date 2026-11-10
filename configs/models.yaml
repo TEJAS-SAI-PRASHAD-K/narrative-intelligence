@@ -137,6 +137,17 @@ laya:
   finetuned_checkpoints:
     en: null
     hi: null
+  # Languages for which the `laya` batch stage writes `record_scores.misinfo_prob`.
+  # Hindi only: the English slot belongs to the `misinfo` module, and the stage
+  # refuses a list that names `en`. Each language needs `languages`, a route, a
+  # fine-tuned directory and a calibrator beside it (misinfo_prob_calibrator.json,
+  # from `scripts/run_comparison.py calibrate-laya`).
+  #
+  # The batch stage reads the Hindi directory from `finetuned_checkpoints.hi`, or
+  # when that is null from the LAYA_HI_CHECKPOINT setting (env or .env). A
+  # relative path resolves against MODELS_DIR. The directory name appears in
+  # `model_versions["laya"]`.
+  scoring_languages: [hi]
   device: auto
   # States per forward pass in predict_batch. Long states use predict_long.
   batch_size: 16
