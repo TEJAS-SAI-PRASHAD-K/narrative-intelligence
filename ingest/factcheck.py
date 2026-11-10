@@ -60,6 +60,17 @@ class Tier(str, Enum):
     RSS_TAG = "rss_tag"
 
 
+class OffDomainRedirect(Exception):
+    """A response ended on a registrable domain other than the expected one."""
+
+
+class ResponseTooLarge(Exception):
+    """A streamed response held more decoded bytes than the caller allows."""
+
+
+#: Bytes per read of a streamed, size-bounded response.
+_STREAM_CHUNK = 65536
+
 #: robots.txt statuses that mean "no rules published".
 _ROBOTS_ABSENT_STATUSES = frozenset({404, 410})
 
@@ -117,6 +128,12 @@ class DropReason(str, Enum):
     SITEMAP_BUDGET_EXHAUSTED = "sitemap_budget_exhausted"
     #: A discovered URL was left out because the per-publisher URL bound was full.
     BACKFILL_BOUND_REACHED = "backfill_bound_reached"
+    #: A backfill request ended on another registrable domain after redirects.
+    #: The body is discarded and never cached.
+    BACKFILL_OFF_DOMAIN_REDIRECT = "backfill_off_domain_redirect"
+    #: A backfilled verdict whose detected claim language is not in the
+    #: publisher's `claim_languages`. The row is not written.
+    BACKFILL_LANGUAGE_EXCLUDED = "backfill_language_excluded"
 
 
 @dataclass
@@ -403,7 +420,7 @@ class FactCheckExtractor:
         )
 
     # --- fetching --------------------------------------------------------
-    def fetch_html(self, url: str) -> str | None:
+    def fetch_html(self, url: str, expected_domain: str | None = None) -> str | None:
         """Article HTML, within budget and robots.txt, cached on disk.
 
         Cached permanently and never revalidated: an article is immutable once
@@ -413,6 +430,10 @@ class FactCheckExtractor:
         A cached page is returned before the budget and domain-limit checks, so
         it costs no budget. It is used without a new robots check: the robots
         check ran when the page was first fetched.
+
+        ``expected_domain`` is set only by the backfill. A response that ends on
+        another registrable domain after redirects is then discarded, not cached,
+        and counted as BACKFILL_OFF_DOMAIN_REDIRECT. The daily pass leaves it unset.
         """
         config = self.config.get("fetch") or {}
         cache_path = self._cache_path(url) if config.get("cache", True) else None
@@ -435,7 +456,12 @@ class FactCheckExtractor:
 
         self._budget -= 1
         try:
-            html = self._http_get(url)
+            html = self._http_get(url, expected_domain=expected_domain)
+        except OffDomainRedirect as exc:
+            self._fetch_failures[domain] = self._fetch_failures.get(domain, 0) + 1
+            self.drop(DropReason.BACKFILL_OFF_DOMAIN_REDIRECT, f"{url}: {exc}")
+            log.warning("discarded %s: %s", url, exc)
+            return None
         except Exception as exc:
             self._fetch_failures[domain] = self._fetch_failures.get(domain, 0) + 1
             self.drop(DropReason.FETCH_FAILED, f"{url}: {type(exc).__name__}: {exc}")
@@ -446,23 +472,59 @@ class FactCheckExtractor:
             cache_path.write_text(html, encoding="utf-8")
         return html
 
-    def _http_get(self, url: str, as_bytes: bool = False) -> Any:
+    def _http_get(
+        self,
+        url: str,
+        as_bytes: bool = False,
+        max_bytes: int | None = None,
+        expected_domain: str | None = None,
+    ) -> Any:
         """One polite GET: the configured delay, the project User-Agent, the timeout.
 
         Raises on a network error or a bad status. The caller counts the failure.
         Returns the raw body when ``as_bytes`` is set, so XML keeps its own encoding.
+
+        With neither ``max_bytes`` nor ``expected_domain`` this is the plain GET
+        of the daily pass. Either one switches to a streamed response:
+
+        * ``expected_domain``: the registrable domain of the final URL, after
+          redirects, must match it, or ``OffDomainRedirect`` is raised before any
+          body byte is read.
+        * ``max_bytes``: the body is read in chunks of decoded content, which
+          includes gzip decoding, and ``ResponseTooLarge`` is raised as soon as
+          the total passes the bound. Memory stays under the bound plus one chunk.
         """
         config = self.config.get("fetch") or {}
         time.sleep(float(config.get("request_delay_seconds", 1.0)))
         import requests
 
-        response = requests.get(
-            url,
-            headers={"User-Agent": self.settings.user_agent},
-            timeout=float(config.get("timeout_seconds", 30)),
-        )
-        response.raise_for_status()
-        return response.content if as_bytes else response.text
+        headers = {"User-Agent": self.settings.user_agent}
+        timeout = float(config.get("timeout_seconds", 30))
+        if max_bytes is None and expected_domain is None:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.content if as_bytes else response.text
+
+        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        try:
+            if expected_domain is not None:
+                final = resolve_domain(getattr(response, "url", None) or url)
+                if final != expected_domain:
+                    raise OffDomainRedirect(f"ended on {final!r}, expected {expected_domain!r}")
+            response.raise_for_status()
+            if max_bytes is None:
+                return response.content if as_bytes else response.text
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=_STREAM_CHUNK):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ResponseTooLarge(f"more than {max_bytes} bytes")
+                chunks.append(chunk)
+            body = b"".join(chunks)
+            return body if as_bytes else body.decode(response.encoding or "utf-8", "replace")
+        finally:
+            response.close()
 
     def set_budget(self, articles: int) -> None:
         """Set the number of live article fetches left in this run."""

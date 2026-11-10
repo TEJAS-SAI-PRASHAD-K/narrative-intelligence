@@ -7,10 +7,21 @@ through the same tier 1 ClaimReview path the RSS-sourced records use
 (`FactCheckExtractor.fetch_html` and `from_html`). It adds no extraction code, so
 rows have the same columns, tier, id scheme and language detection.
 
-Sitemap XML is untrusted input. A document that declares a DOCTYPE or an entity
-is refused before it reaches the parser, so no entity expands and no external
-entity loads. The parser is the standard library's, which needs no new
-dependency.
+Sitemap XML is untrusted input. Three checks run before the parser sees a byte:
+
+* The body must start, after an optional UTF-8 byte-order mark, with an ASCII
+  ``<``. It must hold no NUL byte near the start. That refuses UTF-16 and UTF-32,
+  which a byte search for ``<!DOCTYPE`` cannot see.
+* An XML declaration may name only UTF-8, ASCII or ISO-8859-1.
+* A body with a byte sequence ``<!DOCTYPE`` or ``<!ENTITY`` is refused, so no
+  entity expands and no external entity loads.
+
+The byte search for a DOCTYPE is meaningful only because the first two checks
+admit ASCII-compatible encodings alone. The parser is the standard library's,
+which needs no new dependency.
+A sitemap response is read as a bounded stream, so its decoded size cannot pass
+`backfill.max_sitemap_bytes`. Sitemap and article responses must end on the
+publisher's registrable domain.
 """
 
 from __future__ import annotations
@@ -30,6 +41,8 @@ from ingest.factcheck import (
     DropReason,
     FactCheck,
     FactCheckExtractor,
+    OffDomainRedirect,
+    ResponseTooLarge,
     Tier,
 )
 from ingest.normalize import resolve_domain
@@ -38,6 +51,12 @@ from ingest.sources.news_rss import _article_id
 log = logging.getLogger("ingest.factcheck.backfill")
 
 _DTD_RE = re.compile(rb"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
+_XML_DECL_ENCODING_RE = re.compile(
+    rb"^<\?xml[^>]*?encoding\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE
+)
+_SAFE_ENCODINGS = frozenset({"utf-8", "us-ascii", "ascii", "iso-8859-1"})
+_UTF8_BOM = b"\xef\xbb\xbf"
+_NUL_SCAN_BYTES = 1024
 
 DEFAULTS: dict[str, Any] = {
     "max_urls_per_publisher": 200,
@@ -52,6 +71,8 @@ DEFAULTS: dict[str, Any] = {
 class SitemapEntry:
     loc: str
     lastmod: datetime | None = None
+    #: The `lastmod` element held text that is not an ISO 8601 date.
+    lastmod_bad: bool = False
 
 
 @dataclass
@@ -70,25 +91,57 @@ class PublisherStats:
     filtered_lastmod: int = 0
     lastmod_absent_kept: int = 0
     lastmod_unparseable: int = 0
+    #: A `<loc>` element with no text.
+    empty_loc: int = 0
+    #: A page URL listed more than once.
+    duplicate_loc: int = 0
+    #: Child sitemaps still queued when discovery stopped at the wanted count.
+    sitemaps_unread: int = 0
+    #: Verdicts left out by `claim_languages`, per detected language.
+    language_excluded: dict[str, int] = field(default_factory=dict)
     dropped: dict[str, int] = field(default_factory=dict)
 
 
-def parse_lastmod(value: str | None) -> datetime | None:
-    """A sitemap `lastmod` as an aware UTC datetime, or ``None`` when absent or unreadable."""
-    if not value or not value.strip():
-        return None
-    from dateutil import parser as date_parser
+_LASTMOD_RE = re.compile(
+    r"^(\d{4})(?:-(\d{2})(?:-(\d{2})"
+    r"(?:T(\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?(Z|[+-]\d{2}:?\d{2})?)?)?)?$"
+)
 
+
+def parse_lastmod(value: str | None) -> datetime | None:
+    """A sitemap `lastmod` as an aware UTC datetime, or ``None``.
+
+    Accepts the W3C datetime forms ``YYYY``, ``YYYY-MM``, ``YYYY-MM-DD`` and
+    ``YYYY-MM-DDThh:mm[:ss[.s]][Z|+hh:mm]``. Anything else, such as ``"5"`` or
+    ``"yesterday"``, gives ``None``. There is no lenient fallback. A value with no
+    zone is read as UTC.
+    """
+    if not value:
+        return None
+    match = _LASTMOD_RE.match(value.strip())
+    if not match:
+        return None
+    year, month, day, hour, minute, second, fraction, zone = match.groups()
     try:
-        parsed = date_parser.isoparse(value.strip())
+        parsed = datetime(
+            int(year),
+            int(month or 1),
+            int(day or 1),
+            int(hour or 0),
+            int(minute or 0),
+            int(second or 0),
+            int((fraction or "0")[:6].ljust(6, "0")),
+            tzinfo=timezone.utc,
+        )
+        if zone and zone != "Z":
+            from datetime import timedelta
+
+            digits = zone[1:].replace(":", "")
+            offset = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+            parsed = parsed - offset if zone[0] == "+" else parsed + offset
     except (ValueError, OverflowError):
-        try:
-            parsed = date_parser.parse(value.strip())
-        except (ValueError, OverflowError):
-            return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return None
+    return parsed
 
 
 def _as_cutoff(value: Any) -> datetime | None:
@@ -105,13 +158,30 @@ def _as_cutoff(value: Any) -> datetime | None:
     return parsed
 
 
-def parse_sitemap(body: bytes) -> tuple[str, list[SitemapEntry]]:
+def _refuse_unsafe_encoding(body: bytes) -> None:
+    """Raise ``ValueError`` unless ``body`` is UTF-8 or ASCII XML, by its first bytes."""
+    if b"\x00" in body[:_NUL_SCAN_BYTES]:
+        raise ValueError("NUL byte near the start, so not UTF-8 or ASCII")
+    start = body[len(_UTF8_BOM) :] if body.startswith(_UTF8_BOM) else body
+    stripped = start.lstrip(b" \t\r\n")
+    if not stripped.startswith(b"<"):
+        raise ValueError("first byte is not an ASCII '<', so not UTF-8 or ASCII")
+    declared = _XML_DECL_ENCODING_RE.match(stripped)
+    if declared and declared.group(1).decode("ascii", "replace").lower() not in _SAFE_ENCODINGS:
+        raise ValueError(f"declared encoding {declared.group(1)!r} is not allowed")
+
+
+def parse_sitemap(
+    body: bytes, counters: dict[str, int] | None = None
+) -> tuple[str, list[SitemapEntry]]:
     """``("index" | "urlset", entries)`` from sitemap XML bytes.
 
-    Raises ``ValueError`` for a DOCTYPE or entity declaration, bad XML, or an
-    unknown root element. Namespaces are ignored: some sitemaps add image or news
-    namespaces beside the standard one.
+    Raises ``ValueError`` for a body that is not UTF-8 or ASCII, a DOCTYPE or
+    entity declaration, bad XML, or an unknown root element. Namespaces are
+    ignored: some sitemaps add image or news namespaces beside the standard one.
+    ``counters["empty_loc"]`` counts entries with a `<loc>` that holds no text.
     """
+    _refuse_unsafe_encoding(body)
     if _DTD_RE.search(body):
         raise ValueError("document declares a DOCTYPE or entity")
     try:
@@ -133,8 +203,13 @@ def parse_sitemap(body: bytes) -> tuple[str, list[SitemapEntry]]:
                 loc = (field_node.text or "").strip()
             elif name == "lastmod" and lastmod is None:
                 lastmod = field_node.text
-        if loc:
-            entries.append(SitemapEntry(loc, parse_lastmod(lastmod)))
+        if not loc:
+            if counters is not None:
+                counters["empty_loc"] = counters.get("empty_loc", 0) + 1
+            continue
+        parsed = parse_lastmod(lastmod)
+        bad = parsed is None and bool(lastmod and lastmod.strip())
+        entries.append(SitemapEntry(loc, parsed, bad))
     return ("index" if kind == "sitemapindex" else "urlset"), entries
 
 
@@ -205,7 +280,19 @@ class SitemapBackfill:
             self._count(stats, reason or DropReason.ROBOTS_UNREACHABLE, url)
             return None
         try:
-            body = extractor._http_get(url, as_bytes=True)
+            body = extractor._http_get(
+                url,
+                as_bytes=True,
+                max_bytes=int(self.bounds["max_sitemap_bytes"]),
+                expected_domain=domain,
+            )
+        except ResponseTooLarge as exc:
+            self._count(stats, DropReason.SITEMAP_TOO_LARGE, f"{url}: {exc}")
+            return None
+        except OffDomainRedirect as exc:
+            extractor._fetch_failures[domain] = extractor._fetch_failures.get(domain, 0) + 1
+            self._count(stats, DropReason.BACKFILL_OFF_DOMAIN_REDIRECT, f"{url}: {exc}")
+            return None
         except Exception as exc:
             extractor._fetch_failures[domain] = extractor._fetch_failures.get(domain, 0) + 1
             self._count(
@@ -213,11 +300,10 @@ class SitemapBackfill:
             )
             return None
         extractor._fetch_failures[domain] = 0
-        if len(body) > int(self.bounds["max_sitemap_bytes"]):
-            self._count(stats, DropReason.SITEMAP_TOO_LARGE, f"{url}: {len(body)} bytes")
-            return None
         try:
-            parsed = parse_sitemap(body)
+            counters: dict[str, int] = {}
+            parsed = parse_sitemap(body, counters)
+            stats.empty_loc += counters.get("empty_loc", 0)
         except ValueError as exc:
             self._count(stats, DropReason.SITEMAP_MALFORMED, f"{url}: {exc}")
             return None
@@ -252,6 +338,13 @@ class SitemapBackfill:
                 continue
             seen_sitemaps.add(url)
             if found_new >= wanted:
+                unread = 1 + sum(1 for u, _ in queue if u not in seen_sitemaps)
+                stats.sitemaps_unread += unread
+                log.warning(
+                    "backfill %s: stopped at the wanted count, %d sitemaps unread",
+                    stats.publisher,
+                    unread,
+                )
                 return
             if stats.sitemaps_read >= max_sitemaps:
                 self._count(stats, DropReason.SITEMAP_BUDGET_EXHAUSTED, url)
@@ -272,6 +365,8 @@ class SitemapBackfill:
                 )
                 children = []
                 for entry in entries:
+                    if entry.lastmod_bad:
+                        stats.lastmod_unparseable += 1
                     if sitemap_filter and not sitemap_filter.search(entry.loc):
                         stats.sitemaps_filtered_pattern += 1
                         continue
@@ -329,15 +424,22 @@ class SitemapBackfill:
             ):
                 stats.filtered_pattern += 1
                 return False
+            if entry.lastmod_bad:
+                stats.lastmod_unparseable += 1
             if cutoff:
                 if entry.lastmod is None:
-                    # Nothing to compare, so the URL stays. Counted, because the
-                    # bound cannot be enforced for it.
-                    stats.lastmod_absent_kept += 1
+                    # Nothing to compare, so the URL stays, whether the date is
+                    # absent or unreadable. Counted, because the bound cannot be
+                    # enforced for it.
+                    if not entry.lastmod_bad:
+                        stats.lastmod_absent_kept += 1
                 elif entry.lastmod < cutoff:
                     stats.filtered_lastmod += 1
                     return False
-            return entry.loc not in kept
+            if entry.loc in kept:
+                stats.duplicate_loc += 1
+                return False
+            return True
 
         for entry in self._discover(
             sitemap_urls, domain, stats, cutoff, cap, accept, sitemap_filter
@@ -366,6 +468,23 @@ class SitemapBackfill:
             )
         return fresh[:cap]
 
+    def _language_allowed(self, domain: str, verdict: FactCheck, stats: PublisherStats) -> bool:
+        """False, after counting, when `claim_languages` excludes the claim's language.
+
+        A claim with no detected language is excluded when a list is set.
+        """
+        block = self.extractor.publishers[domain].get("backfill") or {}
+        allowed = block.get("claim_languages")
+        if not allowed or verdict.claim_lang in allowed:
+            return True
+        language = verdict.claim_lang or "?"
+        stats.language_excluded[language] = stats.language_excluded.get(language, 0) + 1
+        self.extractor.drop(DropReason.BACKFILL_LANGUAGE_EXCLUDED, f"{verdict.url}: {language}")
+        stats.dropped[DropReason.BACKFILL_LANGUAGE_EXCLUDED.value] = (
+            stats.dropped.get(DropReason.BACKFILL_LANGUAGE_EXCLUDED.value, 0) + 1
+        )
+        return False
+
     def run(self, domains: list[str] | None = None) -> Iterator[FactCheck]:
         """Yield one verdict per extractable discovered URL. Every skip is counted."""
         extractor = self.extractor
@@ -382,7 +501,7 @@ class SitemapBackfill:
             for entry in candidates:
                 before = dict(extractor.dropped)
                 record = record_for_url(entry.loc, domain)
-                html = extractor.fetch_html(entry.loc)
+                html = extractor.fetch_html(entry.loc, expected_domain=domain)
                 verdict = extractor.from_html(record, html) if html is not None else None
                 if html is not None:
                     stats.fetched += 1
@@ -390,6 +509,8 @@ class SitemapBackfill:
                     delta = count - before.get(reason, 0)
                     if delta:
                         stats.dropped[reason] = stats.dropped.get(reason, 0) + delta
+                if verdict is not None and not self._language_allowed(domain, verdict, stats):
+                    verdict = None
                 if verdict is not None:
                     stats.verdicts += 1
                     yield verdict

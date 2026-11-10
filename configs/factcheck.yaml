@@ -73,7 +73,11 @@ publishers:
         - https://www.vishvasnews.com/sitemap_index.xml
       # The index also lists page, video, category and news sitemaps.
       sitemap_pattern: "/post-sitemap[0-9]*\\.xml$"
-      exclude_pattern: "^https://www\\.vishvasnews\\.com/(english|urdu|punjabi|gujarati|odia|assamese|bangla|bengali|marathi|telugu|tamil|malayalam|kannada|nepali)/"
+      exclude_pattern: "^https?://(www\\.)?vishvasnews\\.com/(english|urdu|punjabi|gujarati|odia|assamese|bangla|bengali|marathi|telugu|tamil|malayalam|kannada|nepali)/"
+      # Rows whose detected claim language is not listed here are not written.
+      # The count per detected language is reported. This keeps English and
+      # Marathi claims out of the Hindi evaluation set.
+      claim_languages: [hi]
       # Slugs of fact-check articles begin with `fact-check` in most sections.
       url_pattern: "/fact-check"
   factcrescendo.com:
@@ -94,8 +98,14 @@ publishers:
 #   sitemap_pattern  regex, a child sitemap URL must match it (optional)
 #   url_pattern      regex, a page URL must match it (optional)
 #   exclude_pattern  regex, a page URL must not match it (optional)
+#   claim_languages  list of language codes, a row with another detected language
+#                    is not written and is counted by language (optional)
 #   max_urls         lower bound than the global cap, for this publisher (optional)
 #   min_lastmod      later cutoff than the global one, for this publisher (optional)
+# The backfill has its own budget, `max_urls_per_publisher`. It is separate from
+# `fetch.max_articles`, which limits only the daily pass. A page whose `lastmod`
+# is absent or not an ISO 8601 date is kept and counted. Sitemap and page
+# responses must end on the publisher's registrable domain after redirects.
 # Only publishers with `tier: claimreview` are read. Page URLs and sitemap URLs
 # on another registrable domain are refused and counted.
 backfill:

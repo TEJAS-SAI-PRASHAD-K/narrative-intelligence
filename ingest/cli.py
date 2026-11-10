@@ -183,7 +183,11 @@ def stats(source: str | None = typer.Argument(None, help="limit to one source"))
 @app.command()
 def factchecks(
     limit: int | None = typer.Option(None, "--limit", "-n", help="stop after N verdicts"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="extract and report, write nothing"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="extract and report, write no rows (fetched pages are still cached on disk)",
+    ),
     backfill: bool = typer.Option(
         False,
         "--backfill",
@@ -298,8 +302,16 @@ def factchecks(
                 f"filtered by sitemap pattern {stat.sitemaps_filtered_pattern}, "
                 f"filtered by pattern {stat.filtered_pattern}, "
                 f"filtered by lastmod {stat.filtered_lastmod}, "
-                f"kept with no lastmod {stat.lastmod_absent_kept}"
+                f"kept with no lastmod {stat.lastmod_absent_kept}, "
+                f"kept with unreadable lastmod {stat.lastmod_unparseable}, "
+                f"empty loc {stat.empty_loc}, duplicate loc {stat.duplicate_loc}, "
+                f"sitemaps left unread {stat.sitemaps_unread}"
             )
+            if stat.language_excluded:
+                console.print(
+                    f"{stat.publisher} excluded by claim_languages, by detected language: "
+                    f"{dict(sorted(stat.language_excluded.items()))}"
+                )
             console.print(f"{stat.publisher} dropped: {dict(sorted(stat.dropped.items()))}")
 
     summary = extractor.summary()
