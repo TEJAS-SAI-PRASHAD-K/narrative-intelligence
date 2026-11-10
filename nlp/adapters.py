@@ -251,53 +251,6 @@ def _as_float(value: Any) -> float:
 
 
 @lru_cache(maxsize=1)
-def get_deepfake_detector():
-    """Xception frame classifier."""
-    if not _modeling_available():
-        return None
-    try:
-        from app.config import get_api_settings, load_yaml
-        from modeling.media.deepfake_clf import DeepfakeScorer
-
-        version = str((load_yaml("models").get("deepfake") or {}).get("version", "v0.1.0"))
-        directory = get_api_settings().models_dir / "deepfake" / version
-        scorer = DeepfakeScorer()
-        if not scorer.load(directory if directory.exists() else None):
-            log.info("no deepfake checkpoint at %s", directory)
-            return None
-        return _DeepfakeAdapter(scorer, version)
-    except Exception as exc:
-        log.warning("could not load the deepfake detector: %s: %s", type(exc).__name__, exc)
-        return None
-
-
-def _deepfake_model_name(scorer: Any) -> str:
-    """Name the mounted detector: the hub id when there is one, else the backbone."""
-    hf_model = getattr(scorer, "hf_model", None)
-    if hf_model:
-        return str(hf_model)
-    backbone = getattr(scorer, "backbone", None)
-    return f"{backbone}-deepfake" if backbone else "deepfake"
-
-
-class _DeepfakeAdapter:
-    def __init__(self, inner: Any, version: str) -> None:
-        self._inner = inner
-        # Report what is actually mounted. The name was hardcoded to
-        # "xception-deepfake", which is the FaceForensics++ training path's
-        # backbone -- but the mounted checkpoint may be a pre-existing HF
-        # detector (a ViT, currently), and /readyz publishes this name. A
-        # ModelInfo that names a different architecture than the one answering
-        # requests is worse than no name.
-        self.info = ModelInfo(name=_deepfake_model_name(inner), version=version)
-
-    def analyze(self, path: str, **kwargs: Any) -> dict[str, Any]:
-        from pathlib import Path
-
-        return self._inner.score_media(Path(path))
-
-
-@lru_cache(maxsize=1)
 def get_summarizer():
     """LLM narrative labeller. Needs an API key, not a checkpoint."""
     from app.config import get_api_settings
@@ -344,7 +297,6 @@ def reset() -> None:
         get_embedder,
         get_post_scorer,
         get_bot_scorer,
-        get_deepfake_detector,
         get_summarizer,
     ):
         loader.cache_clear()

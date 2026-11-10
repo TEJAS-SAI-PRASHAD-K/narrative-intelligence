@@ -1,11 +1,10 @@
 """Which class means "bad"? Resolved from the checkpoint, never assumed.
 
-Both resolvers covered here read a pretrained model's own ``id2label`` to find
+The resolver covered here reads a pretrained model's own ``id2label`` to find
 out which logit position carries the class this project cares about. Getting it
-backwards is the worst error either module could make -- a confident
-"authentic" for every manipulated clip, or `support` reported where the text
-says `deny` -- and no aggregate metric makes it obvious: an AUC near 0 reads as
-a bad model rather than a flipped sign.
+backwards is the worst error the module could make -- `support` reported where
+the text says `deny` -- and no aggregate metric makes it obvious: an AUC near 0
+reads as a bad model rather than a flipped sign.
 
 So the contract is: resolve it, or refuse. Never guess.
 """
@@ -14,47 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from modeling.media.deepfake_clf import DeepfakeScorer
 from modeling.text.stance_clf import StanceClassifier
-
-
-# --- deepfake: real vs manipulated -----------------------------------------
-@pytest.mark.parametrize(
-    "id2label,expected",
-    [
-        ({0: "Real", 1: "Fake"}, 1),
-        ({0: "Fake", 1: "Real"}, 0),
-        ({0: "Realism", 1: "Deepfake"}, 1),
-        ({"0": "authentic", "1": "manipulated"}, 1),
-        ({0: "REAL", 1: "FAKE"}, 1),
-    ],
-)
-def test_fake_index_resolves_across_label_vocabularies(id2label, expected):
-    """Checkpoints disagree on wording; all of these occur on the Hub."""
-    assert DeepfakeScorer()._resolve_fake_index(id2label) == expected
-
-
-def test_realism_is_not_matched_as_ai_generated():
-    """"Realism" contains no real/fake ambiguity but does contain "ai"...
-
-    ...via "Deepfake"'s sibling hint list. Real hints are matched first for
-    exactly this reason, so "Realism" must land on the authentic side.
-    """
-    assert DeepfakeScorer()._resolve_fake_index({0: "Realism", 1: "Deepfake"}) == 1
-
-
-@pytest.mark.parametrize(
-    "id2label",
-    [
-        {},
-        {0: "LABEL_0", 1: "LABEL_1"},            # the unhelpful HF default
-        {0: "Real", 1: "Fake", 2: "Fake"},        # ambiguous: two fake classes
-        {0: "cat", 1: "dog"},                     # not a forensics head at all
-        {0: "Fake"},                              # one-sided
-    ],
-)
-def test_an_unreadable_head_is_refused_rather_than_guessed(id2label):
-    assert DeepfakeScorer()._resolve_fake_index(id2label) is None
 
 
 # --- stance: the three-way NLI head ----------------------------------------

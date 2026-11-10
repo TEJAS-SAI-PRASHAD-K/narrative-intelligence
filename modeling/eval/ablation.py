@@ -1,7 +1,7 @@
 """Module ablation: what does each signal actually contribute?
 
 Run the pipeline with each module disabled in turn -- text only, +accounts,
-+media, +coordination -- and report how detection quality changes on a held-out
++coordination -- and report how detection quality changes on a held-out
 set of hand-labelled narratives.
 
 ================================================================================
@@ -20,8 +20,8 @@ Three properties make it fit for measurement and unfit for shipping:
 * **Equal weights.** No component is privileged, because privileging one is
   exactly the product decision this phase is not making.
 * **Null-aware.** A missing component is dropped from the mean rather than
-  imputed to zero. A record with no deepfake score is not a record with a
-  deepfake score of zero.
+  imputed to zero. A record with no bot score is not a record with a
+  bot score of zero.
 * **Rank-oriented.** It is evaluated by agreement with hand labels on ranking,
   not by absolute calibration, because an unweighted mean of calibrated
   probabilities is not itself calibrated.
@@ -50,7 +50,6 @@ CONFIGURATIONS: dict[str, tuple[str, ...]] = {
     "text only": ("misinfo", "toxicity"),
     "+ accounts": ("misinfo", "toxicity", "bot"),
     "+ coordination": ("misinfo", "toxicity", "bot", "coordination"),
-    "+ media": ("misinfo", "toxicity", "bot", "coordination", "deepfake"),
 }
 
 PROVISIONAL_FUSION_WARNING = (
@@ -238,7 +237,6 @@ def _narrative_components(store: ScoredStore, narratives: pd.DataFrame) -> pd.Da
     membership = store.read("narrative_membership")
     record_scores = store.read("record_scores")
     author_scores = store.read("author_scores")
-    media_scores = store.read("media_scores")
 
     frame = pd.DataFrame(index=narratives["narrative_id"].astype(str))
     frame["misinfo"] = narratives.set_index(
@@ -267,12 +265,6 @@ def _narrative_components(store: ScoredStore, narratives: pd.DataFrame) -> pd.Da
                 if source in exploded.columns:
                     frame[target] = grouped[source].max().reindex(frame.index)
 
-    if len(media_scores) and len(membership):
-        joined = membership.merge(media_scores, on="record_id", how="inner")
-        if len(joined) and "deepfake_prob" in joined.columns:
-            frame["deepfake"] = (
-                joined.groupby("narrative_id")["deepfake_prob"].max().reindex(frame.index)
-            )
     return frame
 
 

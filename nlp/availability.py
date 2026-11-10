@@ -34,7 +34,6 @@ _MODULE_KEYS: dict[str, str | None] = {
     "stance": "stance",
     "aux": None,
     "bot": "bot",
-    "deepfake": "deepfake",
     "summarize": "summarize",
     "compass": None,
 }
@@ -48,7 +47,6 @@ _SCORED_TABLE: dict[str, str] = {
     "stance": "record_scores",
     "aux": "record_scores",
     "bot": "author_scores",
-    "deepfake": "media_scores",
     "cluster": "narratives",
     "summarize": "narratives",
 }

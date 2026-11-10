@@ -103,9 +103,10 @@ def test_split_result_rejects_overlapping_index_sets():
 
 
 def test_video_frame_split_leakage_is_detected():
-    """Deepfake-specific: frames of one source video must not straddle the split.
+    """Frames of one source video must not straddle the split.
 
-    This is the exact mechanism behind implausible 99% deepfake accuracies.
+    Adjacent frames of one clip are near-duplicates, so a random split inflates every
+    metric. The group key must be the source video, not the frame.
     """
     frames = pd.DataFrame(
         [

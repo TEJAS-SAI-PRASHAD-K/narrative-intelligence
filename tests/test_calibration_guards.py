@@ -106,7 +106,7 @@ def test_metadata_only_directory_is_not_a_mounted_model(tmp_path):
     ["model.safetensors", "pytorch_model.bin", "model.pt", "estimator.pkl"],
 )
 def test_every_serialization_this_project_writes_counts_as_weights(tmp_path, weight_file):
-    """The bot module writes a pickle and deepfake writes a .pt; both count."""
+    """Every weight format that a module writes counts, pickles and .pt files included."""
     from nlp.availability import _has_weights
 
     directory = tmp_path / "module" / "v1"

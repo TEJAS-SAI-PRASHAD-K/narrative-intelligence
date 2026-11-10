@@ -13,6 +13,8 @@
 | + coordination | misinfo, toxicity, bot, coordination | 21 | — | — | no hand labels; bot contributed nothing (0% coverage) |
 | + media | misinfo, toxicity, bot, coordination, deepfake | 21 | — | — | no hand labels; bot, deepfake contributed nothing (0% coverage) |
 
+Note: the `+ media` row comes from the deepfake module, which the repository removed later. The row stays as a measured result. The current code no longer computes it.
+
 ## Component coverage
 
 The share of narratives for which each component produced a value. A component at 0% contributes nothing to its configuration, and its row in the table above is therefore identical to the row below it — that is information, not a bug.

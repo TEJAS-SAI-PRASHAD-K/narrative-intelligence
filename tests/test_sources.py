@@ -532,7 +532,7 @@ class TestYouTubeMapping:
         assert engagement.likes is None and engagement.replies is None
 
     def test_media_url_is_the_watchable_video(self, youtube, youtube_payloads):
-        # Phase 2's deepfake module needs something fetchable, not a thumbnail.
+        # A fetchable watch page, not a thumbnail.
         assert youtube.to_record(youtube_payloads[0]).media_urls == [
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         ]

@@ -286,8 +286,7 @@ class YouTubeSource(BaseSource):
                 replies=_as_int(stats.get("commentCount")),
                 views=_as_int(stats.get("viewCount")),
             ),
-            # The video URL itself: this is the hook for the Phase 2 deepfake
-            # module, which needs something fetchable, not a thumbnail.
+            # The watch page of the video itself, not a thumbnail.
             media_urls=[WATCH_URL.format(video_id=video_id)],
             raw={
                 "kind": "video",

@@ -42,7 +42,6 @@ CAPABILITIES: tuple[str, ...] = (
     "stance",
     "aux",
     "bot",
-    "deepfake",
     "summarize",
     "compass",
 )
@@ -152,20 +151,6 @@ class Clusterer(Protocol):
     info: ModelInfo
 
     def fit_predict(self, vectors: np.ndarray, **kwargs: Any) -> dict[str, Any]: ...
-
-
-@runtime_checkable
-class DeepfakeDetector(Protocol):
-    """Xception over sampled frames.
-
-    ``explanation`` is a required field of the return, not a nicety: the UI spec
-    is explicit that a bare probability is not an acceptable answer to "is this
-    video fake".
-    """
-
-    info: ModelInfo
-
-    def analyze(self, path: str, **kwargs: Any) -> dict[str, Any]: ...
 
 
 @runtime_checkable

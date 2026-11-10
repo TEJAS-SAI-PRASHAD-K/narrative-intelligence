@@ -97,9 +97,9 @@ class LayaAvailability:
 class LayaScorer:
     """Scores records with Laya, routing by language to a checkpoint.
 
-    Lazy-imports ``laya`` and degrades with a clear message, matching how
-    `modeling/media/*` treats the deepfake tree: a missing optional dependency
-    marks the module unavailable rather than breaking an import chain.
+    Lazy-imports ``laya`` and degrades with a clear message: a missing
+    optional dependency marks the module unavailable rather than breaking an
+    import chain.
     """
 
     module: str = "laya"

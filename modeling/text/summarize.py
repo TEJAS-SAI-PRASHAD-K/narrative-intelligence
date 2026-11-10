@@ -3,7 +3,7 @@
 **The policy, restated because it is easy to erode.** An LLM is permitted here
 for exactly two bounded tasks: labelling a narrative cluster, and extracting a
 claim from a noisy representative post. It is forbidden as a classifier for
-misinformation, bot-likeness, toxicity, sentiment, stance or deepfake. The
+misinformation, bot-likeness, toxicity, sentiment or stance. The
 reasons are not stylistic:
 
 * it is not reproducible run to run, so a reported metric cannot be defended;
