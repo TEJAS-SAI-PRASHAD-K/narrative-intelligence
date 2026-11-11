@@ -563,7 +563,8 @@ def overview_kpis(spec: FilterSpec):
 
     posts = apply_post_filters(corpus().posts, spec)
     scored = [p for p in posts if p.scores and p.scores.get("sentiment")]
-    engagement = sum(v for p in posts for v in (p.likes, p.shares, p.replies) if v is not None)
+    measured = [v for p in posts for v in (p.likes, p.shares, p.replies) if v is not None]
+    engagement = sum(measured) if measured else None
     negative = sum(1 for p in scored if p.scores["sentiment"] == "negative")
     positive = sum(1 for p in scored if p.scores["sentiment"] == "positive")
     # positive - negative, matching the breakdown endpoint exactly. These two
@@ -821,22 +822,23 @@ def overview_engagements_breakdown(spec: FilterSpec):
         and p.scores["misinfo_likelihood"] > 0.7
     }
 
-    def total(attr: str, subset=None) -> int:
+    def total(*attrs: str, subset=None) -> int | None:
         rows = subset if subset is not None else posts
-        return sum(getattr(p, attr) or 0 for p in rows)
+        measured = [getattr(p, a) for p in rows for a in attrs if getattr(p, a) is not None]
+        return sum(measured) if measured else None
 
     on_high_risk = [p for p in posts if p.id in high_risk]
     return EngagementsBreakdown(
         total=_metric(
             "engagements",
-            total("likes") + total("shares") + total("replies"),
+            total("likes", "shares", "replies"),
             "Total engagements",
             nullable_fields=["views"],
             sample_size=len(posts),
         ),
         on_high_risk=_metric(
             "engagements",
-            total("likes", on_high_risk) + total("shares", on_high_risk),
+            total("likes", "shares", subset=on_high_risk),
             "On high-risk posts",
             sample_size=len(on_high_risk),
         ),

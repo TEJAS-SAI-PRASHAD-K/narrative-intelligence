@@ -40,7 +40,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,6 +99,11 @@ class EmbeddingResult:
         }
 
 
+def cache_slug(model_name: str, version: str) -> str:
+    """The file stem of one model+version's cache: ``<slug>.npy``, ``<slug>.keys.json``."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", f"{model_name}-{version}").strip("-").lower()
+
+
 class EmbeddingCache:
     """On-disk cache: one ``.npy`` matrix plus a key index per model+version.
 
@@ -116,9 +123,11 @@ class EmbeddingCache:
         self.model_name = model_name
         self.version = version
         self.dim = dim
-        slug = re.sub(r"[^a-zA-Z0-9]+", "-", f"{model_name}-{version}").strip("-").lower()
+        slug = cache_slug(model_name, version)
         self.matrix_path = self.settings.embeddings_dir / f"{slug}.npy"
         self.index_path = self.settings.embeddings_dir / f"{slug}.keys.json"
+        #: record id -> cache key of the prepared text that was embedded for it.
+        self.ids_path = self.settings.embeddings_dir / f"{slug}.ids.json"
         self._keys: dict[str, int] = {}
         self._matrix: np.ndarray | None = None
         self._pending: list[tuple[str, np.ndarray]] = []
@@ -136,18 +145,17 @@ class EmbeddingCache:
             )
             self._keys, self._matrix = {}, None
             return
-        if matrix.shape[1] != self.dim or matrix.shape[0] != len(self._keys):
+        if matrix.ndim != 2 or matrix.shape[1] != self.dim or matrix.shape[0] != len(self._keys):
             # A dimension change means a different model wrote this file. Do not
             # try to reconcile: silently mixing 384- and 768-dim vectors would
-            # produce a centroid nobody could debug.
-            log.warning(
-                "embedding cache %s has shape %s but this model is %d-dim with %d keys; "
-                "discarding the cache",
-                self.matrix_path,
-                matrix.shape,
-                self.dim,
-                len(self._keys),
-            )
+            # produce a centroid nobody could debug. A row/key count mismatch means the
+            # matrix and the index were not written together; no row can be trusted.
+            if matrix.ndim == 2 and matrix.shape[1] == self.dim:
+                reason = f"{matrix.shape[0]} matrix rows but {len(self._keys)} keys"
+            else:
+                reason = f"matrix shape {matrix.shape} does not fit {self.dim}-dim vectors"
+            log.warning("embedding cache %s is inconsistent (%s); discarding it",
+                        self.matrix_path, reason)
             self._keys, self._matrix = {}, None
             return
         self._matrix = matrix
@@ -163,13 +171,95 @@ class EmbeddingCache:
             return None
         return self._matrix[index]
 
+    def link_ids(self, entries: dict[str, tuple[str, str]]) -> int:
+        """Record which cache row belongs to which record id.
+
+        The cache is keyed by the prepared (possibly truncated) text, so a consumer holding
+        only the raw text cannot find the row of a long record. ``entries`` maps record id
+        to ``(prepared, raw)``: the exact text that was embedded and the record's raw text.
+        The id map stores ``{"key": key(prepared), "text_hash": key(raw)}``. The raw hash
+        lets a consumer see that a record kept its id but changed its text since.
+
+        Merges into the file already on disk, so an earlier run's ids survive. An id that
+        appears again takes its new entry. Returns the number of ids written. A text that is
+        not in the cache is skipped and logged, because a link to a missing row would be
+        a stale pointer from the first write.
+        """
+        links: dict[str, dict[str, str]] = {}
+        absent = 0
+        for record_id, (prepared, raw) in entries.items():
+            key = self.key(prepared)
+            if key in self._keys:
+                links[record_id] = {"key": key, "text_hash": self.key(raw)}
+            else:
+                absent += 1
+        if absent:
+            log.warning(
+                "%s: %d record(s) not linked by id because their text is not in the cache",
+                self.ids_path.name,
+                absent,
+            )
+        if not links:
+            return 0
+        merged = self._read_ids()
+        merged.update(links)
+        self._atomic_write_json(self.ids_path, merged)
+        return len(links)
+
+    def _read_ids(self) -> dict[str, Any]:
+        if not self.ids_path.exists():
+            return {}
+        try:
+            existing = json.loads(self.ids_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            # Overwriting an unreadable map would drop earlier ids without a trace; the
+            # rebuilt map covers only this run, and the log says so.
+            log.warning("%s is unreadable (%s); earlier ids are lost", self.ids_path.name, exc)
+            return {}
+        if not isinstance(existing, dict):
+            log.warning("%s is not an object; earlier ids are lost", self.ids_path.name)
+            return {}
+        return existing
+
+    @staticmethod
+    def _atomic_write_json(path: Path, body: Any) -> None:
+        """Write to a uniquely named sibling temp file, then rename over the target.
+
+        A reader never sees half a file, and two processes writing at once cannot share a
+        temp name.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f"{path.name}.", suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp = Path(handle.name)
+            try:
+                handle.write(json.dumps(body))
+            except BaseException:
+                handle.close()
+                tmp.unlink(missing_ok=True)
+                raise
+        try:
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
     def put(self, text: str, vector: np.ndarray) -> None:
         self._pending.append((self.key(text), vector.astype(np.float32)))
 
     def flush(self) -> None:
         if not self._pending:
             return
-        fresh = [(k, v) for k, v in self._pending if k not in self._keys]
+        # One row per new key. A batch can repeat a prepared text, and every repeat of a key
+        # carries the same vector, so the first one is kept. Appending each repeat would
+        # leave rows with no key, and the cache would then fail its own rows == keys check.
+        fresh_by_key: dict[str, np.ndarray] = {}
+        for key, vector in self._pending:
+            if key not in self._keys:
+                fresh_by_key.setdefault(key, vector)
+        fresh = list(fresh_by_key.items())
         self._pending = []
         if not fresh:
             return
@@ -358,6 +448,7 @@ class Embedder:
         """
         skipped: dict[str, str] = {}
         keep_ids: list[str] = []
+        raw_texts: list[str] = []
         prepared: list[str] = []
         truncated: list[bool] = []
 
@@ -372,6 +463,7 @@ class Embedder:
                 skipped[record_id] = "text_too_short"
                 continue
             keep_ids.append(record_id)
+            raw_texts.append(str(text))
             prepared.append(cleaned)
             truncated.append(was_truncated)
 
@@ -387,6 +479,9 @@ class Embedder:
             )
 
         vectors = self.embed_texts(prepared)
+        self.cache.link_ids(
+            dict(zip(keep_ids, zip(prepared, raw_texts, strict=True), strict=True))
+        )
         result = EmbeddingResult(
             vectors=vectors,
             record_ids=keep_ids,

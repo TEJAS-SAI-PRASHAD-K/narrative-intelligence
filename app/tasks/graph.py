@@ -119,8 +119,19 @@ DO UPDATE SET
 
 
 @celery.task(name="graph.build_edges", base=TrackedTask, bind=True)
-def build_edges(self, *, job_id: str | None = None, project_id: str = "", **params: Any) -> dict:
-    """Materialise the interaction graph for a project."""
+def build_edges(
+    self,
+    *,
+    job_id: str | None = None,
+    project_id: str = "",
+    dispatch_communities: bool = True,
+    **params: Any,
+) -> dict:
+    """Materialise the interaction graph for a project.
+
+    ``dispatch_communities=False`` skips the broker follow-up. An in-process caller that
+    runs ``communities`` itself, such as ``make seed``, passes it so that no broker is needed.
+    """
     from sqlalchemy import text
 
     from app.config import get_api_settings
@@ -161,10 +172,15 @@ def build_edges(self, *, job_id: str | None = None, project_id: str = "", **para
                 {"p": resolved},
             ).scalar()
 
-    result = {"written": counts, "total_edges": total}
+    result = {
+        "written": counts,
+        "total_edges": total,
+        "communities_dispatched": dispatch_communities,
+    }
 
     # Communities depend on the edges that just landed.
-    celery.send_task("graph.communities", kwargs={"project_id": project_id}, queue="cpu")
+    if dispatch_communities:
+        celery.send_task("graph.communities", kwargs={"project_id": project_id}, queue="cpu")
 
     report_progress(job_id, 1.0, result=result)
     return result

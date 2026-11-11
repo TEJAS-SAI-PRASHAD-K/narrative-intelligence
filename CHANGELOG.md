@@ -52,6 +52,17 @@ decision.
   while still passing the value through.
 - **NewsAPI's hardcoded `language="en"`** is config-driven, with the reason it
   stays English recorded: NewsAPI's supported set has no Hindi.
+- **`make seed` failed without a broker.** The graph step ran through a broker. The seed
+  step now runs edges and communities in-process.
+- **The loader gave 879 of 957 real posts no vector.** It matched cached embeddings only by
+  text. The embedder now writes `{slug}.ids.json`, and the loader maps by record id. It
+  checks a text hash and loads only the configured embedder's cache. It refuses an
+  inconsistent cache, and it counts each miss by reason.
+- **The embedding cache failed its own check and was discarded on every run.** It appended
+  two rows when a batch repeated a text. It now appends one row per key. An existing cache
+  with the extra row is rebuilt once.
+- **The engagements KPI and its breakdown reported 0 when no post measured the metric.**
+  They now report null.
 
 ### Changed
 

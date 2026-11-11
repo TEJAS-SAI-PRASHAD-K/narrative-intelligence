@@ -60,6 +60,16 @@ def _filtered_post_ids(spec: FilterSpec, project_id: uuid.UUID) -> Select:
     return apply_post_filters(select(Post.id).select_from(Post), spec, project_id)
 
 
+def _sum_measured(*values):
+    """Sum the measured values, or None when none of them was measured.
+
+    SQL SUM over only-NULL rows is NULL, which means "no platform exposes this",
+    and reporting it as 0 would state a measured zero.
+    """
+    measured = [v for v in values if v is not None]
+    return sum(measured) if measured else None
+
+
 async def kpi_bundle(session: AsyncSession, spec: FilterSpec) -> KpiBundle:
     from app.models.corpus import Post, PostScore
 
@@ -83,7 +93,7 @@ async def kpi_bundle(session: AsyncSession, spec: FilterSpec) -> KpiBundle:
         )
     ).one()
     posts, authors, likes, shares, replies, first, last = row
-    engagement = sum(v for v in (likes, shares, replies) if v is not None)
+    engagement = _sum_measured(likes, shares, replies)
 
     sentiment_rows = dict(
         (
@@ -690,19 +700,31 @@ async def engagements_breakdown(session: AsyncSession, spec: FilterSpec):
 
     high_risk = (
         await session.execute(
-            select(func.sum(func.coalesce(Post.likes, 0) + func.coalesce(Post.shares, 0)))
+            select(
+                func.sum(func.coalesce(Post.likes, 0) + func.coalesce(Post.shares, 0)),
+                func.count(Post.likes) + func.count(Post.shares),
+            )
             .select_from(Post)
             .join(PostScore, PostScore.post_id == Post.id)
             .where(scoped, PostScore.misinfo_likelihood > 0.7)
         )
-    ).scalar()
+    ).one()
+    high_risk, high_risk_measured = high_risk
+    if not high_risk_measured:
+        # The per-row COALESCE makes the SUM 0 even when no input was measured.
+        high_risk = None
 
     def metric(value, label, definition, **kwargs):
-        return Metric(value=int(value or 0), label=label, definition=definition, **kwargs)
+        return Metric(
+            value=None if value is None else int(value),
+            label=label,
+            definition=definition,
+            **kwargs,
+        )
 
     return EngagementsBreakdown(
         total=metric(
-            (likes or 0) + (shares or 0) + (replies or 0),
+            _sum_measured(likes, shares, replies),
             "Total engagements",
             DEFINITIONS["engagements"],
             nullable_fields=["views"],

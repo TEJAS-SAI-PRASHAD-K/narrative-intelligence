@@ -16,7 +16,7 @@ the module being quietly described as present.
 | source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
-| fact-check verdicts | partial | 2 of 4 extraction tiers, 4 of 8 publishers, sitemap backfill for Vishvas News |
+| fact-check verdicts | partial | 1108 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News backfill ran 7 times and the archive is not fully read |
 | embeddings and clustering | done | MiniLM, HDBSCAN, narrative identity across runs |
 | misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
 | stance classifier | fine-tuned | macro-F1 0.797 on the FNC-1 competition test set, see the model card |
@@ -28,6 +28,7 @@ the module being quietly described as present.
 | API | done | 66 paths, 77 operations, contract tested under `DEMO_MODE` |
 | database | done | 26 tables, 5 migrations, round-trip asserted in CI |
 | deepfake module | removed | code, API, table and dependency tree are gone. `maint.purge_uploads` stays until every deployment has passed one retention window |
+| first real load into Postgres | done | 957 news records, 3 narratives, scored by all four layers, fusion `fusion-v1.2.0` runs, see below |
 | dashboard | done | separate repo, built against the committed contract |
 | CI | done | lint, suite on 3.11 and 3.12, OpenAPI drift, Postgres suite |
 
@@ -39,12 +40,26 @@ configured feeds gave 548 records across 16 domains, split 454 English, 90 Hindi
 and rejected candidates are recorded in `configs/sources.yaml` with the reason,
 so "why is this outlet missing" has an answer.
 
-**Fact-check extraction produces bilingual supervision.** 96 verdicts from 111
-eligible records: BOOM 55, The Quint WebQoof 29, Vishvas News 8, Fact Crescendo
-4. Vishvas News and Fact Crescendo supply claims in Devanagari, so this path
-yields Hindi labels and not merely Hindi text. The corpus and the verdicts are not
-in the repo. RSS feeds hold only recent entries, so a new run does not produce the
-same 96 verdicts.
+**Fact-check extraction produces bilingual supervision.** The file holds 1108 verdicts:
+Vishvas News 1012, BOOM 53, The Quint WebQoof 38, Fact Crescendo 5. The claim language is
+Hindi for 1017, English for 90 and one other. Every verdict has the label false. The
+rating is `False` for 1105 verdicts and `Altered` for 3. Vishvas News and Fact Crescendo
+supply claims in Devanagari, so this path yields Hindi labels and not merely Hindi text.
+The corpus and the verdicts are not in the repo.
+
+**The first real load into Postgres ran on real data.** The corpus has 957 news records:
+English 716, Hindi 233, Telugu 4 and 4 in other languages. It has 17 authors (one per
+outlet) and 124 domains. All 957 records have a score row, and fusion `fusion-v1.2.0`
+ran. English toxicity, sentiment, emotion and misinfo cover all 716 records, and stance
+covers 83. The Laya stage scored all 233 Hindi titles. Toxicity, sentiment, emotion and
+stance scored no Hindi record, because those models are English only.
+
+Clustering found 3 narratives, and 67 percent of records are noise. One narrative is
+almost all Hindi (218 posts). The fusion scores are 26.6, 22.5 and 15.3, so all 3
+narratives are low priority. The coordination detector found no edges, so the network
+graph is empty. No news site exposes likes, shares, replies or views, so the engagements
+KPI is null and not 0. Every GET endpoint that the check could fill returned without a
+server error.
 
 **The API serves the full contract without a database.** All contract tests pass
 under `DEMO_MODE=1`, and `make openapi-check` holds the committed `openapi.json`
@@ -107,7 +122,7 @@ At the default threshold of 0.5, the gap between roberta and TF-IDF is 0.033. ro
 ### How to report the fact-check evaluation
 
 `data/factchecks/factchecks.parquet` is an **evaluation set, never a training set**. Published
-fact-checks are single-class: the measured split is 96 false and 0 true, because
+fact-checks are single-class: the measured split is 1108 false and 0 true, because
 debunking a viral falsehood is news and confirming a true claim is not. Nothing
 can be trained on one class.
 
@@ -123,9 +138,10 @@ lift = recall on known-false claims / flag rate on the whole corpus
 85 percent flag rate is a model that learned to say "false", and the recall
 figure alone cannot distinguish them.
 
-Report English and Hindi separately. Of the 96 claims, 83 are English and 12 are
-Hindi, so the Hindi estimate rests on 12 items and the interval must be shown
-rather than the point estimate alone. The roberta fine-tune and TF-IDF cannot
+Report English and Hindi separately. Of the 1108 verdicts, 1017 claims are Hindi, 90 are
+English and one is in another language. The frozen evaluation set still has 349 claims,
+and 261 of them are Hindi. The Hindi estimate rests on those 261 claims, so show the
+interval and not the point estimate alone. The roberta fine-tune and TF-IDF cannot
 score the Hindi subset at all. That asymmetry is the result, and "no score" is
 the honest entry in that cell, not a zero.
 
@@ -133,19 +149,23 @@ the honest entry in that cell, not a zero.
 
 ### Ingestion
 
-- **Hindi fact-check backfill.** The Hindi evaluation gate needs at least 50 Hindi
-  claims, and the corpus has 13. RSS feeds hold only recent items. The command
+- **Hindi fact-check backfill.** The Vishvas News backfill ran 7 times on 2026-11-11.
+  The new verdicts per run were 210, 164, 125, 96, 73, 49 and 37. About 170 URLs and 12
+  sitemaps are still unread, so the archive is not fully read. Each run reads at most 300
+  URLs (`backfill.max_urls_per_publisher`). The evaluation manifest
+  `configs/factcheck_eval_manifest.csv` is still frozen at 349 claims. The reported
+  comparison and the Hindi gate result do not include the new claims. To use them, freeze
+  the manifest again and rerun the comparison on a GPU host. The command
   `python -m ingest.cli factchecks --backfill` reads publisher sitemaps and sends each
-  archive URL through the tier 1 ClaimReview path. Vishvas News is configured. The
-  operator runs the backfill on the data host. Until that run, the Hindi count is
-  not changed. The backfill budget is `backfill.max_urls_per_publisher`. It is separate
-  from `fetch.max_articles`. The Vishvas entry sets `claim_languages: [hi]`, so the
-  backfill writes no English or Marathi row. The Hindi set will then come mostly from one
-  publisher. A Hindi result will therefore reflect the claims that Vishvas News chose to
-  check, not Hindi misinformation in general. Fact Crescendo and the BOOM Hindi site are not configured. Fact Crescendo
-  shows a ClaimReview on only some pages. The BOOM Hindi site lists only the newest
-  articles in its sitemaps. To add a publisher, add a `backfill` block to
-  `configs/factcheck.yaml`. No code change is necessary.
+  archive URL through the tier 1 ClaimReview path. The operator runs it on the data host.
+  The budget is separate from `fetch.max_articles`. The Vishvas entry sets
+  `claim_languages: [hi]`, so the backfill writes no English or Marathi row. The Hindi set
+  therefore comes mostly from one publisher. A Hindi result reflects the claims that
+  Vishvas News chose to check, not Hindi misinformation in general. Fact Crescendo and
+  the BOOM Hindi site are not configured. Fact Crescendo shows a ClaimReview on only some
+  pages. The BOOM Hindi site lists only the newest articles in its sitemaps. To add a
+  publisher, add a `backfill` block to `configs/factcheck.yaml`. No code change is
+  necessary.
 - **Fact-check extraction tiers 3 and 4.** Newschecker publishes no JSON-LD but
   renders a visible `Claim` block in the article body. Alt News and Factly
   publish neither, and their verdict lives in the headline predicate. Tier 3
@@ -156,11 +176,11 @@ the honest entry in that cell, not a zero.
   the target domain, and the cheapest large source still missing.
 - **Replace the YouTube Data API with yt-dlp.** Removes the only hard API-key
   dependency and the 10,000 unit daily quota, and additionally yields subtitles.
-- **Cross-publisher claim deduplication over longer windows.** The current
-  96-claim set has zero near-duplicates at the project's own Hamming threshold,
-  but the same claim gets debunked by several publishers within days, so a longer
-  collection window will produce them. Only `claim_simhash` is stored today,
-  and no code compares claims yet.
+- **Cross-publisher claim deduplication over longer windows.** A 96-claim
+  set measured earlier had zero near-duplicates at the project's own Hamming threshold.
+  The set of 1108 verdicts is not measured. Several publishers often debunk the same claim
+  within days, so a longer collection window will produce near-duplicates. Only
+  `claim_simhash` is stored today, and no code compares claims yet.
 
 ### Modeling
 
@@ -173,7 +193,10 @@ the honest entry in that cell, not a zero.
   sheet with no model score in it. Label the `label` column by hand, then
   `modeling.cli evaluate misinfo` reports the transfer section. Blank labels are
   not 0, null scores are excluded with a reason, and no metric is computed below
-  `MIN_LABELLED_ROWS` (50) labelled rows.
+  `MIN_LABELLED_ROWS` (50) labelled rows. The English sample sheet exists.
+  `modeling.cli sample-for-labelling misinfo --n 100` wrote 100 English records on
+  2026-11-11. The sample excludes 241 records that the misinfo stage cannot score. No row
+  has a label yet.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination
@@ -186,9 +209,10 @@ the honest entry in that cell, not a zero.
   files that a deployment stored before the removal. Remove the task, its beat
   schedule, `uploads_dir` and `media_retention_hours` after every deployment has
   passed one retention window.
-- **Surface the language gate in the dashboard.** The scored tables cover a
-  subset of the corpus while Hindi goes unscored, and nothing in the interface
-  currently says so.
+- **Sum engagement without a per-row zero in chart series.** The chart and drilldown
+  series in `app/repositories/overview.py` (timeseries), `drivers.py`, `actors.py` and
+  `narratives.py` sum engagement with a per-row `coalesce(..., 0)`. An all-NULL bucket
+  still shows 0 and not null.
 
 ### Known gaps that are not scheduled
 

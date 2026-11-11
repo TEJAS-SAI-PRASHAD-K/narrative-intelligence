@@ -149,7 +149,8 @@ def _build_graph(session: Session, project_id, slug: str) -> dict:
     from app.tasks.graph import build_edges, communities
 
     session.commit()  # the tasks open their own sessions
-    edges = build_edges.run(job_id=None, project_id=slug)
+    # communities runs on the next line, so the chained broker dispatch would only duplicate it.
+    edges = build_edges.run(job_id=None, project_id=slug, dispatch_communities=False)
     community = communities.run(job_id=None, project_id=slug)
     return {"edges": edges, "communities": community}
 
