@@ -20,6 +20,7 @@ from modeling.text import embed as E
 from tests.conftest_api import requires_postgres
 from tests.test_embed_alternative import FakeEncoder
 
+DEFAULT_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LONG_TEXT = " ".join(f"Sentence number {i} about the claim under study." for i in range(120))
 
 
@@ -402,3 +403,45 @@ def test_an_unreadable_id_map_is_named_in_the_warning(project, settings, tmp_pat
         load_embeddings(session, settings.data_dir, project)
     assert "id_map_unreadable=1" in caplog.text
     assert "id map absent" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# a batch that repeats a text
+# ---------------------------------------------------------------------------
+SAME = "Two records share exactly this text."
+
+
+def test_a_repeated_text_in_one_batch_gets_one_row_and_one_key(settings):
+    embedder = _embed(settings, {"news:a": SAME, "news:b": SAME, "news:c": "Another post."})
+
+    keys = json.loads(embedder.cache.index_path.read_text(encoding="utf-8"))
+    matrix = np.load(embedder.cache.matrix_path)
+    assert len(keys) == 2 and matrix.shape[0] == 2
+    assert sorted(keys.values()) == [0, 1]
+
+
+def test_a_cache_with_repeated_texts_survives_a_reload(settings, caplog):
+    _embed(settings, {"news:a": SAME, "news:b": SAME})
+
+    with caplog.at_level("WARNING"):
+        reloaded = E.EmbeddingCache(DEFAULT_NAME, E.Embedder(settings).version, 384, settings)
+    assert reloaded.get(SAME) is not None
+    assert "discarding" not in caplog.text
+
+
+def test_both_records_of_a_duplicate_pair_resolve_to_the_shared_row(settings):
+    embedder = _embed(settings, {"news:a": SAME, "news:b": SAME})
+    keys = json.loads(embedder.cache.index_path.read_text(encoding="utf-8"))
+    ids = json.loads(embedder.cache.ids_path.read_text(encoding="utf-8"))
+
+    matches, misses = _resolve([("news:a", SAME), ("news:b", SAME)], keys, ids, len(keys))
+    assert matches == [("news:a", 0), ("news:b", 0)] and misses == {}
+
+
+def test_a_row_key_mismatch_warning_states_the_real_reason(settings, caplog):
+    embedder = _embed(settings, {"news:a": "First.", "news:b": "Second."})
+    np.save(embedder.cache.matrix_path, np.load(embedder.cache.matrix_path)[:1])
+
+    with caplog.at_level("WARNING"):
+        E.EmbeddingCache(embedder.model_name, embedder.version, 384, settings)
+    assert "1 matrix rows but 2 keys" in caplog.text

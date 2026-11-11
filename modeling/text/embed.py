@@ -145,18 +145,17 @@ class EmbeddingCache:
             )
             self._keys, self._matrix = {}, None
             return
-        if matrix.shape[1] != self.dim or matrix.shape[0] != len(self._keys):
+        if matrix.ndim != 2 or matrix.shape[1] != self.dim or matrix.shape[0] != len(self._keys):
             # A dimension change means a different model wrote this file. Do not
             # try to reconcile: silently mixing 384- and 768-dim vectors would
-            # produce a centroid nobody could debug.
-            log.warning(
-                "embedding cache %s has shape %s but this model is %d-dim with %d keys; "
-                "discarding the cache",
-                self.matrix_path,
-                matrix.shape,
-                self.dim,
-                len(self._keys),
-            )
+            # produce a centroid nobody could debug. A row/key count mismatch means the
+            # matrix and the index were not written together; no row can be trusted.
+            if matrix.ndim == 2 and matrix.shape[1] == self.dim:
+                reason = f"{matrix.shape[0]} matrix rows but {len(self._keys)} keys"
+            else:
+                reason = f"matrix shape {matrix.shape} does not fit {self.dim}-dim vectors"
+            log.warning("embedding cache %s is inconsistent (%s); discarding it",
+                        self.matrix_path, reason)
             self._keys, self._matrix = {}, None
             return
         self._matrix = matrix
@@ -253,7 +252,14 @@ class EmbeddingCache:
     def flush(self) -> None:
         if not self._pending:
             return
-        fresh = [(k, v) for k, v in self._pending if k not in self._keys]
+        # One row per new key. A batch can repeat a prepared text, and every repeat of a key
+        # carries the same vector, so the first one is kept. Appending each repeat would
+        # leave rows with no key, and the cache would then fail its own rows == keys check.
+        fresh_by_key: dict[str, np.ndarray] = {}
+        for key, vector in self._pending:
+            if key not in self._keys:
+                fresh_by_key.setdefault(key, vector)
+        fresh = list(fresh_by_key.items())
         self._pending = []
         if not fresh:
             return
