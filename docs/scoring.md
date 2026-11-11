@@ -235,7 +235,7 @@ The `laya` batch stage in `modeling/scoring.py` adds `record_scores.misinfo_prob
 
 The stage scores a record only when its language is in `scoring_languages` and `misinfo` did not score it. It never writes for English. It never overwrites a non-null `misinfo_prob`.
 
-The stage scores the title of the record, not the full text. The Hindi gate passed on titles with a lift of 2.233 [1.146, 6.605]. On Hindi full text, the same model has a flag rate of 0.331 and a lift of 0.232 [0.000, 0.805]. Full text is outside what the gate measured.
+The stage scores the title of the record, not the full text. The Hindi gate passed on titles with a lift of 1.834 [1.116, 3.981]. On Hindi full text, the same model has a flag rate of 0.284 and a lift of 0.367 [0.280, 0.487]. The upper limit is below 1. Full text is outside what the gate measured.
 
 The stage reads the title as the comparison script reads `corpus_title`. A record with no title gets a null value and the reason `laya:no_title`. The rule `text_too_short` applies to the title.
 

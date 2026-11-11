@@ -132,19 +132,19 @@ gap is the conservative figure.
 
 ### Fact-check set and the unlabelled corpus
 
-The set has 101 known-false claims, and the frozen manifest is
-`configs/factcheck_eval_manifest.csv`. This model scores the 88 English claims and
-skips the 13 Hindi claims with `unsupported_language`.
+The set has 1107 known-false claims, and the frozen manifest is
+`configs/factcheck_eval_manifest.csv`. This model scores the 90 English claims and
+skips the 1017 other claims with `unsupported_language`.
 
 | measure, English titles | `misinfo` v0.2.0 | TF-IDF + logreg |
 |---|---|---|
-| recall on known-false claims | 0.489 [0.386, 0.591] | 0.034 [0.000, 0.080] |
-| flag rate on 374 corpus titles | 0.115 [0.083, 0.150] | 0.003 [0.000, 0.008] |
-| lift | 4.250 [2.994, 6.072] | 12.750 [0.000, no upper limit] |
+| recall on known-false claims | 0.489 [0.389, 0.589] | 0.033 [0.000, 0.078] |
+| flag rate on 612 corpus titles | 0.108 [0.083, 0.132] | 0.002 [0.000, 0.005] |
+| lift | 4.533 [3.352, 6.146] | 20.400 [0.000, no upper limit] |
 
 A TF-IDF lift has no useful meaning here, because the model flags almost no corpus
 title. The fact-check set holds only claims that publishers chose to debunk. Lift is
-not accuracy on the corpus, and the corpus has no labels. These 374 titles come from
+not accuracy on the corpus, and the corpus has no labels. These 612 titles come from
 one source type in a short collection window.
 
 The operating threshold is a value of the comparison report. The scored tables hold
