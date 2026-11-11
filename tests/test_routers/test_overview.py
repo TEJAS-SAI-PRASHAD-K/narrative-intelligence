@@ -79,6 +79,78 @@ def test_engagement_sums_skip_nulls_rather_than_treating_them_as_zero(client, se
     assert body["authors"]["value"] == 3
 
 
+def _seed_engagement(project_id, rows):
+    from app.db import sync_session
+    from app.models.core import Project
+    from app.models.corpus import Post
+
+    base = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    with sync_session() as session:
+        session.add(Project(id=project_id, slug=f"eng-{project_id.hex[:8]}", name="Engagement"))
+        for index, (likes, shares, replies) in enumerate(rows):
+            session.add(
+                Post(
+                    id=f"news:{project_id.hex[:8]}:{index}",
+                    project_id=project_id,
+                    native_id=str(index),
+                    source="news_rss",
+                    source_detail="example.com",
+                    content_type="post",
+                    text_=f"post {index}",
+                    author_id=f"news:author{index}",
+                    author_handle=f"author{index}",
+                    timestamp=base + timedelta(hours=index),
+                    likes=likes,
+                    shares=shares,
+                    replies=replies,
+                    views=None,
+                )
+            )
+
+
+def _engagement_values(client, project_id, admin_key):
+    headers = {"X-API-Key": admin_key}
+    kpi = client.get(f"/api/v1/overview/kpis?project_id={project_id}", headers=headers).json()
+    breakdown = client.get(
+        f"/api/v1/overview/kpis/engagements?project_id={project_id}", headers=headers
+    ).json()
+    return kpi, breakdown
+
+
+@requires_postgres
+def test_engagements_are_null_when_no_post_measures_them(client, migrated_db, admin_key):
+    project_id = uuid.uuid4()
+    _seed_engagement(project_id, [(None, None, None)] * 3)
+    kpi, breakdown = _engagement_values(client, project_id, admin_key)
+
+    assert kpi["posts"]["value"] == 3
+    assert kpi["engagements"]["value"] is None
+    for key in ("total", "on_high_risk", "likes", "global_shares", "reactions", "views"):
+        assert breakdown[key]["value"] is None, key
+
+
+@requires_postgres
+def test_engagements_sum_only_the_measured_values(client, migrated_db, admin_key):
+    project_id = uuid.uuid4()
+    _seed_engagement(project_id, [(5, None, None), (None, 2, None), (None, None, None)])
+    kpi, breakdown = _engagement_values(client, project_id, admin_key)
+
+    assert kpi["engagements"]["value"] == 7
+    assert breakdown["total"]["value"] == 7
+
+
+@requires_postgres
+def test_a_measured_zero_engagement_stays_zero(client, migrated_db, admin_key):
+    project_id = uuid.uuid4()
+    _seed_engagement(project_id, [(0, None, None), (None, None, None)])
+    kpi, breakdown = _engagement_values(client, project_id, admin_key)
+
+    assert kpi["engagements"]["value"] == 0
+    assert breakdown["total"]["value"] == 0
+    assert breakdown["likes"]["value"] == 0
+    assert breakdown["global_shares"]["value"] is None
+
+
 @requires_postgres
 def test_net_sentiment_agrees_between_the_kpi_and_the_drilldown(client, seeded, admin_key):
     """Two numbers on one screen must not use opposite sign conventions.
