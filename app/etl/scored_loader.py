@@ -522,20 +522,81 @@ def load_network_edges(session: Session, scored_dir: Path, project_id: uuid.UUID
     return count or 0
 
 
+_EMBED_MISS_REASONS = (
+    "id_map_key_absent",
+    "id_map_row_out_of_range",
+    "text_key_row_out_of_range",
+    "no_cached_vector",
+)
+
+
+def _resolve_vector_rows(
+    posts: list[tuple[str, str | None]],
+    keys: dict[str, int],
+    ids: dict[str, str] | None,
+    row_count: int,
+    key_fn,
+) -> tuple[list[tuple[str, int]], dict[str, int]]:
+    """Map each post to a matrix row, or to a counted miss reason.
+
+    By id when ``ids`` has the post, else by the hash of its raw text. A stale id entry
+    is a miss and does not fall through to the text key: the id map is the authority for
+    that record, and a disagreement between the two is something to see, not to paper over.
+    """
+    matches: list[tuple[str, int]] = []
+    misses: dict[str, int] = dict.fromkeys(_EMBED_MISS_REASONS, 0)
+    for post_id, post_text in posts:
+        if ids is not None and post_id in ids:
+            row = keys.get(ids[post_id]) if isinstance(ids[post_id], str) else None
+            if row is None:
+                misses["id_map_key_absent"] += 1
+            elif not isinstance(row, int) or not 0 <= row < row_count:
+                misses["id_map_row_out_of_range"] += 1
+            else:
+                matches.append((post_id, row))
+            continue
+        row = keys.get(key_fn(post_text or ""))
+        if row is None:
+            misses["no_cached_vector"] += 1
+        elif not isinstance(row, int) or not 0 <= row < row_count:
+            misses["text_key_row_out_of_range"] += 1
+        else:
+            matches.append((post_id, row))
+    return matches, {reason: n for reason, n in misses.items() if n}
+
+
+def _read_id_map(ids_path: Path) -> dict[str, str] | None:
+    """The record-id map beside a cache, or None when absent or unusable."""
+    if not ids_path.exists():
+        return None
+    try:
+        body = json.loads(ids_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log.error("%s is unreadable (%s); using text keys only", ids_path.name, exc)
+        return None
+    if not isinstance(body, dict):
+        log.error("%s is not an id map; using text keys only", ids_path.name)
+        return None
+    return body
+
+
 def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> int:
     """Phase 2's embedding cache -> the pgvector table.
 
-    The artifact is **content-addressed**, which is not what the file names
-    suggest. ``<model>.keys.json`` is a dict of ``sha256(text)[:32] -> row index``
-    into ``<model>.npy``; it is a cache keyed by what was embedded, not an index
-    of post ids. In this corpus 4,126 unique texts cover 4,188 posts, because
-    exact reposts share text and therefore share a vector -- which is correct,
-    and which a naive positional zip would have silently mangled.
+    The artifact is **content-addressed**. ``<model>.keys.json`` is a dict of
+    ``sha256(text)[:32] -> row index`` into ``<model>.npy``; it is keyed by what was
+    embedded, not by post id, so exact reposts share one vector.
 
-    So the mapping is recomputed here: read each post's text, hash it the same
-    way Phase 2 does, and look the row up. ``modeling.text.embed.EmbeddingCache.key``
-    is the source of truth for that hash, and it is imported rather than
-    reimplemented so the two cannot drift.
+    ``<model>.ids.json`` is the bridge: a dict of ``record id -> cache key`` written by
+    ``modeling.text.embed`` for the prepared (possibly truncated) text of each record.
+    ``posts.id`` is the record id, so a post is resolved by id first. That is the only
+    exact route for a long article, whose prepared text differs from its raw text.
+
+    A post with no id entry falls back to hashing its raw text, which matches short posts
+    and every post in a cache written before ``ids.json`` existed. ``modeling.text.embed.
+    EmbeddingCache.key`` is the source of truth for that hash and is imported when present.
+    No route guesses: a link that points at a missing key or an out-of-range row is a
+    counted miss, never a neighbouring vector.
 
     Vectors are re-normalized on write even though Phase 2 normalizes them
     already. It costs one pass and it is the only way to be sure: everything
@@ -604,42 +665,36 @@ def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> 
         normalized = (matrix / norms).astype("float32")
 
         model_name = keys_path.name.replace(".keys.json", "")
-        payload, misses = [], 0
-        for post_id, post_text in posts:
-            row = index.get(cache_key(post_text or ""))
-            if row is None or row >= normalized.shape[0]:
-                misses += 1
-                continue
-            vector = normalized[row]
-            payload.append(
-                {
-                    "post_id": post_id,
-                    "model": model_name,
-                    "dim": settings.embedding_dim,
-                    "embedding": "[" + ",".join(f"{v:.6f}" for v in vector) + "]",
-                    "project_id": project_id,
-                }
-            )
+        ids = _read_id_map(keys_path.with_name(f"{model_name}.ids.json"))
+        matches, misses = _resolve_vector_rows(
+            posts, index, ids, normalized.shape[0], cache_key
+        )
+        payload = [
+            {
+                "post_id": post_id,
+                "model": model_name,
+                "dim": settings.embedding_dim,
+                "embedding": "[" + ",".join(f"{v:.6f}" for v in normalized[row]) + "]",
+                "project_id": project_id,
+            }
+            for post_id, row in matches
+        ]
 
         if misses:
-            # Not fatal and not silent. Two causes, both benign:
-            #
-            # 1. Phase 2 hashes the *prepared* text, not the raw text -- long
-            #    articles are truncated with a lede-preserving policy that needs
-            #    the model's tokenizer to reproduce. Reproducing it by guesswork
-            #    would map some posts to the wrong vector, which is far worse
-            #    than not mapping them, so short posts match and long ones do
-            #    not.
-            # 2. A post ingested after the cache was written is simply not in it.
-            #
-            # Either way nlp.embed computes what is missing, and until it runs
-            # those posts are absent from kNN rather than wrongly present.
-            log.info(
-                "%s: %d of %d post(s) have no cached vector (long texts are hashed "
-                "post-truncation by phase 2); nlp.embed will compute them",
+            # Counted by reason so a hole in kNN coverage is explainable. The usual causes:
+            # no_cached_vector is a post that was never embedded, or a long post in a cache
+            # written without ids.json (its raw-text hash is not the key of its truncated
+            # text); the id_map_* reasons are an ids.json that disagrees with keys.json or
+            # the matrix. Those posts get no vector here and are absent from kNN until
+            # nlp.embed computes them.
+            log.warning(
+                "%s: %d of %d post(s) have no cached vector (%s; id map %s); "
+                "nlp.embed will compute them",
                 model_name,
-                misses,
+                sum(misses.values()),
                 len(posts),
+                ", ".join(f"{reason}={n}" for reason, n in sorted(misses.items())),
+                "used" if ids is not None else "absent",
             )
 
         _bulk_upsert(

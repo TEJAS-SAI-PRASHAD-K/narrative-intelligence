@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -119,6 +120,8 @@ class EmbeddingCache:
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", f"{model_name}-{version}").strip("-").lower()
         self.matrix_path = self.settings.embeddings_dir / f"{slug}.npy"
         self.index_path = self.settings.embeddings_dir / f"{slug}.keys.json"
+        #: record id -> cache key of the prepared text that was embedded for it.
+        self.ids_path = self.settings.embeddings_dir / f"{slug}.ids.json"
         self._keys: dict[str, int] = {}
         self._matrix: np.ndarray | None = None
         self._pending: list[tuple[str, np.ndarray]] = []
@@ -162,6 +165,62 @@ class EmbeddingCache:
         if index is None or self._matrix is None:
             return None
         return self._matrix[index]
+
+    def link_ids(self, prepared: dict[str, str]) -> int:
+        """Record which cache row belongs to which record id.
+
+        The cache is keyed by the prepared (possibly truncated) text, so a consumer holding
+        only the raw text cannot find the row of a long record. ``prepared`` maps record id
+        to the exact text that was embedded; the id map stores that text's cache key.
+
+        Merges into the file already on disk, so an earlier run's ids survive. An id that
+        appears again takes its new key. Returns the number of ids written. A text that is
+        not in the cache is skipped and logged, because a link to a missing row would be
+        a stale pointer from the first write.
+        """
+        links: dict[str, str] = {}
+        absent = 0
+        for record_id, text in prepared.items():
+            key = self.key(text)
+            if key in self._keys:
+                links[record_id] = key
+            else:
+                absent += 1
+        if absent:
+            log.warning(
+                "%s: %d record(s) not linked by id because their text is not in the cache",
+                self.ids_path.name,
+                absent,
+            )
+        if not links:
+            return 0
+        merged = self._read_ids()
+        merged.update(links)
+        self._atomic_write_json(self.ids_path, merged)
+        return len(links)
+
+    def _read_ids(self) -> dict[str, str]:
+        if not self.ids_path.exists():
+            return {}
+        try:
+            existing = json.loads(self.ids_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            # Overwriting an unreadable map would drop earlier ids without a trace; the
+            # rebuilt map covers only this run, and the log says so.
+            log.warning("%s is unreadable (%s); earlier ids are lost", self.ids_path.name, exc)
+            return {}
+        if not isinstance(existing, dict):
+            log.warning("%s is not an object; earlier ids are lost", self.ids_path.name)
+            return {}
+        return existing
+
+    @staticmethod
+    def _atomic_write_json(path: Path, body: Any) -> None:
+        """Write to a sibling temp file, then rename, so a reader never sees half a file."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(body), encoding="utf-8")
+        os.replace(tmp, path)
 
     def put(self, text: str, vector: np.ndarray) -> None:
         self._pending.append((self.key(text), vector.astype(np.float32)))
@@ -387,6 +446,7 @@ class Embedder:
             )
 
         vectors = self.embed_texts(prepared)
+        self.cache.link_ids(dict(zip(keep_ids, prepared, strict=True)))
         result = EmbeddingResult(
             vectors=vectors,
             record_ids=keep_ids,
