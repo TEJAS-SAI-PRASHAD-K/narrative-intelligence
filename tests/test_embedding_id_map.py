@@ -53,11 +53,12 @@ def test_embed_records_writes_an_id_map_keyed_by_the_prepared_text(settings):
     assert truncated and prepared != LONG_TEXT
 
     ids = json.loads(embedder.cache.ids_path.read_text(encoding="utf-8"))
-    assert ids["news:long"] == E.EmbeddingCache.key(prepared)
-    assert ids["news:long"] != E.EmbeddingCache.key(LONG_TEXT)
-    assert ids["news:short"] == E.EmbeddingCache.key("A short post.")
+    assert ids["news:long"]["key"] == E.EmbeddingCache.key(prepared)
+    assert ids["news:long"]["key"] != E.EmbeddingCache.key(LONG_TEXT)
+    assert ids["news:long"]["text_hash"] == E.EmbeddingCache.key(LONG_TEXT)
+    assert ids["news:short"]["key"] == E.EmbeddingCache.key("A short post.")
     keys = json.loads(embedder.cache.index_path.read_text(encoding="utf-8"))
-    assert set(ids.values()) <= set(keys)
+    assert {entry["key"] for entry in ids.values()} <= set(keys)
 
 
 def test_a_second_run_merges_into_the_existing_id_map(settings):
@@ -66,7 +67,7 @@ def test_a_second_run_merges_into_the_existing_id_map(settings):
 
     ids = json.loads(second.cache.ids_path.read_text(encoding="utf-8"))
     assert set(ids) == {"news:a", "news:b"}
-    assert ids["news:a"] == E.EmbeddingCache.key("First post text.")
+    assert ids["news:a"]["key"] == E.EmbeddingCache.key("First post text.")
     assert first.cache.ids_path == second.cache.ids_path
 
 
@@ -76,13 +77,29 @@ def test_the_id_map_write_leaves_no_temp_file(settings):
     assert leftovers == []
 
 
+def test_a_failed_id_map_write_removes_its_unique_temp_file(settings, monkeypatch):
+    embedder = _embed(settings, {"news:a": "First post text."})
+
+    def refuse(*args, **kwargs):
+        raise OSError("rename refused")
+
+    monkeypatch.setattr(E.os, "replace", refuse)
+    with pytest.raises(OSError):
+        embedder.cache.link_ids({"news:b": ("First post text.", "First post text.")})
+    assert list(embedder.cache.ids_path.parent.glob("*.tmp")) == []
+
+
 # ---------------------------------------------------------------------------
 # resolving posts to rows -- no database
 # ---------------------------------------------------------------------------
-def _resolve(posts, keys, ids, rows):
+def _resolve(posts, keys, ids, rows, **kwargs):
     from app.etl.scored_loader import _resolve_vector_rows
 
-    return _resolve_vector_rows(posts, keys, ids, rows, E.EmbeddingCache.key)
+    return _resolve_vector_rows(posts, keys, ids, rows, E.EmbeddingCache.key, **kwargs)
+
+
+def _entry(key: str, raw: str) -> dict[str, str]:
+    return {"key": key, "text_hash": E.EmbeddingCache.key(raw)}
 
 
 def test_a_long_post_resolves_through_the_id_map(settings):
@@ -108,7 +125,11 @@ def test_without_an_id_map_a_short_post_still_resolves_by_text(settings):
 
 def test_a_stale_id_map_entry_is_a_counted_miss_not_a_wrong_vector():
     keys = {"k0": 0, "k1": 1}
-    ids = {"p:absent": "gone", "p:range": "k1", "p:ok": "k0"}
+    ids = {
+        "p:absent": _entry("gone", "x"),
+        "p:range": _entry("k1", "y"),
+        "p:ok": _entry("k0", "z"),
+    }
     posts = [("p:absent", "x"), ("p:range", "y"), ("p:ok", "z")]
 
     # Two rows in `keys` but a matrix of one row: k1 points past the end.
@@ -120,15 +141,45 @@ def test_a_stale_id_map_entry_is_a_counted_miss_not_a_wrong_vector():
 def test_a_stale_id_entry_does_not_fall_back_to_the_text_key():
     text = "Some text."
     keys = {E.EmbeddingCache.key(text): 0}
-    matches, misses = _resolve([("p:1", text)], keys, {"p:1": "gone"}, 1)
+    matches, misses = _resolve([("p:1", text)], keys, {"p:1": _entry("gone", text)}, 1)
     assert matches == [] and misses == {"id_map_key_absent": 1}
 
 
 def test_a_post_missing_from_the_id_map_falls_back_to_its_text_key():
     text = "Some text."
     keys = {E.EmbeddingCache.key(text): 0}
-    matches, misses = _resolve([("p:1", text)], keys, {"p:other": "k"}, 1)
+    matches, misses = _resolve([("p:1", text)], keys, {"p:other": _entry("k", "q")}, 1)
     assert matches == [("p:1", 0)] and misses == {}
+
+
+def test_an_edited_post_is_a_miss_not_the_old_vector():
+    old, new = "The original text.", "The edited text."
+    keys = {E.EmbeddingCache.key(old): 0, E.EmbeddingCache.key(new): 1}
+    ids = {"p:1": _entry(E.EmbeddingCache.key(old), old)}
+
+    matches, misses = _resolve([("p:1", new)], keys, ids, 2)
+    assert matches == [] and misses == {"id_map_text_changed": 1}
+
+
+def test_the_old_flat_id_map_format_is_a_counted_miss():
+    text = "Some text."
+    key = E.EmbeddingCache.key(text)
+    matches, misses = _resolve([("p:1", text)], {key: 0}, {"p:1": key}, 1)
+    assert matches == [] and misses == {"id_map_legacy_format": 1}
+
+
+def test_an_unreadable_map_is_reported_apart_from_never_embedded():
+    matches, misses = _resolve([("p:1", "unseen")], {}, None, 0, map_unreadable=True)
+    assert matches == [] and misses == {"id_map_unreadable": 1}
+
+
+def test_cache_consistency_check():
+    from app.etl.scored_loader import _cache_is_consistent
+
+    assert _cache_is_consistent({"a": 0, "b": 1}, 2) is None
+    assert "keys but" in _cache_is_consistent({"a": 0}, 2)
+    assert "duplicated" in _cache_is_consistent({"a": 0, "b": 0}, 2)
+    assert "duplicated" in _cache_is_consistent({"a": 0, "b": 5}, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +273,7 @@ def test_load_embeddings_skips_a_stale_id_entry(project, settings, tmp_path, cap
     _load_posts(project, tmp_path, rows)
     embedder = _embed(settings, rows)
     ids = json.loads(embedder.cache.ids_path.read_text(encoding="utf-8"))
-    ids["reddit:t3_long"] = "0" * 32
+    ids["reddit:t3_long"]["key"] = "0" * 32
     embedder.cache.ids_path.write_text(json.dumps(ids), encoding="utf-8")
 
     with caplog.at_level("WARNING"), sync_session() as session:
@@ -234,5 +285,120 @@ def test_load_embeddings_skips_a_stale_id_entry(project, settings, tmp_path, cap
 def test_embedding_matrix_rows_are_untouched_by_linking(settings):
     embedder = _embed(settings, {"news:a": "First post text."})
     before = np.load(embedder.cache.matrix_path)
-    embedder.cache.link_ids({"news:b": "First post text."})
+    embedder.cache.link_ids({"news:b": ("First post text.", "First post text.")})
     assert np.array_equal(np.load(embedder.cache.matrix_path), before)
+
+
+def _copy_cache_as(embedder: E.Embedder, slug: str, *, scale: float) -> None:
+    """A second cache of the same width, as compare-embedder leaves behind."""
+    directory = embedder.cache.matrix_path.parent
+    np.save(directory / f"{slug}.npy", np.load(embedder.cache.matrix_path) * scale)
+    (directory / f"{slug}.keys.json").write_text(
+        embedder.cache.index_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+
+def _stored_models(project_id) -> set[str]:
+    from sqlalchemy import text
+
+    from app.db import sync_session
+
+    with sync_session() as session:
+        return {
+            row[0]
+            for row in session.execute(
+                text(
+                    "SELECT e.model FROM post_embeddings_384 e "
+                    "JOIN posts p ON p.id = e.post_id WHERE p.project_id = :p"
+                ),
+                {"p": project_id},
+            )
+        }
+
+
+@requires_postgres
+def test_only_the_configured_cache_is_written(project, settings, tmp_path, caplog):
+    from app.db import sync_session
+    from app.etl.scored_loader import load_embeddings
+
+    rows = {"reddit:t3_a": "First post text.", "reddit:t3_b": "Second post text."}
+    _load_posts(project, tmp_path, rows)
+    embedder = _embed(settings, rows)
+    _copy_cache_as(embedder, "other-multilingual-v9", scale=-1.0)
+
+    with caplog.at_level("WARNING"), sync_session() as session:
+        load_embeddings(session, settings.data_dir, project)
+
+    assert _stored_models(project) == {embedder.cache.matrix_path.stem}
+    assert caplog.text.count("skipping embedding cache other-multilingual-v9.keys.json") == 1
+
+
+@requires_postgres
+def test_an_absent_configured_cache_loads_nothing_and_says_so(project, settings, tmp_path, caplog):
+    from app.db import sync_session
+    from app.etl.scored_loader import load_embeddings
+
+    rows = {"reddit:t3_a": "First post text."}
+    _load_posts(project, tmp_path, rows)
+    embedder = _embed(settings, rows)
+    _copy_cache_as(embedder, "other-multilingual-v9", scale=1.0)
+    embedder.cache.matrix_path.unlink()
+    embedder.cache.index_path.unlink()
+
+    with caplog.at_level("WARNING"), sync_session() as session:
+        load_embeddings(session, settings.data_dir, project)
+
+    assert _loaded_ids(project) == set()
+    assert "configured embedding cache" in caplog.text
+
+
+@requires_postgres
+def test_a_cache_whose_keys_and_matrix_disagree_is_skipped(project, settings, tmp_path, caplog):
+    from app.db import sync_session
+    from app.etl.scored_loader import load_embeddings
+
+    rows = {"reddit:t3_a": "First post text.", "reddit:t3_b": "Second post text."}
+    _load_posts(project, tmp_path, rows)
+    embedder = _embed(settings, rows)
+    np.save(embedder.cache.matrix_path, np.load(embedder.cache.matrix_path)[:1])
+
+    with caplog.at_level("ERROR"), sync_session() as session:
+        load_embeddings(session, settings.data_dir, project)
+
+    assert _loaded_ids(project) == set()
+    assert "keys but 1 matrix rows" in caplog.text
+
+
+@requires_postgres
+def test_an_edited_post_gets_no_vector_from_the_loader(project, settings, tmp_path):
+    from app.db import sync_session
+    from app.etl.scored_loader import load_embeddings
+
+    _load_posts(project, tmp_path, {"reddit:t3_a": "The original text."})
+    _embed(settings, {"reddit:t3_a": "The original text."})
+    from sqlalchemy import text
+
+    with sync_session() as session:
+        session.execute(
+            text("UPDATE posts SET text = 'The edited text.' WHERE id = 'reddit:t3_a'")
+        )
+
+    with sync_session() as session:
+        load_embeddings(session, settings.data_dir, project)
+    assert _loaded_ids(project) == set()
+
+
+@requires_postgres
+def test_an_unreadable_id_map_is_named_in_the_warning(project, settings, tmp_path, caplog):
+    from app.db import sync_session
+    from app.etl.scored_loader import load_embeddings
+
+    rows = {"reddit:t3_long": LONG_TEXT}
+    _load_posts(project, tmp_path, rows)
+    embedder = _embed(settings, rows)
+    embedder.cache.ids_path.write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level("WARNING"), sync_session() as session:
+        load_embeddings(session, settings.data_dir, project)
+    assert "id_map_unreadable=1" in caplog.text
+    assert "id map absent" not in caplog.text

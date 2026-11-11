@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,11 @@ class EmbeddingResult:
         }
 
 
+def cache_slug(model_name: str, version: str) -> str:
+    """The file stem of one model+version's cache: ``<slug>.npy``, ``<slug>.keys.json``."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", f"{model_name}-{version}").strip("-").lower()
+
+
 class EmbeddingCache:
     """On-disk cache: one ``.npy`` matrix plus a key index per model+version.
 
@@ -117,7 +123,7 @@ class EmbeddingCache:
         self.model_name = model_name
         self.version = version
         self.dim = dim
-        slug = re.sub(r"[^a-zA-Z0-9]+", "-", f"{model_name}-{version}").strip("-").lower()
+        slug = cache_slug(model_name, version)
         self.matrix_path = self.settings.embeddings_dir / f"{slug}.npy"
         self.index_path = self.settings.embeddings_dir / f"{slug}.keys.json"
         #: record id -> cache key of the prepared text that was embedded for it.
@@ -166,24 +172,26 @@ class EmbeddingCache:
             return None
         return self._matrix[index]
 
-    def link_ids(self, prepared: dict[str, str]) -> int:
+    def link_ids(self, entries: dict[str, tuple[str, str]]) -> int:
         """Record which cache row belongs to which record id.
 
         The cache is keyed by the prepared (possibly truncated) text, so a consumer holding
-        only the raw text cannot find the row of a long record. ``prepared`` maps record id
-        to the exact text that was embedded; the id map stores that text's cache key.
+        only the raw text cannot find the row of a long record. ``entries`` maps record id
+        to ``(prepared, raw)``: the exact text that was embedded and the record's raw text.
+        The id map stores ``{"key": key(prepared), "text_hash": key(raw)}``. The raw hash
+        lets a consumer see that a record kept its id but changed its text since.
 
         Merges into the file already on disk, so an earlier run's ids survive. An id that
-        appears again takes its new key. Returns the number of ids written. A text that is
+        appears again takes its new entry. Returns the number of ids written. A text that is
         not in the cache is skipped and logged, because a link to a missing row would be
         a stale pointer from the first write.
         """
-        links: dict[str, str] = {}
+        links: dict[str, dict[str, str]] = {}
         absent = 0
-        for record_id, text in prepared.items():
-            key = self.key(text)
+        for record_id, (prepared, raw) in entries.items():
+            key = self.key(prepared)
             if key in self._keys:
-                links[record_id] = key
+                links[record_id] = {"key": key, "text_hash": self.key(raw)}
             else:
                 absent += 1
         if absent:
@@ -199,7 +207,7 @@ class EmbeddingCache:
         self._atomic_write_json(self.ids_path, merged)
         return len(links)
 
-    def _read_ids(self) -> dict[str, str]:
+    def _read_ids(self) -> dict[str, Any]:
         if not self.ids_path.exists():
             return {}
         try:
@@ -216,11 +224,28 @@ class EmbeddingCache:
 
     @staticmethod
     def _atomic_write_json(path: Path, body: Any) -> None:
-        """Write to a sibling temp file, then rename, so a reader never sees half a file."""
+        """Write to a uniquely named sibling temp file, then rename over the target.
+
+        A reader never sees half a file, and two processes writing at once cannot share a
+        temp name.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(body), encoding="utf-8")
-        os.replace(tmp, path)
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f"{path.name}.", suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp = Path(handle.name)
+            try:
+                handle.write(json.dumps(body))
+            except BaseException:
+                handle.close()
+                tmp.unlink(missing_ok=True)
+                raise
+        try:
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def put(self, text: str, vector: np.ndarray) -> None:
         self._pending.append((self.key(text), vector.astype(np.float32)))
@@ -417,6 +442,7 @@ class Embedder:
         """
         skipped: dict[str, str] = {}
         keep_ids: list[str] = []
+        raw_texts: list[str] = []
         prepared: list[str] = []
         truncated: list[bool] = []
 
@@ -431,6 +457,7 @@ class Embedder:
                 skipped[record_id] = "text_too_short"
                 continue
             keep_ids.append(record_id)
+            raw_texts.append(str(text))
             prepared.append(cleaned)
             truncated.append(was_truncated)
 
@@ -446,7 +473,9 @@ class Embedder:
             )
 
         vectors = self.embed_texts(prepared)
-        self.cache.link_ids(dict(zip(keep_ids, prepared, strict=True)))
+        self.cache.link_ids(
+            dict(zip(keep_ids, zip(prepared, raw_texts, strict=True), strict=True))
+        )
         result = EmbeddingResult(
             vectors=vectors,
             record_ids=keep_ids,

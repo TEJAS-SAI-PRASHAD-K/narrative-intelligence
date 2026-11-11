@@ -525,6 +525,9 @@ def load_network_edges(session: Session, scored_dir: Path, project_id: uuid.UUID
 _EMBED_MISS_REASONS = (
     "id_map_key_absent",
     "id_map_row_out_of_range",
+    "id_map_text_changed",
+    "id_map_legacy_format",
+    "id_map_unreadable",
     "text_key_row_out_of_range",
     "no_cached_vector",
 )
@@ -533,31 +536,49 @@ _EMBED_MISS_REASONS = (
 def _resolve_vector_rows(
     posts: list[tuple[str, str | None]],
     keys: dict[str, int],
-    ids: dict[str, str] | None,
+    ids: dict[str, Any] | None,
     row_count: int,
     key_fn,
+    *,
+    map_unreadable: bool = False,
 ) -> tuple[list[tuple[str, int]], dict[str, int]]:
     """Map each post to a matrix row, or to a counted miss reason.
 
-    By id when ``ids`` has the post, else by the hash of its raw text. A stale id entry
-    is a miss and does not fall through to the text key: the id map is the authority for
-    that record, and a disagreement between the two is something to see, not to paper over.
+    By id when ``ids`` has the post, else by the hash of its raw text. An id entry is
+    ``{"key", "text_hash"}``; it is used only when ``text_hash`` equals the hash of the
+    post's current text, because an id that kept its number but changed its text would
+    otherwise be served the old text's vector. A stale or mismatched entry is a miss and
+    does not fall through to the text key: the id map is the authority for that record,
+    and a disagreement between the two is something to see, not to paper over. The old flat
+    format (id to key string) carries no text hash, so it cannot be verified and is a
+    counted miss too; running the embed stage again rewrites it in the new format.
+
+    ``map_unreadable`` marks that ``ids.json`` exists but could not be read, so posts that
+    the text key also misses are counted as ``id_map_unreadable``, not as never embedded.
     """
     matches: list[tuple[str, int]] = []
     misses: dict[str, int] = dict.fromkeys(_EMBED_MISS_REASONS, 0)
     for post_id, post_text in posts:
+        raw = post_text or ""
         if ids is not None and post_id in ids:
-            row = keys.get(ids[post_id]) if isinstance(ids[post_id], str) else None
+            entry = ids[post_id]
+            if not isinstance(entry, dict):
+                misses["id_map_legacy_format"] += 1
+                continue
+            key = entry.get("key")
+            row = keys.get(key) if isinstance(key, str) else None
             if row is None:
                 misses["id_map_key_absent"] += 1
+            elif entry.get("text_hash") != key_fn(raw):
+                misses["id_map_text_changed"] += 1
             elif not isinstance(row, int) or not 0 <= row < row_count:
                 misses["id_map_row_out_of_range"] += 1
             else:
                 matches.append((post_id, row))
             continue
-        row = keys.get(key_fn(post_text or ""))
+        row = keys.get(key_fn(raw))
         if row is None:
-            misses["no_cached_vector"] += 1
+            misses["id_map_unreadable" if map_unreadable else "no_cached_vector"] += 1
         elif not isinstance(row, int) or not 0 <= row < row_count:
             misses["text_key_row_out_of_range"] += 1
         else:
@@ -565,19 +586,62 @@ def _resolve_vector_rows(
     return matches, {reason: n for reason, n in misses.items() if n}
 
 
-def _read_id_map(ids_path: Path) -> dict[str, str] | None:
-    """The record-id map beside a cache, or None when absent or unusable."""
+def _read_id_map(ids_path: Path) -> tuple[dict[str, Any] | None, str]:
+    """The record-id map beside a cache and its status: absent, used or unreadable."""
     if not ids_path.exists():
-        return None
+        return None, "absent"
     try:
         body = json.loads(ids_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         log.error("%s is unreadable (%s); using text keys only", ids_path.name, exc)
-        return None
+        return None, "unreadable"
     if not isinstance(body, dict):
         log.error("%s is not an id map; using text keys only", ids_path.name)
-        return None
-    return body
+        return None, "unreadable"
+    return body, "used"
+
+
+def _cache_is_consistent(index: dict[str, Any], row_count: int) -> str | None:
+    """None when keys and matrix agree, else the reason they do not.
+
+    Same rule as ``EmbeddingCache._load`` plus uniqueness: every key owns exactly one row
+    and every row has one owner. A torn write that breaks this would map keys to the
+    vectors of other texts.
+    """
+    if len(index) != row_count:
+        return f"{len(index)} keys but {row_count} matrix rows"
+    rows = list(index.values())
+    if not all(isinstance(r, int) and not isinstance(r, bool) for r in rows):
+        return "a key maps to a non-integer row"
+    if sorted(rows) != list(range(row_count)):
+        return "key rows are duplicated or out of range"
+    return None
+
+
+def _configured_embed_slug() -> str:
+    """The cache stem of the configured embedder: ``configs/models.yaml`` ``embed``.
+
+    Resolved by the same function the modeling side names its files with. The API image
+    carries no modeling tree, so there the slug is built from the YAML directly with the
+    same rule.
+    """
+    try:
+        from modeling.config import module_config
+        from modeling.text.embed import cache_slug
+
+        config = module_config("embed")
+    except ImportError:
+        import re
+
+        import yaml
+
+        path = Path(__file__).resolve().parents[2] / "configs" / "models.yaml"
+        config = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("embed") or {}
+
+        def cache_slug(name: str, version: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9]+", "-", f"{name}-{version}").strip("-").lower()
+
+    return cache_slug(str(config.get("model_name")), str(config.get("version", "v0.0.0-unset")))
 
 
 def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> int:
@@ -587,8 +651,13 @@ def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> 
     ``sha256(text)[:32] -> row index`` into ``<model>.npy``; it is keyed by what was
     embedded, not by post id, so exact reposts share one vector.
 
-    ``<model>.ids.json`` is the bridge: a dict of ``record id -> cache key`` written by
-    ``modeling.text.embed`` for the prepared (possibly truncated) text of each record.
+    Only the configured embedder's cache (``configs/models.yaml`` ``embed``) is loaded;
+    other caches in the directory are skipped with a logged reason.
+
+    ``<model>.ids.json`` is the bridge: a dict of
+    ``record id -> {"key": cache key, "text_hash": hash of the raw text}`` written by
+    ``modeling.text.embed`` for the prepared (possibly truncated) text of each record. The
+    text hash must equal the hash of the post's current text, so an edited post is a miss.
     ``posts.id`` is the record id, so a post is resolved by id first. That is the only
     exact route for a long article, whose prepared text differs from its raw text.
 
@@ -636,7 +705,28 @@ def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> 
     if not posts:
         return 0
 
-    for keys_path in sorted(embeddings_dir.glob("*.keys.json")):
+    # Only the configured embedder's cache is loaded. Every cache shares one table keyed by
+    # post_id, so a second cache of the same width (for example one left by compare-embedder)
+    # would overwrite vectors with ones from a different space.
+    slug = _configured_embed_slug()
+    configured = f"{slug}.keys.json"
+    cache_files = sorted(embeddings_dir.glob("*.keys.json"))
+    for other in cache_files:
+        if other.name != configured:
+            log.warning(
+                "skipping embedding cache %s: not the configured embedder (%s)",
+                other.name,
+                slug,
+            )
+    if not any(path.name == configured for path in cache_files):
+        log.error(
+            "configured embedding cache %s is absent from %s; loading no embeddings",
+            configured,
+            embeddings_dir,
+        )
+        cache_files = []
+
+    for keys_path in (path for path in cache_files if path.name == configured):
         matrix_path = keys_path.with_name(keys_path.name.replace(".keys.json", ".npy"))
         if not matrix_path.exists():
             log.warning("embedding index %s has no matrix beside it; skipping", keys_path.name)
@@ -660,14 +750,25 @@ def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> 
             )
             continue
 
+        inconsistent = _cache_is_consistent(index, matrix.shape[0])
+        if inconsistent:
+            log.error(
+                "skipping embedding cache %s: %s; the keys and the matrix do not belong "
+                "together, so no row can be trusted",
+                keys_path.name,
+                inconsistent,
+            )
+            continue
+
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         normalized = (matrix / norms).astype("float32")
 
         model_name = keys_path.name.replace(".keys.json", "")
-        ids = _read_id_map(keys_path.with_name(f"{model_name}.ids.json"))
+        ids, ids_status = _read_id_map(keys_path.with_name(f"{model_name}.ids.json"))
         matches, misses = _resolve_vector_rows(
-            posts, index, ids, normalized.shape[0], cache_key
+            posts, index, ids, normalized.shape[0], cache_key,
+            map_unreadable=ids_status == "unreadable",
         )
         payload = [
             {
@@ -694,7 +795,7 @@ def load_embeddings(session: Session, data_dir: Path, project_id: uuid.UUID) -> 
                 sum(misses.values()),
                 len(posts),
                 ", ".join(f"{reason}={n}" for reason, n in sorted(misses.items())),
-                "used" if ids is not None else "absent",
+                ids_status,
             )
 
         _bulk_upsert(
