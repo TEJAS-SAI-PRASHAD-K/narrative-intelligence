@@ -4,7 +4,7 @@
 
 - Baseline: `tfidf`. Precision target: 0.85. Seed: `20260813`. Resamples: 2000. Intervals are 95% percentile bootstrap intervals.
 - Split: grouped by group_id (30148 groups; train/val/test = 26777/3596/7085; seed=20260813)
-- Evaluation claims: 349 (frozen, 349 manifest rows)
+- Evaluation claims: 1107 (frozen, 1107 manifest rows)
 
 ## Notices
 
@@ -55,21 +55,21 @@ Lift = recall on known-false claims / flag rate on the unlabelled corpus, at the
 
 | model | language | claims scored/rows | recall [95% CI] | corpus scored/rows | flag rate [95% CI] | lift [95% CI] | zero-flag resamples |
 |---|---|---|---|---|---|---|---|
-| laya_en | en | 88/88 | 0.045 [0.011, 0.091] | 374/374 | 0.040 [0.021, 0.061] | 1.133 [0.224, 2.975] | 0 of 2000 |
-| laya_en | hi | 0/261 | no score: no valid score for any of 261 claim rows (skip_reason: unrouted_language=261) | 0/136 | no score: no valid score for any of 136 corpus title rows (skip_reason: unrouted_language=136) | no score: recall: no valid score for any of 261 claim rows (skip_reason: unrouted_language=261); flag rate: no valid score for any of 136 corpus title rows (skip_reason: unrouted_language=136) | n/a of 2000 |
-| laya_en | all | 88/349 | 0.045 [0.011, 0.091] | 374/510 | 0.040 [0.021, 0.061] | 1.133 [0.224, 2.975] | 0 of 2000 |
-| laya_multi | en | 88/88 | 0.045 [0.011, 0.091] | 374/374 | 0.035 [0.019, 0.053] | 1.308 [0.250, 3.542] | 0 of 2000 |
-| laya_multi | hi | 261/261 | 0.115 [0.077, 0.157] | 136/136 | 0.051 [0.015, 0.088] | 2.233 [1.146, 6.605] (3 of 2000 resamples had flag rate 0; they are counted in the percentiles as undefined and are not dropped) | 3 of 2000 |
-| laya_multi | all | 349/349 | 0.097 [0.069, 0.129] | 510/510 | 0.039 [0.024, 0.057] | 2.484 [1.512, 4.506] | 0 of 2000 |
-| laya_multi_base | en | 88/88 | 0.000 [0.000, 0.000] | 374/374 | 0.005 [0.000, 0.013] | 0.000 [0.000, no value] (269 of 2000 resamples had flag rate 0, so the upper limit cannot be bounded) | 269 of 2000 |
-| laya_multi_base | hi | 261/261 | 0.000 [0.000, 0.000] | 136/136 | 0.000 [0.000, 0.000] | undefined: flag rate is 0 at the validation threshold (0 of 136 corpus rows flagged), so the ratio is undefined | 2000 of 2000 |
-| laya_multi_base | all | 349/349 | 0.000 [0.000, 0.000] | 510/510 | 0.004 [0.000, 0.010] | 0.000 [0.000, no value] (269 of 2000 resamples had flag rate 0, so the upper limit cannot be bounded) | 269 of 2000 |
-| misinfo | en | 88/88 | 0.489 [0.386, 0.591] | 374/374 | 0.115 [0.083, 0.150] | 4.250 [2.994, 6.072] | 0 of 2000 |
-| misinfo | hi | 0/261 | no score: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261) | 0/136 | no score: no valid score for any of 136 corpus title rows (skip_reason: unsupported_language=136) | no score: recall: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261); flag rate: no valid score for any of 136 corpus title rows (skip_reason: unsupported_language=136) | n/a of 2000 |
-| misinfo | all | 88/349 | 0.489 [0.386, 0.591] | 374/510 | 0.115 [0.083, 0.150] | 4.250 [2.994, 6.072] | 0 of 2000 |
-| tfidf | en | 88/88 | 0.034 [0.000, 0.080] | 374/374 | 0.003 [0.000, 0.008] | 12.750 [0.000, no value] (726 of 2000 resamples had flag rate 0, so the upper limit cannot be bounded) | 726 of 2000 |
-| tfidf | hi | 0/261 | no score: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261) | 0/136 | no score: no valid score for any of 136 corpus title rows (skip_reason: unsupported_language=136) | no score: recall: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261); flag rate: no valid score for any of 136 corpus title rows (skip_reason: unsupported_language=136) | n/a of 2000 |
-| tfidf | all | 88/349 | 0.034 [0.000, 0.080] | 374/510 | 0.003 [0.000, 0.008] | 12.750 [0.000, no value] (726 of 2000 resamples had flag rate 0, so the upper limit cannot be bounded) | 726 of 2000 |
+| laya_en | en | 90/90 | 0.056 [0.011, 0.111] | 612/612 | 0.039 [0.025, 0.054] | 1.417 [0.309, 3.238] | 0 of 2000 |
+| laya_en | hi | 0/1016 | no score: no valid score for any of 1016 claim rows (skip_reason: unrouted_language=1016) | 0/211 | no score: no valid score for any of 211 corpus title rows (skip_reason: unrouted_language=211) | no score: recall: no valid score for any of 1016 claim rows (skip_reason: unrouted_language=1016); flag rate: no valid score for any of 211 corpus title rows (skip_reason: unrouted_language=211) | n/a of 2000 |
+| laya_en | all | 90/1107 | 0.056 [0.011, 0.111] | 612/823 | 0.039 [0.025, 0.054] | 1.417 [0.309, 3.238] | 0 of 2000 |
+| laya_multi | en | 90/90 | 0.044 [0.011, 0.089] | 612/612 | 0.031 [0.018, 0.044] | 1.432 [0.296, 3.549] | 0 of 2000 |
+| laya_multi | hi | 1016/1016 | 0.104 [0.087, 0.123] | 211/211 | 0.057 [0.028, 0.090] | 1.834 [1.116, 3.981] | 0 of 2000 |
+| laya_multi | all | 1106/1107 | 0.099 [0.082, 0.117] | 823/823 | 0.038 [0.026, 0.051] | 2.640 [1.819, 4.000] | 0 of 2000 |
+| laya_multi_base | en | 90/90 | 0.000 [0.000, 0.000] | 612/612 | 0.007 [0.002, 0.013] | 0.000 [0.000, 0.000] (41 of 2000 resamples had flag rate 0; they are counted in the percentiles as undefined and are not dropped) | 41 of 2000 |
+| laya_multi_base | hi | 1016/1016 | 0.005 [0.001, 0.010] | 211/211 | 0.000 [0.000, 0.000] | undefined: flag rate is 0 at the validation threshold (0 of 211 corpus rows flagged), so the ratio is undefined | 2000 of 2000 |
+| laya_multi_base | all | 1106/1107 | 0.005 [0.001, 0.009] | 823/823 | 0.005 [0.001, 0.010] | 0.930 [0.186, 6.697] (41 of 2000 resamples had flag rate 0; they are counted in the percentiles as undefined and are not dropped) | 41 of 2000 |
+| misinfo | en | 90/90 | 0.489 [0.389, 0.589] | 612/612 | 0.108 [0.083, 0.132] | 4.533 [3.352, 6.146] | 0 of 2000 |
+| misinfo | hi | 0/1016 | no score: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016) | 0/211 | no score: no valid score for any of 211 corpus title rows (skip_reason: unsupported_language=211) | no score: recall: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016); flag rate: no valid score for any of 211 corpus title rows (skip_reason: unsupported_language=211) | n/a of 2000 |
+| misinfo | all | 90/1107 | 0.489 [0.389, 0.589] | 612/823 | 0.108 [0.083, 0.132] | 4.533 [3.352, 6.146] | 0 of 2000 |
+| tfidf | en | 90/90 | 0.033 [0.000, 0.078] | 612/612 | 0.002 [0.000, 0.005] | 20.400 [0.000, no value] (726 of 2000 resamples had flag rate 0, so the upper limit cannot be bounded) | 726 of 2000 |
+| tfidf | hi | 0/1016 | no score: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016) | 0/211 | no score: no valid score for any of 211 corpus title rows (skip_reason: unsupported_language=211) | no score: recall: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016); flag rate: no valid score for any of 211 corpus title rows (skip_reason: unsupported_language=211) | n/a of 2000 |
+| tfidf | all | 90/1107 | 0.033 [0.000, 0.078] | 612/823 | 0.002 [0.000, 0.005] | 20.400 [0.000, no value] (726 of 2000 resamples had flag rate 0, so the upper limit cannot be bounded) | 726 of 2000 |
 
 ## Recall, flag rate and lift: corpus full text (second value)
 
@@ -79,21 +79,21 @@ Lift = recall on known-false claims / flag rate on the unlabelled corpus, at the
 
 | model | language | claims scored/rows | recall [95% CI] | corpus scored/rows | flag rate [95% CI] | lift [95% CI] | zero-flag resamples |
 |---|---|---|---|---|---|---|---|
-| laya_en | en | 88/88 | 0.045 [0.011, 0.091] | 374/374 | 0.051 [0.029, 0.072] (not like for like) | 0.895 [0.185, 2.125] (not like for like) | 0 of 2000 |
-| laya_en | hi | 0/261 | no score: no valid score for any of 261 claim rows (skip_reason: unrouted_language=261) | 0/136 | no score: no valid score for any of 136 corpus text rows (skip_reason: unrouted_language=136) (not like for like) | no score: recall: no valid score for any of 261 claim rows (skip_reason: unrouted_language=261); flag rate: no valid score for any of 136 corpus text rows (skip_reason: unrouted_language=136) (not like for like) | n/a of 2000 |
-| laya_en | all | 88/349 | 0.045 [0.011, 0.091] | 374/510 | 0.051 [0.029, 0.072] (not like for like) | 0.895 [0.185, 2.125] (not like for like) | 0 of 2000 |
-| laya_multi | en | 88/88 | 0.045 [0.011, 0.091] | 374/374 | 0.075 [0.051, 0.102] (not like for like) | 0.607 [0.129, 1.417] (not like for like) | 0 of 2000 |
-| laya_multi | hi | 261/261 | 0.115 [0.077, 0.157] | 136/136 | 0.331 [0.250, 0.412] (not like for like) | 0.347 [0.220, 0.521] (not like for like) | 0 of 2000 |
-| laya_multi | all | 349/349 | 0.097 [0.069, 0.129] | 510/510 | 0.143 [0.114, 0.175] (not like for like) | 0.681 [0.460, 0.982] (not like for like) | 0 of 2000 |
-| laya_multi_base | en | 88/88 | 0.000 [0.000, 0.000] | 374/374 | 0.061 [0.037, 0.086] (not like for like) | 0.000 [0.000, 0.000] (not like for like) | 0 of 2000 |
-| laya_multi_base | hi | 261/261 | 0.000 [0.000, 0.000] | 136/136 | 0.191 [0.125, 0.257] (not like for like) | 0.000 [0.000, 0.000] (not like for like) | 0 of 2000 |
-| laya_multi_base | all | 349/349 | 0.000 [0.000, 0.000] | 510/510 | 0.096 [0.071, 0.122] (not like for like) | 0.000 [0.000, 0.000] (not like for like) | 0 of 2000 |
-| misinfo | en | 88/88 | 0.489 [0.386, 0.591] | 374/374 | 0.078 [0.051, 0.104] (not like for like) | 6.302 [4.365, 10.046] (not like for like) | 0 of 2000 |
-| misinfo | hi | 0/261 | no score: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261) | 0/136 | no score: no valid score for any of 136 corpus text rows (skip_reason: unsupported_language=136) (not like for like) | no score: recall: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261); flag rate: no valid score for any of 136 corpus text rows (skip_reason: unsupported_language=136) (not like for like) | n/a of 2000 |
-| misinfo | all | 88/349 | 0.489 [0.386, 0.591] | 374/510 | 0.078 [0.051, 0.104] (not like for like) | 6.302 [4.365, 10.046] (not like for like) | 0 of 2000 |
-| tfidf | en | 88/88 | 0.034 [0.000, 0.080] | 374/374 | 0.174 [0.136, 0.211] (not like for like) | 0.196 [0.000, 0.451] (not like for like) | 0 of 2000 |
-| tfidf | hi | 0/261 | no score: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261) | 0/136 | no score: no valid score for any of 136 corpus text rows (skip_reason: unsupported_language=136) (not like for like) | no score: recall: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261); flag rate: no valid score for any of 136 corpus text rows (skip_reason: unsupported_language=136) (not like for like) | n/a of 2000 |
-| tfidf | all | 88/349 | 0.034 [0.000, 0.080] | 374/510 | 0.174 [0.136, 0.211] (not like for like) | 0.196 [0.000, 0.451] (not like for like) | 0 of 2000 |
+| laya_en | en | 90/90 | 0.056 [0.011, 0.111] | 612/612 | 0.041 [0.026, 0.057] (not like for like) | 1.360 [0.296, 3.092] (not like for like) | 0 of 2000 |
+| laya_en | hi | 0/1016 | no score: no valid score for any of 1016 claim rows (skip_reason: unrouted_language=1016) | 0/211 | no score: no valid score for any of 211 corpus text rows (skip_reason: unrouted_language=211) (not like for like) | no score: recall: no valid score for any of 1016 claim rows (skip_reason: unrouted_language=1016); flag rate: no valid score for any of 211 corpus text rows (skip_reason: unrouted_language=211) (not like for like) | n/a of 2000 |
+| laya_en | all | 90/1107 | 0.056 [0.011, 0.111] | 612/823 | 0.041 [0.026, 0.057] (not like for like) | 1.360 [0.296, 3.092] (not like for like) | 0 of 2000 |
+| laya_multi | en | 90/90 | 0.044 [0.011, 0.089] | 612/612 | 0.067 [0.047, 0.088] (not like for like) | 0.663 [0.136, 1.488] (not like for like) | 0 of 2000 |
+| laya_multi | hi | 1016/1016 | 0.104 [0.087, 0.123] | 211/211 | 0.284 [0.227, 0.341] (not like for like) | 0.367 [0.280, 0.487] (not like for like) | 0 of 2000 |
+| laya_multi | all | 1106/1107 | 0.099 [0.082, 0.117] | 823/823 | 0.123 [0.101, 0.145] (not like for like) | 0.810 [0.632, 1.032] (not like for like) | 0 of 2000 |
+| laya_multi_base | en | 90/90 | 0.000 [0.000, 0.000] | 612/612 | 0.056 [0.038, 0.075] (not like for like) | 0.000 [0.000, 0.000] (not like for like) | 0 of 2000 |
+| laya_multi_base | hi | 1016/1016 | 0.005 [0.001, 0.010] | 211/211 | 0.185 [0.133, 0.242] (not like for like) | 0.027 [0.005, 0.059] (not like for like) | 0 of 2000 |
+| laya_multi_base | all | 1106/1107 | 0.005 [0.001, 0.009] | 823/823 | 0.089 [0.070, 0.108] (not like for like) | 0.051 [0.010, 0.106] (not like for like) | 0 of 2000 |
+| misinfo | en | 90/90 | 0.489 [0.389, 0.589] | 612/612 | 0.075 [0.056, 0.096] (not like for like) | 6.504 [4.610, 9.521] (not like for like) | 0 of 2000 |
+| misinfo | hi | 0/1016 | no score: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016) | 0/211 | no score: no valid score for any of 211 corpus text rows (skip_reason: unsupported_language=211) (not like for like) | no score: recall: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016); flag rate: no valid score for any of 211 corpus text rows (skip_reason: unsupported_language=211) (not like for like) | n/a of 2000 |
+| misinfo | all | 90/1107 | 0.489 [0.389, 0.589] | 612/823 | 0.075 [0.056, 0.096] (not like for like) | 6.504 [4.610, 9.521] (not like for like) | 0 of 2000 |
+| tfidf | en | 90/90 | 0.033 [0.000, 0.078] | 612/612 | 0.134 [0.108, 0.162] (not like for like) | 0.249 [0.000, 0.591] (not like for like) | 0 of 2000 |
+| tfidf | hi | 0/1016 | no score: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016) | 0/211 | no score: no valid score for any of 211 corpus text rows (skip_reason: unsupported_language=211) (not like for like) | no score: recall: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016); flag rate: no valid score for any of 211 corpus text rows (skip_reason: unsupported_language=211) (not like for like) | n/a of 2000 |
+| tfidf | all | 90/1107 | 0.033 [0.000, 0.078] | 612/823 | 0.134 [0.108, 0.162] (not like for like) | 0.249 [0.000, 0.591] (not like for like) | 0 of 2000 |
 
 ## Hindi gate
 
@@ -101,11 +101,11 @@ Hindi scores enter fusion only with at least 50 Hindi claims and a title lift in
 
 | model | Hindi claims scored | lift [95% CI] | result | reason |
 |---|---|---|---|---|
-| laya_en | 0 of 261 | no value | **FAIL** | 0 Hindi claims with a score, 50 needed; no lift interval: recall: no valid score for any of 261 claim rows (skip_reason: unrouted_language=261); flag rate: no valid score for any of 136 corpus title rows (skip_reason: unrouted_language=136) |
-| laya_multi | 261 of 261 | 2.233 [1.146, 6.605] | **PASS** | 261 Hindi claims and lift lower limit 1.146 above 1 |
-| laya_multi_base | 261 of 261 | no value | **FAIL (control)** | control model, not a candidate: its numbers are a baseline for the fine-tuned models and it is never shipped. By the numbers alone: no lift interval: flag rate is 0 at the validation threshold (0 of 136 corpus rows flagged), so the ratio is undefined |
-| misinfo | 0 of 261 | no value | **FAIL** | 0 Hindi claims with a score, 50 needed; no lift interval: recall: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261); flag rate: no valid score for any of 136 corpus title rows (skip_reason: unsupported_language=136) |
-| tfidf | 0 of 261 | no value | **FAIL** | 0 Hindi claims with a score, 50 needed; no lift interval: recall: no valid score for any of 261 claim rows (skip_reason: unsupported_language=261); flag rate: no valid score for any of 136 corpus title rows (skip_reason: unsupported_language=136) |
+| laya_en | 0 of 1016 | no value | **FAIL** | 0 Hindi claims with a score, 50 needed; no lift interval: recall: no valid score for any of 1016 claim rows (skip_reason: unrouted_language=1016); flag rate: no valid score for any of 211 corpus title rows (skip_reason: unrouted_language=211) |
+| laya_multi | 1016 of 1016 | 1.834 [1.116, 3.981] | **PASS** | 1016 Hindi claims and lift lower limit 1.116 above 1 |
+| laya_multi_base | 1016 of 1016 | no value | **FAIL (control)** | control model, not a candidate: its numbers are a baseline for the fine-tuned models and it is never shipped. By the numbers alone: no lift interval: flag rate is 0 at the validation threshold (0 of 211 corpus rows flagged), so the ratio is undefined |
+| misinfo | 0 of 1016 | no value | **FAIL** | 0 Hindi claims with a score, 50 needed; no lift interval: recall: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016); flag rate: no valid score for any of 211 corpus title rows (skip_reason: unsupported_language=211) |
+| tfidf | 0 of 1016 | no value | **FAIL** | 0 Hindi claims with a score, 50 needed; no lift interval: recall: no valid score for any of 1016 claim rows (skip_reason: unsupported_language=1016); flag rate: no valid score for any of 211 corpus title rows (skip_reason: unsupported_language=211) |
 
 ## Skipped and excluded rows
 
@@ -113,42 +113,42 @@ A null score is never counted as not flagged. Each one is left out of the denomi
 
 | model | part | rows | no score | skip_reason counts |
 |---|---|---|---|---|
-| laya_en | claims | 349 | 261 | unrouted_language=261 |
-| laya_en | corpus_title | 510 | 136 | unrouted_language=136 |
-| laya_en | corpus_text | 510 | 136 | unrouted_language=136 |
-| laya_multi | claims | 349 | 0 | none |
-| laya_multi | corpus_title | 510 | 0 | none |
-| laya_multi | corpus_text | 510 | 0 | none |
-| laya_multi_base | claims | 349 | 0 | none |
-| laya_multi_base | corpus_title | 510 | 0 | none |
-| laya_multi_base | corpus_text | 510 | 0 | none |
-| misinfo | claims | 349 | 261 | unsupported_language=261 |
-| misinfo | corpus_title | 510 | 136 | unsupported_language=136 |
-| misinfo | corpus_text | 510 | 136 | unsupported_language=136 |
-| tfidf | claims | 349 | 261 | unsupported_language=261 |
-| tfidf | corpus_title | 510 | 136 | unsupported_language=136 |
-| tfidf | corpus_text | 510 | 136 | unsupported_language=136 |
+| laya_en | claims | 1107 | 1017 | unrouted_language=1017 |
+| laya_en | corpus_title | 823 | 211 | unrouted_language=211 |
+| laya_en | corpus_text | 823 | 211 | unrouted_language=211 |
+| laya_multi | claims | 1107 | 1 | unrouted_language=1 |
+| laya_multi | corpus_title | 823 | 0 | none |
+| laya_multi | corpus_text | 823 | 0 | none |
+| laya_multi_base | claims | 1107 | 1 | unrouted_language=1 |
+| laya_multi_base | corpus_title | 823 | 0 | none |
+| laya_multi_base | corpus_text | 823 | 0 | none |
+| misinfo | claims | 1107 | 1017 | unsupported_language=1017 |
+| misinfo | corpus_title | 823 | 211 | unsupported_language=211 |
+| misinfo | corpus_text | 823 | 211 | unsupported_language=211 |
+| tfidf | claims | 1107 | 1017 | unsupported_language=1017 |
+| tfidf | corpus_title | 823 | 211 | unsupported_language=211 |
+| tfidf | corpus_text | 823 | 211 | unsupported_language=211 |
 
 | model | claim ids excluded (reason=count) | kept claims absent from scores | corpus rows from fact-check publishers (title/text) | corpus rows without source_detail |
 |---|---|---|---|---|
-| laya_en | none | 0 | 120/120 | 0/0 |
-| laya_multi | none | 0 | 120/120 | 0/0 |
-| laya_multi_base | none | 0 | 120/120 | 0/0 |
-| misinfo | none | 0 | 120/120 | 0/0 |
-| tfidf | none | 0 | 120/120 | 0/0 |
+| laya_en | none | 0 | 126/126 | 0/0 |
+| laya_multi | none | 0 | 126/126 | 0/0 |
+| laya_multi_base | none | 0 | 126/126 | 0/0 |
+| misinfo | none | 0 | 126/126 | 0/0 |
+| tfidf | none | 0 | 126/126 | 0/0 |
 
 ## Inputs
 
 | model | file | rows | sha256 |
 |---|---|---|---|
-| laya_en | laya_en.parquet | 12290 | `f76093c186873d0ae71a6aa112979a75708ee0ac602af6d75d426fefee30bd9c` |
-| laya_multi | laya_multi.parquet | 12290 | `747172bafd11f3a4ba7fefdba58e3587c50d53e531595e910c9df1d606064ecd` |
-| laya_multi_base | laya_multi_base.parquet | 12290 | `b5c949c4fe6f06ce859413f194b05a0d957ef37803bec2d88adaa8ccef2150e6` |
-| misinfo | misinfo.parquet | 12290 | `802ab4cef14b60b09063b9ff1c25309105077881bc5498a9e53affebd61c1f68` |
-| tfidf | tfidf.parquet | 12290 | `66ad716a81ff9a46eecc078402bc353a0fd861cfd5b30f9ab41843c101d30fb2` |
+| laya_en | laya_en.parquet | 13686 | `eaad8c50438d2788db066edeb049a1f429dc451bef211f51c1d9b64c551a1050` |
+| laya_multi | laya_multi.parquet | 13686 | `2eef8c43dce91d74e4148c607217625ed34df656d732cff375ab1031ad1413be` |
+| laya_multi_base | laya_multi_base.parquet | 13686 | `c2fcde9204d8fd55e8cec400922e9848b91ff6406df35737674ae35b647f477a` |
+| misinfo | misinfo.parquet | 13686 | `f677946c62300e39b101f6caa687afadf2da73dc81f8e124685fc8a80658e175` |
+| tfidf | tfidf.parquet | 13686 | `01b646b8091064d9ef0e1937972fda64a5e90978cc987d2f4814597d42b87550` |
 
 ## Reproducibility
 
 - seed: `20260813`
-- input manifest hash: `d9c692247d0a301e`
+- input manifest hash: `82396c7a3b50090e`
 - regenerate by rerunning `python -m modeling.cli evaluate-factchecks` on the same score files and the same seed
