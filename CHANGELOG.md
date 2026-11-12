@@ -66,6 +66,11 @@ decision.
 
 ### Changed
 
+- **The fact-check manifest is refrozen at 1107 claims.** The Vishvas News sitemap
+  backfill raised the set from 349 claims. All 349 old rows are unchanged. The Hindi gate
+  is measured again on 1016 Hindi claims. It still passes with a lift of 1.834
+  [1.116, 3.981]. On Hindi full text, the lift upper limit is now below 1 (0.367
+  [0.280, 0.487]). The stage scores titles only.
 - `configs/topics.yaml` replaced: four Indian topic areas (communal, electoral,
   health, scams and synthetic media) with English and Hindi seeds, replacing the
   US vaccine/election/climate case.

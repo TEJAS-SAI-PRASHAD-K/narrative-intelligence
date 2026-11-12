@@ -528,7 +528,7 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
     The stage scores the record's title, read by ``modeling.titles.title_of`` as the
     comparison reads ``corpus_title``. The Hindi gate passed on titles. On Hindi full text the
-    same model had a lift of 0.232 [0.000, 0.805], so full text is outside what the gate
+    same model had a lift of 0.367 [0.280, 0.487], so full text is outside what the gate
     measured. A record with no title gets ``laya:no_title``, and ``text_too_short`` applies to
     the title.
 

@@ -71,8 +71,9 @@ These are reported because a module that fails quietly is worse than one that
 fails loudly. None of them is a blocker for the pipeline running end to end.
 
 **The Hindi gate passes with clear limits.** The Laya multilingual fine-tune has a
-Hindi title lift of 2.233 [1.146, 6.605] over 261 claims. Recall is 0.115, and the
-corpus has 136 Hindi titles. Almost all Hindi claims come from one publisher. See
+Hindi title lift of 1.834 [1.116, 3.981] over 1016 claims. Recall is 0.104, and the
+corpus has 211 Hindi titles. Almost all Hindi claims come from one publisher. On Hindi
+full text, the lift is 0.367 [0.280, 0.487], and the upper limit is below 1. See
 `artifacts/model_cards/laya.md`.
 
 **The bot classifier does not generalize to unseen botnets.** Trained on
@@ -139,8 +140,8 @@ lift = recall on known-false claims / flag rate on the whole corpus
 figure alone cannot distinguish them.
 
 Report English and Hindi separately. Of the 1108 verdicts, 1017 claims are Hindi, 90 are
-English and one is in another language. The frozen evaluation set still has 349 claims,
-and 261 of them are Hindi. The Hindi estimate rests on those 261 claims, so show the
+English and one is in another language. The frozen evaluation set has 1107 claims,
+and 1016 of them are Hindi. The freeze collapsed one duplicate verdict. The Hindi estimate rests on those 1016 claims, so show the
 interval and not the point estimate alone. The roberta fine-tune and TF-IDF cannot
 score the Hindi subset at all. That asymmetry is the result, and "no score" is
 the honest entry in that cell, not a zero.
@@ -153,9 +154,9 @@ the honest entry in that cell, not a zero.
   The new verdicts per run were 210, 164, 125, 96, 73, 49 and 37. About 170 URLs and 12
   sitemaps are still unread, so the archive is not fully read. Each run reads at most 300
   URLs (`backfill.max_urls_per_publisher`). The evaluation manifest
-  `configs/factcheck_eval_manifest.csv` is still frozen at 349 claims. The reported
-  comparison and the Hindi gate result do not include the new claims. To use them, freeze
-  the manifest again and rerun the comparison on a GPU host. The command
+  `configs/factcheck_eval_manifest.csv` was refrozen at 1107 claims after this backfill.
+  The reported comparison and the Hindi gate result include those claims. The unread URLs
+  need another refreeze and a rerun of the comparison on a GPU host. The command
   `python -m ingest.cli factchecks --backfill` reads publisher sitemaps and sends each
   archive URL through the tier 1 ClaimReview path. The operator runs it on the data host.
   The budget is separate from `fetch.max_articles`. The Vishvas entry sets
