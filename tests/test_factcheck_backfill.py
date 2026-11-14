@@ -7,6 +7,7 @@ socket.
 
 from __future__ import annotations
 
+import re
 from datetime import timezone
 from pathlib import Path
 
@@ -1128,8 +1129,12 @@ class TestLedgerCli:
         assert result.exit_code == 1
 
     def test_the_flag_is_in_the_help(self, env):
-        result = self.runner.invoke(cli.app, ["factchecks", "--help"])
-        assert "--recheck-dropped" in result.output
+        # CI forces colour, and Rich then puts escape codes inside the option name.
+        result = self.runner.invoke(
+            cli.app, ["factchecks", "--help"], env={"COLUMNS": "200", "TERM": "dumb"}
+        )
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--recheck-dropped" in plain
 
 
 class TestCli:
