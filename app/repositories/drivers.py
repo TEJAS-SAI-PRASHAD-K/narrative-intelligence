@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import FilterSpec, Page
 from app.mock.responses import DEFINITIONS
+from app.repositories.engagement import measured_sum
 from app.repositories.filters import apply_post_filters, decode_cursor, resolve_project_id
 from app.schemas.drivers import DriverItem, DriversResponse
 
@@ -62,11 +63,7 @@ async def drivers(
             label.label("label"),
             func.count().label("post_count"),
             func.count(distinct(Post.author_id)).label("author_count"),
-            func.sum(
-                func.coalesce(Post.likes, 0)
-                + func.coalesce(Post.shares, 0)
-                + func.coalesce(Post.replies, 0)
-            ).label("engagement"),
+            measured_sum(Post.likes, Post.shares, Post.replies).label("engagement"),
             # Over the authors the classifier could score, not over all of them:
             # counting an unscorable news outlet as human deflates the share on
             # exactly the drivers that news carries.
@@ -99,7 +96,7 @@ async def drivers(
                 # Always 1 on the author tab, so it is omitted there rather than
                 # rendered as a meaningless column.
                 author_count=None if entity_type == "author" else row.author_count,
-                engagement_total=int(row.engagement or 0),
+                engagement_total=None if row.engagement is None else int(row.engagement),
                 bot_like_share=(
                     round(float(row.bot_like_share), 4) if row.bot_like_share is not None else None
                 ),

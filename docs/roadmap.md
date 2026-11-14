@@ -210,10 +210,6 @@ the honest entry in that cell, not a zero.
   files that a deployment stored before the removal. Remove the task, its beat
   schedule, `uploads_dir` and `media_retention_hours` after every deployment has
   passed one retention window.
-- **Sum engagement without a per-row zero in chart series.** The chart and drilldown
-  series in `app/repositories/overview.py` (timeseries), `drivers.py`, `actors.py` and
-  `narratives.py` sum engagement with a per-row `coalesce(..., 0)`. An all-NULL bucket
-  still shows 0 and not null.
 
 ### Known gaps that are not scheduled
 
