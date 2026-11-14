@@ -88,11 +88,21 @@ block and `tier: claimreview`. It does not run in `make collect-daily`.
 python -m ingest.cli factchecks --backfill --dry-run   # report, write no rows, still cache pages
 python -m ingest.cli factchecks --backfill             # add the new verdicts
 python -m ingest.cli factchecks --backfill --limit 100 # stop after 100 verdicts
+python -m ingest.cli factchecks --backfill --recheck-dropped # fetch the dropped pages again
 ```
 
 The report shows these counts for each publisher: URLs discovered, URLs already present,
-pages fetched, verdicts, and each drop reason. A rerun does not fetch a URL that is
-already in `factchecks.parquet`.
+URLs previously dropped, pages fetched, verdicts, and each drop reason. A rerun does not
+fetch a URL that is already in `factchecks.parquet`.
+
+A page can give no verdict for a stable reason: a middle rating, no ClaimReview, or a claim
+language that `claim_languages` excludes. The backfill records such a page in
+`data/factchecks/backfill_dropped.parquet`. Later runs do not fetch it and do not count it
+against the URL budget. They count it as `previously_dropped`. A transient failure, such as
+an HTTP error or a timeout, is not recorded, so the next run tries the page again. Use
+`--recheck-dropped` for one run that ignores the file, for example after a change to the
+rating map. If a page then gives a verdict, the backfill removes it from the file. If the
+file is unreadable, the backfill logs `ledger_unreadable` and goes on as if it were empty.
 
 The option `--dry-run` writes no rows. It does fetch pages and save them in the HTML cache.
 The backfill has its own budget, `backfill.max_urls_per_publisher`. That budget is separate

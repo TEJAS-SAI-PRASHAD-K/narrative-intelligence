@@ -39,6 +39,13 @@ decision.
 
 ### Fixed
 
+- **The fact-check backfill spent its URL budget on pages that it had already dropped.**
+  Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
+  verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
+  URLs were such pages, and the older sitemaps were never reached. The backfill now keeps
+  these pages in `data/factchecks/backfill_dropped.parquet`, skips them, and counts them
+  as `previously_dropped`. Transient failures are not kept, so the next run retries them.
+  The option `--recheck-dropped` fetches the kept pages again.
 - **Romanized Hindi was being assigned a confident wrong language.** langdetect
   has no class for Hindi in Latin script, so it cannot abstain — on ten
   hand-written sentences it returned Swahili ×5, Estonian ×2, Somali ×2,
