@@ -170,7 +170,7 @@ class MockNarrative:
     platforms: list[str] = field(default_factory=list)
     top_domains: list[str] = field(default_factory=list)
     top_hashtags: list[str] = field(default_factory=list)
-    engagement_total: int = 0
+    engagement_total: int | None = None
     scorecard: dict[str, Any] = field(default_factory=dict)
     #: Share of scored member authors with a coordination score above 0.5. None
     #: when no member author has a score, matching the real signal.
@@ -482,7 +482,9 @@ def corpus() -> MockCorpus:
                 narrative.author_ids.append(author.author_id)
             if narrative.id not in author.narrative_ids:
                 author.narrative_ids.append(narrative.id)
-            narrative.engagement_total += sum(v for v in (likes, shares, replies) if v is not None)
+            measured = [v for v in (likes, shares, replies) if v is not None]
+            if measured:
+                narrative.engagement_total = (narrative.engagement_total or 0) + sum(measured)
             for domain in domains:
                 if domain not in narrative.top_domains:
                     narrative.top_domains.append(domain)

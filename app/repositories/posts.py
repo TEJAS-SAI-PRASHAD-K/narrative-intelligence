@@ -15,12 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import FilterSpec, Page
 from app.errors import BadRequest, NotFound
+from app.repositories.engagement import row_total
 from app.repositories.filters import (
     apply_post_filters,
-    join_post_scores,
     count_rows,
     decode_cursor,
     encode_cursor,
+    join_post_scores,
     keyset_where,
     resolve_project_id,
 )
@@ -148,8 +149,10 @@ async def list_posts(
     elif sort == "engagement":
         # Nulls are not zero, so they sort last explicitly rather than by
         # whatever the planner's default happens to be for the direction.
-        total = func.coalesce(Post.likes, 0) + func.coalesce(Post.shares, 0)
-        stmt = stmt.order_by(total.desc(), Post.id.desc()).offset(cursor.get("o", 0))
+        # Likes and shares only, as before and as in the high-risk definition.
+        # Replies are a discussion count and do not rank a post here.
+        total = row_total(Post.likes, Post.shares)
+        stmt = stmt.order_by(total.desc().nulls_last(), Post.id.desc()).offset(cursor.get("o", 0))
     else:  # risk
         stmt = (
             join_post_scores(stmt)

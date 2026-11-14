@@ -22,12 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import FilterSpec, Page
 from app.mock.responses import DEFINITIONS
+from app.repositories.engagement import measured_sum
 from app.repositories.filters import apply_post_filters, resolve_project_id
 from app.schemas.common import Metric, PageResponse
 from app.schemas.overview import (
+    COVERAGE_MODULES,
     ConceptItem,
     ConceptsResponse,
-    COVERAGE_MODULES,
     KpiBundle,
     LanguageCoverage,
     TimeseriesPoint,
@@ -227,11 +228,7 @@ async def timeseries(
         else (
             func.count(func.distinct(Post.author_id))
             if metric == "authors"
-            else func.sum(
-                func.coalesce(Post.likes, 0)
-                + func.coalesce(Post.shares, 0)
-                + func.coalesce(Post.replies, 0)
-            )
+            else measured_sum(Post.likes, Post.shares, Post.replies)
         )
     )
 
@@ -255,7 +252,7 @@ async def timeseries(
     )
     rows = (await session.execute(stmt)).all()
 
-    buckets: dict[object, dict[str, float]] = {}
+    buckets: dict[object, dict[str, float | None]] = {}
     labels: dict[str, str] = {}
     for row in rows:
         if group_column is not None:
@@ -265,7 +262,11 @@ async def timeseries(
             bucket_start, series_value = row
             series_key = "all"
             labels["all"] = "All"
-        buckets.setdefault(bucket_start, {})[str(series_key)] = float(series_value or 0)
+        # A NULL here is an engagement bucket where no post measured anything.
+        # It stays None; posts and authors counts are never NULL.
+        buckets.setdefault(bucket_start, {})[str(series_key)] = (
+            None if series_value is None else float(series_value)
+        )
 
     filled, capped = _fill_empty_buckets(buckets, interval)
 
@@ -273,10 +274,11 @@ async def timeseries(
         peaks: dict[str, float] = {}
         for series in filled.values():
             for key, val in series.items():
-                peaks[key] = max(peaks.get(key, 0.0), val)
+                if val is not None:
+                    peaks[key] = max(peaks.get(key, 0.0), val)
         for series in filled.values():
             for key in list(series):
-                if peaks.get(key):
+                if series[key] is not None and peaks.get(key):
                     series[key] = round(series[key] / peaks[key], 4)
 
     return TimeseriesResponse(
@@ -289,7 +291,7 @@ async def timeseries(
         points=[
             TimeseriesPoint(
                 bucket_start=start,
-                value=round(sum(series.values()), 4),
+                value=_bucket_value(series, metric),
                 series=series if group_by != "none" else None,
             )
             for start, series in sorted(filled.items())
@@ -306,6 +308,18 @@ async def timeseries(
             )
         ),
     )
+
+
+def _bucket_value(series: dict[str, float | None], metric: str) -> float | None:
+    """Total of one bucket's series. Engagement with no measured input is None.
+
+    An empty bucket has no post to measure, so for engagement it is unmeasured
+    too. Counts of posts and authors are a true zero there.
+    """
+    measured = [v for v in series.values() if v is not None]
+    if not measured and metric == "engagements":
+        return None
+    return round(sum(measured), 4)
 
 
 def _fill_empty_buckets(buckets: dict, interval: str) -> tuple[dict, bool]:
@@ -701,18 +715,14 @@ async def engagements_breakdown(session: AsyncSession, spec: FilterSpec):
     high_risk = (
         await session.execute(
             select(
-                func.sum(func.coalesce(Post.likes, 0) + func.coalesce(Post.shares, 0)),
-                func.count(Post.likes) + func.count(Post.shares),
+                measured_sum(Post.likes, Post.shares),
             )
             .select_from(Post)
             .join(PostScore, PostScore.post_id == Post.id)
             .where(scoped, PostScore.misinfo_likelihood > 0.7)
         )
     ).one()
-    high_risk, high_risk_measured = high_risk
-    if not high_risk_measured:
-        # The per-row COALESCE makes the SUM 0 even when no input was measured.
-        high_risk = None
+    (high_risk,) = high_risk
 
     def metric(value, label, definition, **kwargs):
         return Metric(

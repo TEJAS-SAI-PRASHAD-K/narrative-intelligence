@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import utcnow
 from app.deps import FilterSpec, Page
 from app.errors import NotFound
+from app.repositories.engagement import measured_sum
 from app.repositories.filters import (
     apply_post_filters,
     count_rows,
@@ -271,11 +272,7 @@ async def author_timeline(
             select(
                 bucket,
                 func.count(Post.id),
-                func.sum(
-                    func.coalesce(Post.likes, 0)
-                    + func.coalesce(Post.shares, 0)
-                    + func.coalesce(Post.replies, 0)
-                ),
+                measured_sum(Post.likes, Post.shares, Post.replies),
                 func.avg(PostScore.toxicity),
             )
             .outerjoin(PostScore, PostScore.post_id == Post.id)
@@ -306,7 +303,7 @@ async def author_timeline(
             AuthorTimelinePoint(
                 bucket_start=bucket_start,
                 post_count=posts,
-                engagement=int(engagement or 0),
+                engagement=None if engagement is None else int(engagement),
                 mean_toxicity=round(float(toxicity), 4) if toxicity is not None else None,
             )
             for bucket_start, posts, engagement, toxicity in rows

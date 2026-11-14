@@ -1169,8 +1169,15 @@
             "type": "string"
           },
           "engagement": {
-            "title": "Engagement",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engagement"
           },
           "mean_toxicity": {
             "anyOf": [
@@ -3933,9 +3940,15 @@
             "type": "integer"
           },
           "engagement_total": {
-            "default": 0,
-            "title": "Engagement Total",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engagement Total"
           },
           "id": {
             "title": "Id",
@@ -4436,9 +4449,15 @@
             "type": "integer"
           },
           "engagement_total": {
-            "default": 0,
-            "title": "Engagement Total",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engagement Total"
           },
           "id": {
             "title": "Id",
@@ -6755,8 +6774,15 @@
             "title": "By Platform"
           },
           "engagement": {
-            "title": "Engagement",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engagement"
           },
           "post_count": {
             "title": "Post Count",
@@ -6783,7 +6809,14 @@
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "number"
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -6794,8 +6827,15 @@
             "title": "Series"
           },
           "value": {
-            "title": "Value",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
           }
         },
         "required": [

@@ -62,6 +62,25 @@ decision.
   sitemap now uses the budget only when it holds a new URL. The new limit
   `backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests. The report shows
   `sitemaps_exhausted`, and a sitemap that a bound skips is counted as unread.
+- **Chart and drilldown series reported unmeasured engagement as 0.** The timeseries,
+  the drivers list, the author timeline and the narrative timeline summed engagement
+  with a per-row `coalesce(..., 0)`. A bucket where no post exposes likes, shares or
+  replies now returns null. A bucket with one measured value returns the sum of the
+  measured values. The engagement sort in the post list puts unmeasured posts last.
+  The stored `narratives.engagement_total` column is now nullable. A migration
+  recomputes it, and both writers use the same rule.
+
+  These API fields can now be null. The dashboard must handle null in each field.
+  - `TimeseriesPoint.value`
+  - values in `TimeseriesPoint.series`
+  - `AuthorTimelinePoint.engagement`
+  - `TimelinePoint.engagement`
+  - `NarrativeSummary.engagement_total`
+
+  In a grouped timeseries, a missing series key means that the group has no posts
+  in the bucket. A null value means that the group has posts with no measured
+  engagement. Treat both as a gap. Regenerate the dashboard client.
+
 - **Romanized Hindi was being assigned a confident wrong language.** langdetect
   has no class for Hindi in Latin script, so it cannot abstain — on ten
   hand-written sentences it returned Swahili ×5, Estonian ×2, Somali ×2,

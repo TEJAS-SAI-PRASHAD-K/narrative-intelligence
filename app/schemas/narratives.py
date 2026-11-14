@@ -59,7 +59,8 @@ class NarrativeSummary(Camel):
     date_end: datetime | None = None
     post_count: int = 0
     author_count: int = 0
-    engagement_total: int = 0
+    #: None when no member post exposes likes, shares or replies.
+    engagement_total: int | None = None
     platforms: list[str] = Field(default_factory=list)
     top_domains: list[str] = Field(default_factory=list)
     top_hashtags: list[str] = Field(default_factory=list)
@@ -120,7 +121,8 @@ class NarrativeUpdate(Camel):
 class TimelinePoint(Camel):
     bucket_start: datetime
     post_count: int
-    engagement: int
+    #: None when no post in the bucket exposes likes, shares or replies.
+    engagement: int | None
     author_count: int
     #: Present only when ``cross_platform=true``; the UI stacks these.
     by_platform: dict[str, int] | None = None
