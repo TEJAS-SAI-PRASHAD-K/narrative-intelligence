@@ -44,9 +44,19 @@ decision.
   with a per-row `coalesce(..., 0)`. A bucket where no post exposes likes, shares or
   replies now returns null. A bucket with one measured value returns the sum of the
   measured values. The engagement sort in the post list puts unmeasured posts last.
-  The fields `TimeseriesPoint.value`, `TimeseriesPoint.series`,
-  `AuthorTimelinePoint.engagement` and `TimelinePoint.engagement` are now nullable.
-  Regenerate the dashboard client.
+  The stored `narratives.engagement_total` column is now nullable. A migration
+  recomputes it, and both writers use the same rule.
+
+  These API fields can now be null. The dashboard must handle null in each field.
+  - `TimeseriesPoint.value`
+  - values in `TimeseriesPoint.series`
+  - `AuthorTimelinePoint.engagement`
+  - `TimelinePoint.engagement`
+  - `NarrativeSummary.engagement_total`
+
+  In a grouped timeseries, a missing series key means that the group has no posts
+  in the bucket. A null value means that the group has posts with no measured
+  engagement. Treat both as a gap. Regenerate the dashboard client.
 
 - **Romanized Hindi was being assigned a confident wrong language.** langdetect
   has no class for Hindi in Latin script, so it cannot abstain — on ten
