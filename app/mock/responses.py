@@ -611,6 +611,13 @@ def overview_kpis(spec: FilterSpec):
     )
 
 
+def _bucket_total(series: dict, metric: str):
+    measured = [v for v in series.values() if v is not None]
+    if not measured and metric == "engagements":
+        return None
+    return round(sum(measured), 4)
+
+
 def overview_timeseries(
     spec: FilterSpec, metric: str, group_by: str, interval: str, normalize: bool, agg: str
 ):
@@ -633,7 +640,7 @@ def overview_timeseries(
 
     start = min(p.timestamp for p in posts).replace(minute=0, second=0, microsecond=0)
     end = max(p.timestamp for p in posts)
-    buckets: dict[Any, dict[str, float]] = {}
+    buckets: dict[Any, dict[str, float | None]] = {}
     cursor = start
     while cursor <= end:
         buckets[cursor] = {}
@@ -656,12 +663,14 @@ def overview_timeseries(
         else:
             key = "all"
             labels[key] = "All"
-        value = (
-            1
-            if metric == "posts"
-            else sum(v for v in (post.likes, post.shares, post.replies) if v is not None)
-        )
-        buckets[bucket][key] = buckets[bucket].get(key, 0) + value
+        if metric == "posts":
+            buckets[bucket][key] = (buckets[bucket].get(key) or 0) + 1
+        else:
+            measured = [v for v in (post.likes, post.shares, post.replies) if v is not None]
+            if measured:
+                buckets[bucket][key] = (buckets[bucket].get(key) or 0) + sum(measured)
+            else:
+                buckets[bucket].setdefault(key, None)
 
     if normalize:
         # Each series scaled to its own peak. Shape becomes comparable and
@@ -670,16 +679,17 @@ def overview_timeseries(
         peaks: dict[str, float] = {}
         for series in buckets.values():
             for key, value in series.items():
-                peaks[key] = max(peaks.get(key, 0.0), value)
+                if value is not None:
+                    peaks[key] = max(peaks.get(key, 0.0), value)
         for series in buckets.values():
             for key in list(series):
-                if peaks.get(key):
+                if series[key] is not None and peaks.get(key):
                     series[key] = round(series[key] / peaks[key], 4)
 
     points = [
         TimeseriesPoint(
             bucket_start=bucket,
-            value=round(sum(series.values()), 4),
+            value=_bucket_total(series, metric),
             series=series if group_by != "none" else None,
         )
         for bucket, series in sorted(buckets.items())
@@ -1007,7 +1017,7 @@ def narrative_timeline(narrative: MockNarrative, interval: str, tz: str, cross_p
     buckets: dict[Any, dict[str, Any]] = {}
     cursor = start
     while cursor <= end:
-        buckets[cursor] = {"posts": 0, "engagement": 0, "authors": set(), "platforms": {}}
+        buckets[cursor] = {"posts": 0, "engagement": None, "authors": set(), "platforms": {}}
         cursor += timedelta(hours=hours)
 
     for post in posts:
@@ -1016,9 +1026,9 @@ def narrative_timeline(narrative: MockNarrative, interval: str, tz: str, cross_p
         if bucket is None:
             continue
         bucket["posts"] += 1
-        bucket["engagement"] += sum(
-            v for v in (post.likes, post.shares, post.replies) if v is not None
-        )
+        measured = [v for v in (post.likes, post.shares, post.replies) if v is not None]
+        if measured:
+            bucket["engagement"] = (bucket["engagement"] or 0) + sum(measured)
         bucket["authors"].add(post.author_id)
         bucket["platforms"][post.source] = bucket["platforms"].get(post.source, 0) + 1
 
@@ -1374,11 +1384,11 @@ def author_timeline(author, interval: str, tz: str):
             second=0,
             microsecond=0,
         )
-        entry = buckets.setdefault(bucket, {"posts": 0, "engagement": 0, "tox": []})
+        entry = buckets.setdefault(bucket, {"posts": 0, "engagement": None, "tox": []})
         entry["posts"] += 1
-        entry["engagement"] += sum(
-            v for v in (post.likes, post.shares, post.replies) if v is not None
-        )
+        measured = [v for v in (post.likes, post.shares, post.replies) if v is not None]
+        if measured:
+            entry["engagement"] = (entry["engagement"] or 0) + sum(measured)
         toxicity = (post.scores or {}).get("toxicity")
         if toxicity is not None:
             entry["tox"].append(toxicity)
@@ -1415,7 +1425,7 @@ def drivers(spec: FilterSpec, page: Page, entity_type: str):
                 "label": label,
                 "posts": 0,
                 "authors": set(),
-                "engagement": 0,
+                "engagement": None,
                 "tox": [],
                 "narratives": set(),
                 "first": post.timestamp,
@@ -1425,9 +1435,9 @@ def drivers(spec: FilterSpec, page: Page, entity_type: str):
         )
         entry["posts"] += 1
         entry["authors"].add(post.author_id)
-        entry["engagement"] += sum(
-            v for v in (post.likes, post.shares, post.replies) if v is not None
-        )
+        measured = [v for v in (post.likes, post.shares, post.replies) if v is not None]
+        if measured:
+            entry["engagement"] = (entry["engagement"] or 0) + sum(measured)
         toxicity = (post.scores or {}).get("toxicity")
         if toxicity is not None:
             entry["tox"].append(toxicity)

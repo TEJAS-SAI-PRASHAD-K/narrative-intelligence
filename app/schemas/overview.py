@@ -143,10 +143,11 @@ class SentimentBreakdown(Camel):
 
 class TimeseriesPoint(Camel):
     bucket_start: datetime
-    value: float
+    #: None when the metric is engagements and no post in the bucket measured it.
+    value: float | None
     #: Present when group_by is not 'none'. Keyed by platform / narrative id /
-    #: cohort id depending on the grouping.
-    series: dict[str, float] | None = None
+    #: cohort id depending on the grouping. A series is None under the same rule.
+    series: dict[str, float | None] | None = None
 
 
 class TimeseriesResponse(Camel):

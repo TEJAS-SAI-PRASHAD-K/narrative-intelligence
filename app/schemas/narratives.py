@@ -120,7 +120,8 @@ class NarrativeUpdate(Camel):
 class TimelinePoint(Camel):
     bucket_start: datetime
     post_count: int
-    engagement: int
+    #: None when no post in the bucket exposes likes, shares or replies.
+    engagement: int | None
     author_count: int
     #: Present only when ``cross_platform=true``; the UI stacks these.
     by_platform: dict[str, int] | None = None

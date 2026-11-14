@@ -112,7 +112,8 @@ class AuthorScoreExplanation(Camel):
 class AuthorTimelinePoint(Camel):
     bucket_start: datetime
     post_count: int
-    engagement: int
+    #: None when no post in the bucket exposes likes, shares or replies.
+    engagement: int | None
     mean_toxicity: float | None = None
 
 

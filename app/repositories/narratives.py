@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import utcnow
 from app.deps import FilterSpec, Page
 from app.errors import BadRequest, NotFound
+from app.repositories.engagement import measured_sum
 from app.repositories.filters import (
     count_rows,
     decode_cursor,
@@ -356,11 +357,7 @@ async def narrative_timeline(
                 Post.source,
                 func.count(Post.id),
                 func.count(func.distinct(Post.author_id)),
-                func.sum(
-                    func.coalesce(Post.likes, 0)
-                    + func.coalesce(Post.shares, 0)
-                    + func.coalesce(Post.replies, 0)
-                ),
+                measured_sum(Post.likes, Post.shares, Post.replies),
             )
             .join(NarrativePost, NarrativePost.post_id == Post.id)
             .where(NarrativePost.narrative_id == narrative.id)
@@ -372,11 +369,12 @@ async def narrative_timeline(
     buckets: dict[Any, dict[str, Any]] = {}
     for bucket_start, source, posts, authors, engagement in rows:
         entry = buckets.setdefault(
-            bucket_start, {"posts": 0, "authors": 0, "engagement": 0, "platforms": {}}
+            bucket_start, {"posts": 0, "authors": 0, "engagement": None, "platforms": {}}
         )
         entry["posts"] += posts
         entry["authors"] += authors
-        entry["engagement"] += int(engagement or 0)
+        if engagement is not None:
+            entry["engagement"] = (entry["engagement"] or 0) + int(engagement)
         entry["platforms"][source] = posts
 
     points = [
