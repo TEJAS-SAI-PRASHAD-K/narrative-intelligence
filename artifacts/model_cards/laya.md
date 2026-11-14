@@ -28,30 +28,31 @@ scorer adds cost and no measured gain.
 
 Hindi is the one language that only Laya can score here. The gate needs at least 50
 Hindi claims and a title lift interval with a lower limit above 1. The set grew from
-13 to 1016 Hindi claims. The sitemap backfill added Vishvas News archive pages, and then
-we froze the manifest again.
+13 to 1016 to 4180 Hindi claims. The sitemap backfill read the whole Vishvas News
+archive inside the 2022 window, and then we froze the manifest again.
 
 | measure, Hindi titles | Laya multilingual fine-tune |
 |---|---|
-| claims scored | 1016 |
-| recall on known-false claims | 0.104 [0.087, 0.123] |
-| flag rate on 211 corpus titles | 0.057 [0.028, 0.090] |
-| lift | 1.834 [1.116, 3.981] |
+| claims scored | 4180 |
+| recall on known-false claims | 0.122 [0.113, 0.132] |
+| flag rate on 431 corpus titles | 0.070 [0.046, 0.093] |
+| lift | 1.760 [1.286, 2.630] |
 
 **The gate passes.** The result has clear limits:
 
-- The lower limit is 1.116, close to 1. The corpus has only 211 Hindi titles.
-- On full text, the lift is 0.367 [0.280, 0.487] and the upper limit is below 1. The
-  model flags Hindi corpus articles (0.284) more often than debunked claims (0.104).
+- The lower limit is 1.286. With 1016 claims it was 1.116. The interval is much
+  narrower now, but the corpus has only 431 Hindi titles.
+- On full text, the lift is 0.476 [0.401, 0.573] and the upper limit is below 1. The
+  model flags Hindi corpus articles (0.258) more often than debunked claims (0.122).
   The full-text figures are not like for like with the title figures. The stage scores
   titles only. Do not use the score on full text.
-- Recall is 0.104, so the model does not flag most debunked claims at this threshold.
-- Almost all Hindi claims come from one publisher. Vishvas News gives 1011 of the 1016
-  claims. The result reflects the choice of claims by that publisher.
+- Recall is 0.122, so the model does not flag most debunked claims at this threshold.
+- Almost all Hindi claims come from one publisher. Vishvas News gives 4173 of the 4180
+  claims, which is 99.8 percent. The result reflects the choice of claims by that publisher.
 - The claims are short fact-check statements, and the corpus has news titles. A part
   of the lift can come from this difference in text form.
-- The English recall on the fact-check set is 0.056 [0.011, 0.111] for `laya_en` and
-  0.044 [0.011, 0.089] for `laya_multi`. The English result does not prove any transfer to Hindi.
+- The English recall on the fact-check set is 0.060 [0.020, 0.110] for `laya_en` and
+  0.050 [0.010, 0.100] for `laya_multi`. The English result does not prove any transfer to Hindi.
 
 ## Real run of the stage
 
@@ -79,7 +80,7 @@ moderation or enforcement.
 
 The `laya` stage in `modeling/scoring.py` scores Hindi records only. It runs after the `misinfo` stage. The English slot belongs to the `misinfo` module, and the stage never writes for English.
 
-The stage scores the title of a record, not the full text. The Hindi gate passed on `corpus_title` with a lift of 1.834 [1.116, 3.981]. On Hindi full text, the same model has a flag rate of 0.284 and a lift of 0.367 [0.280, 0.487]. The upper limit is below 1. Full text is outside what the gate measured.
+The stage scores the title of a record, not the full text. The Hindi gate passed on `corpus_title` with a lift of 1.760 [1.286, 2.630]. On Hindi full text, the same model has a flag rate of 0.258 and a lift of 0.476 [0.401, 0.573]. The upper limit is below 1. Full text is outside what the gate measured.
 
 The stage reads the title as the comparison reads it. A record with no title gets the reason `laya:no_title`. The rule `text_too_short` applies to the title.
 
