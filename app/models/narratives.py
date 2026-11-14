@@ -106,7 +106,8 @@ class Narrative(TimestampMixin, Base):
     date_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     post_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     author_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    engagement_total: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    #: NULL when no member post exposes likes, shares or replies. Not a measured 0.
+    engagement_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     platforms: Mapped[list[str]] = mapped_column(
         ARRAY(String(32)), nullable=False, server_default="{}"

@@ -991,7 +991,7 @@ def narratives_page(spec: FilterSpec, page: Page, sort: str, q: str | None):
     sorters = {
         "priority": lambda n: (order[n.scorecard["priority"]], -(n.scorecard["fusion_score"] or 0)),
         "date": lambda n: -n.date_end.timestamp(),
-        "engagement": lambda n: -n.engagement_total,
+        "engagement": lambda n: (n.engagement_total is None, -(n.engagement_total or 0)),
         "posts": lambda n: -len(n.post_ids),
     }
     narratives.sort(key=sorters.get(sort, sorters["priority"]))

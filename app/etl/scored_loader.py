@@ -422,15 +422,18 @@ def load_narratives(session: Session, scored_dir: Path, project_id: uuid.UUID) -
     ).scalar()
 
     # Engagement is a corpus fact, not a model output, so it is recomputed from
-    # posts rather than trusted from the scored table. Nulls contribute nothing.
+    # posts rather than trusted from the scored table. A narrative where no post
+    # exposes likes, shares or replies gets NULL, not a measured zero.
     session.execute(
         text(
             """
-            UPDATE narratives n SET engagement_total = COALESCE(sub.total, 0)
+            UPDATE narratives n SET engagement_total = sub.total
             FROM (
                 SELECT np.narrative_id,
-                       sum(COALESCE(p.likes,0) + COALESCE(p.shares,0)
-                           + COALESCE(p.replies,0)) AS total
+                       CASE WHEN count(p.likes) + count(p.shares) + count(p.replies) = 0
+                            THEN NULL
+                            ELSE sum(COALESCE(p.likes,0) + COALESCE(p.shares,0)
+                                     + COALESCE(p.replies,0)) END AS total
                 FROM narrative_posts np JOIN posts p ON p.id = np.post_id
                 WHERE p.project_id = :p
                 GROUP BY np.narrative_id

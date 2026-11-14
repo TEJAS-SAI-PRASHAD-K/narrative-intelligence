@@ -146,7 +146,9 @@ class TimeseriesPoint(Camel):
     #: None when the metric is engagements and no post in the bucket measured it.
     value: float | None
     #: Present when group_by is not 'none'. Keyed by platform / narrative id /
-    #: cohort id depending on the grouping. A series is None under the same rule.
+    #: cohort id depending on the grouping. A missing key means the group has no
+    #: posts in the bucket. A null value means it has posts with no measured
+    #: engagement. A client treats both as a gap.
     series: dict[str, float | None] | None = None
 
 

@@ -3940,9 +3940,15 @@
             "type": "integer"
           },
           "engagement_total": {
-            "default": 0,
-            "title": "Engagement Total",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engagement Total"
           },
           "id": {
             "title": "Id",
@@ -4443,9 +4449,15 @@
             "type": "integer"
           },
           "engagement_total": {
-            "default": 0,
-            "title": "Engagement Total",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engagement Total"
           },
           "id": {
             "title": "Id",

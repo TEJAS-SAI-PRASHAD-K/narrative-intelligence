@@ -149,6 +149,8 @@ async def list_posts(
     elif sort == "engagement":
         # Nulls are not zero, so they sort last explicitly rather than by
         # whatever the planner's default happens to be for the direction.
+        # Likes and shares only, as before and as in the high-risk definition.
+        # Replies are a discussion count and do not rank a post here.
         total = row_total(Post.likes, Post.shares)
         stmt = stmt.order_by(total.desc().nulls_last(), Post.id.desc()).offset(cursor.get("o", 0))
     else:  # risk

@@ -310,15 +310,17 @@ def _persist_clusters(session, project_id, run_id, members: dict) -> dict:
                 author_count = sub.authors,
                 date_start = sub.first_ts,
                 date_end = sub.last_ts,
-                engagement_total = COALESCE(sub.engagement, 0),
+                engagement_total = sub.engagement,
                 platforms = sub.platforms
             FROM (
                 SELECT np.narrative_id,
                        count(DISTINCT p.author_id) AS authors,
                        min(p."timestamp") AS first_ts,
                        max(p."timestamp") AS last_ts,
-                       sum(COALESCE(p.likes,0) + COALESCE(p.shares,0)
-                           + COALESCE(p.replies,0)) AS engagement,
+                       CASE WHEN count(p.likes) + count(p.shares) + count(p.replies) = 0
+                            THEN NULL
+                            ELSE sum(COALESCE(p.likes,0) + COALESCE(p.shares,0)
+                                     + COALESCE(p.replies,0)) END AS engagement,
                        array_agg(DISTINCT p.source) AS platforms
                 FROM narrative_posts np JOIN posts p ON p.id = np.post_id
                 WHERE p.project_id = :p

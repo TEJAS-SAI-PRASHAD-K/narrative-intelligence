@@ -94,7 +94,7 @@ def to_summary(row, scorecard=None) -> NarrativeSummary:
         date_end=row.date_end,
         post_count=row.post_count or 0,
         author_count=row.author_count or 0,
-        engagement_total=row.engagement_total or 0,
+        engagement_total=row.engagement_total,
         platforms=list(row.platforms or ()),
         top_domains=list(row.top_domains or ()),
         top_hashtags=list(row.top_hashtags or ()),
@@ -167,7 +167,7 @@ async def list_narratives(
         # land by default on a DESC sort and would be actively misleading.
         "priority": (Scorecard.fusion_score.desc().nullslast(), Narrative.id.desc()),
         "date": (Narrative.date_end.desc().nullslast(), Narrative.id.desc()),
-        "engagement": (Narrative.engagement_total.desc(), Narrative.id.desc()),
+        "engagement": (Narrative.engagement_total.desc().nullslast(), Narrative.id.desc()),
         "posts": (Narrative.post_count.desc(), Narrative.id.desc()),
     }
     stmt = stmt.order_by(*orderings.get(sort, orderings["priority"]))
