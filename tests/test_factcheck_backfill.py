@@ -17,10 +17,13 @@ from ingest import cli, factcheck
 from ingest.config import Settings
 from ingest.factcheck import DropReason, FactCheckExtractor, write_factchecks
 from ingest.factcheck_backfill import (
+    LEDGER_FILENAME,
     SitemapBackfill,
     existing_record_ids,
+    ledger_path,
     parse_lastmod,
     parse_sitemap,
+    read_ledger,
     record_for_url,
 )
 from ingest.sources.news_rss import _article_id
@@ -136,11 +139,18 @@ def web(monkeypatch):
     return fake
 
 
-def make_backfill(tmp_path, config=None, known=None) -> SitemapBackfill:
+def make_backfill(
+    tmp_path, config=None, known=None, ledger=False, recheck=False
+) -> SitemapBackfill:
     extractor = FactCheckExtractor(
         settings=Settings(data_dir=tmp_path), config=config or make_config()
     )
-    return SitemapBackfill(extractor, known if known is not None else set())
+    return SitemapBackfill(
+        extractor,
+        known if known is not None else set(),
+        ledger_file=ledger_path(Settings(data_dir=tmp_path)) if ledger else None,
+        recheck_dropped=recheck,
+    )
 
 
 class TestParseSitemap:
@@ -572,6 +582,162 @@ class TestRun:
         again = list(make_backfill(tmp_path).run())
         assert len(again) == 4
         assert web.articles() == []
+
+
+def middle_page() -> Response:
+    html = fixture_bytes("hindi_claimreview.html").replace(b'"False"', b'"Misleading"')
+    assert b"Misleading" in html
+    return Response(200, html)
+
+
+def urls_of(verdicts) -> set[str]:
+    return {v.url for v in verdicts}
+
+
+class TestDroppedLedger:
+    @pytest.fixture
+    def small_budget(self):
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 2
+        return config
+
+    def test_dropped_pages_are_skipped_and_the_budget_reaches_later_pages(
+        self, tmp_path, web, small_budget
+    ):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        first = make_backfill(tmp_path, small_budget, ledger=True)
+        assert list(first.run()) == []
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"] for r in rows.values()} == {NEWER_URL, NEW_URL}
+        row = rows[record_for_url(NEWER_URL, DOMAIN)["id"]]
+        assert row["reason"] == DropReason.RATING_IS_MIDDLE.value
+        assert row["domain"] == DOMAIN
+        assert row["first_seen"].tzinfo is not None and row["last_seen"].tzinfo is not None
+
+        second = make_backfill(tmp_path, small_budget, ledger=True)
+        verdicts = list(second.run())
+        stats = second.stats[DOMAIN]
+        assert stats.previously_dropped == 2
+        assert stats.dropped[DropReason.PREVIOUSLY_DROPPED.value] == 2
+        assert second.extractor.dropped[DropReason.PREVIOUSLY_DROPPED.value] == 2
+        assert urls_of(verdicts) == {STORED_URL, NO_LASTMOD_URL}
+        assert stats.fetched == 2
+
+    def test_a_ledger_hit_makes_no_request_for_the_page(self, tmp_path, web, small_budget):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        # The page cache would hide a request, so remove it.
+        for cached in (tmp_path).rglob("*.html"):
+            cached.unlink()
+        web.calls.clear()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        assert NEWER_URL not in web.calls and NEW_URL not in web.calls
+
+    def test_language_and_no_claimreview_drops_are_recorded(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        web.routes[NEW_URL] = Response(200, b"<html></html>")
+        config = make_config(block={"claim_languages": ["hi"]})
+        list(make_backfill(tmp_path, config, ledger=True).run())
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        reasons = {r["url"]: r["reason"] for r in rows.values()}
+        assert reasons == {
+            NEWER_URL: DropReason.BACKFILL_LANGUAGE_EXCLUDED.value,
+            NEW_URL: DropReason.NO_CLAIMREVIEW.value,
+        }
+
+    def test_transient_failures_are_not_recorded(self, tmp_path, web):
+        web.routes[NEWER_URL] = ConnectionError("down")
+        web.routes[NEW_URL] = Response(500)
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.FETCH_FAILED.value] == 2
+        assert not ledger_path(Settings(data_dir=tmp_path)).exists()
+
+    def test_recheck_dropped_fetches_ledger_urls_again(self, tmp_path, web, small_budget):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        path = ledger_path(Settings(data_dir=tmp_path))
+        first_rows = read_ledger(path)
+        for cached in tmp_path.rglob("*.html"):
+            cached.unlink()
+        web.calls.clear()
+
+        again = make_backfill(tmp_path, small_budget, ledger=True, recheck=True)
+        assert list(again.run()) == []
+        assert {NEWER_URL, NEW_URL} <= set(web.calls)
+        assert again.stats[DOMAIN].previously_dropped == 0
+        rewritten = read_ledger(path)
+        for record_id, row in first_rows.items():
+            assert rewritten[record_id]["first_seen"] == row["first_seen"]
+            assert rewritten[record_id]["last_seen"] >= row["last_seen"]
+
+    def test_an_unreadable_ledger_warns_and_the_run_goes_on(self, tmp_path, web, caplog):
+        path = ledger_path(Settings(data_dir=tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not a parquet file")
+        with caplog.at_level("WARNING", logger="ingest.factcheck.backfill"):
+            backfill = make_backfill(tmp_path, ledger=True)
+            verdicts = list(backfill.run())
+        assert len(verdicts) == 4
+        assert DropReason.LEDGER_UNREADABLE.value in caplog.text
+        assert backfill.extractor.dropped[DropReason.LEDGER_UNREADABLE.value] == 1
+
+    def test_a_url_that_later_gives_a_verdict_leaves_the_ledger(
+        self, tmp_path, web, small_budget
+    ):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        # The publisher changes its rating.
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("hindi_claimreview.html"))
+        for cached in tmp_path.rglob("*.html"):
+            cached.unlink()
+        again = make_backfill(tmp_path, small_budget, ledger=True, recheck=True)
+        verdicts = list(again.run())
+        assert urls_of(verdicts) == {NEWER_URL}
+        remaining = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"] for r in remaining.values()} == {NEW_URL}
+
+
+class TestLedgerCli:
+    runner = CliRunner()
+
+    @pytest.fixture
+    def env(self, tmp_path, web, monkeypatch):
+        settings = Settings(data_dir=tmp_path)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 2
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: config)
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        return settings
+
+    def test_the_second_run_reports_previously_dropped_and_adds_rows(self, env):
+        first = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert first.exit_code == 0, first.output
+        assert (env.data_dir / "factchecks" / LEDGER_FILENAME).exists()
+        second = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert second.exit_code == 0, second.output
+        assert "'previously_dropped': 2" in second.output
+        assert len(existing_record_ids(env)) == 2
+
+    def test_the_dry_run_writes_no_ledger(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert not (env.data_dir / "factchecks").exists()
+
+    def test_the_flag_needs_backfill(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--recheck-dropped"])
+        assert result.exit_code == 1
+
+    def test_the_flag_is_in_the_help(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--help"])
+        assert "--recheck-dropped" in result.output
 
 
 class TestCli:

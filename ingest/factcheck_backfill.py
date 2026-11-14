@@ -26,8 +26,11 @@ publisher's registrable domain.
 
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 import re
+import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -82,6 +85,8 @@ class PublisherStats:
     publisher: str
     discovered: int = 0
     already_present: int = 0
+    #: URLs a previous run fetched and dropped for a stable reason, skipped here.
+    previously_dropped: int = 0
     fetched: int = 0
     verdicts: int = 0
     sitemaps_read: int = 0
@@ -227,6 +232,110 @@ def existing_record_ids(settings: Settings) -> set[str]:
     return ids
 
 
+#: The ledger of backfill URLs that were fetched and dropped. It sits beside the
+#: verdicts. Its name does not match `factchecks-*.parquet`, so no reader of the
+#: verdicts takes it for a legacy verdict file.
+LEDGER_FILENAME = "backfill_dropped.parquet"
+_LEDGER_LOCK_FILENAME = ".backfill_dropped.lock"
+
+#: Drop reasons that a second fetch of the same page repeats: the page holds a
+#: middle rating, holds no ClaimReview, or its claim is in an excluded language.
+#: Every other reason is transient (HTTP errors, timeouts, robots.txt
+#: unreachable, budget, domain given up, off-domain redirect) or can change with
+#: the config (unknown rating), so the next run must try the page again.
+STABLE_DROP_REASONS = frozenset(
+    {
+        DropReason.RATING_IS_MIDDLE.value,
+        DropReason.NO_CLAIMREVIEW.value,
+        DropReason.BACKFILL_LANGUAGE_EXCLUDED.value,
+    }
+)
+
+
+def ledger_path(settings: Settings) -> Path:
+    return settings.data_dir / "factchecks" / LEDGER_FILENAME
+
+
+def _ledger_schema():
+    import pyarrow as pa
+
+    utc = pa.timestamp("us", tz="UTC")
+    return pa.schema(
+        [
+            ("record_id", pa.string()),
+            ("url", pa.string()),
+            ("domain", pa.string()),
+            ("reason", pa.string()),
+            ("first_seen", utc),
+            ("last_seen", utc),
+        ]
+    )
+
+
+def read_ledger(path: Path) -> dict[str, dict[str, Any]]:
+    """Ledger rows by record id. Empty when the file is absent. Raises when it is unreadable."""
+    import pyarrow.parquet as pq
+
+    if not path.exists():
+        return {}
+    return {row["record_id"]: row for row in pq.read_table(path).to_pylist()}
+
+
+def update_ledger(
+    path: Path,
+    upserts: dict[str, dict[str, Any]],
+    removals: set[str],
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Merge changes into the ledger file and return the merged rows.
+
+    The read, merge and atomic replace run under an exclusive lock, so two runs
+    take turns. An upsert keeps `first_seen` of an existing row and sets
+    `last_seen` and `reason`. An unreadable file is replaced: its rows only
+    save a fetch, so losing them is not worth a failed run.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    now = now or datetime.now(timezone.utc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.parent / _LEDGER_LOCK_FILENAME, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            merged = read_ledger(path)
+        except Exception as exc:
+            log.warning(
+                "backfill (%s): replacing unreadable ledger %s: %s",
+                DropReason.LEDGER_UNREADABLE.value,
+                path,
+                exc,
+            )
+            merged = {}
+        for record_id in removals:
+            merged.pop(record_id, None)
+        for record_id, row in upserts.items():
+            previous = merged.get(record_id)
+            merged[record_id] = {
+                **row,
+                "record_id": record_id,
+                "first_seen": previous["first_seen"] if previous else now,
+                "last_seen": now,
+            }
+        table = pa.Table.from_pylist(list(merged.values()), schema=_ledger_schema())
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".backfill_dropped-", suffix=".tmp")
+        os.close(fd)
+        try:
+            pq.write_table(table, tmp_name, compression="zstd")
+            with open(tmp_name, "rb") as written:
+                os.fsync(written.fileno())
+            os.chmod(tmp_name, 0o644)
+            os.replace(tmp_name, path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+    return merged
+
+
 def record_for_url(url: str, domain: str) -> dict:
     """The record dict `FactCheckExtractor.from_html` takes, with the news adapter's id."""
     return {
@@ -242,11 +351,56 @@ def record_for_url(url: str, domain: str) -> dict:
 class SitemapBackfill:
     """Discovers archive URLs per publisher and extracts their verdicts."""
 
-    def __init__(self, extractor: FactCheckExtractor, known_ids: set[str] | None = None):
+    def __init__(
+        self,
+        extractor: FactCheckExtractor,
+        known_ids: set[str] | None = None,
+        ledger_file: Path | None = None,
+        recheck_dropped: bool = False,
+        write_ledger: bool = True,
+    ):
+        """``ledger_file`` is the dropped-URL ledger, or ``None`` for no ledger at all.
+        ``write_ledger=False`` reads it but never writes it, for a dry run.
+
+        ``recheck_dropped`` ignores the ledger for skipping, so its pages are
+        fetched again and their ledger rows are rewritten.
+        """
         self.extractor = extractor
         self.known_ids = known_ids if known_ids is not None else set()
+        self.ledger_file = ledger_file
+        self.recheck_dropped = recheck_dropped
+        self.write_ledger = write_ledger
+        self._ledger_upserts: dict[str, dict[str, Any]] = {}
+        self._ledger_removals: set[str] = set()
+        self.ledger: dict[str, dict[str, Any]] = {}
+        if ledger_file is not None:
+            try:
+                self.ledger = read_ledger(ledger_file)
+            except Exception as exc:
+                self.extractor.drop(DropReason.LEDGER_UNREADABLE, f"{ledger_file}: {exc}")
+                log.warning(
+                    "backfill (%s): cannot read %s, so no URL is skipped as previously "
+                    "dropped: %s",
+                    DropReason.LEDGER_UNREADABLE.value,
+                    ledger_file,
+                    exc,
+                )
         self.bounds = {**DEFAULTS, **(extractor.config.get("backfill") or {})}
         self.stats: dict[str, PublisherStats] = {}
+
+    def _in_ledger(self, record_id: str) -> bool:
+        """True when the ledger lets a run skip this id. Always false under recheck."""
+        return not self.recheck_dropped and record_id in self.ledger
+
+    def save_ledger(self) -> None:
+        """Write this run's ledger changes. A no-op with no ledger file or no change."""
+        if not self.write_ledger or self.ledger_file is None:
+            return
+        if not (self._ledger_upserts or self._ledger_removals):
+            return
+        upserts, removals = self._ledger_upserts, self._ledger_removals
+        self._ledger_upserts, self._ledger_removals = {}, set()
+        self.ledger = update_ledger(self.ledger_file, upserts, removals)
 
     # --- configuration ---------------------------------------------------
     def eligible(self) -> list[str]:
@@ -322,7 +476,8 @@ class SitemapBackfill:
     ) -> Iterator[SitemapEntry]:
         """Accepted page entries, reading child sitemaps newest first.
 
-        Reading stops once ``wanted`` new entries exist.
+        Reading stops once ``wanted`` new entries exist. An entry is not new when
+        its verdict is stored or the ledger lists it as dropped.
 
         The loop is iterative with an explicit queue and a seen set, so a sitemap
         index that lists itself cannot loop. The sitemap budget bounds the work.
@@ -380,7 +535,8 @@ class SitemapBackfill:
                 if not accept(entry):
                     continue
                 yield entry
-                if f"news:{_article_id(entry.loc)}" not in self.known_ids:
+                record_id = f"news:{_article_id(entry.loc)}"
+                if record_id not in self.known_ids and not self._in_ledger(record_id):
                     found_new += 1
 
     # --- per publisher ---------------------------------------------------
@@ -449,14 +605,26 @@ class SitemapBackfill:
 
         fresh = []
         for entry in kept.values():
-            if f"news:{_article_id(entry.loc)}" in self.known_ids:
+            record_id = f"news:{_article_id(entry.loc)}"
+            if record_id in self.known_ids:
                 stats.already_present += 1
+            elif self._in_ledger(record_id):
+                stats.previously_dropped += 1
+                self._count(stats, DropReason.PREVIOUSLY_DROPPED, entry.loc, warn=False)
             else:
                 fresh.append(entry)
         fresh.sort(
             key=lambda e: (e.lastmod or datetime.min.replace(tzinfo=timezone.utc), e.loc),
             reverse=True,
         )
+        if stats.previously_dropped:
+            log.info(
+                "backfill %s (%s): %d URLs skipped, listed in %s",
+                stats.publisher,
+                DropReason.PREVIOUSLY_DROPPED.value,
+                stats.previously_dropped,
+                LEDGER_FILENAME,
+            )
         for entry in fresh[cap:]:
             self._count(stats, DropReason.BACKFILL_BOUND_REACHED, entry.loc, warn=False)
         if len(fresh) > cap:
@@ -485,8 +653,39 @@ class SitemapBackfill:
         )
         return False
 
+    def _note_outcome(
+        self,
+        entry: SitemapEntry,
+        domain: str,
+        record_id: str,
+        verdict: FactCheck | None,
+        fetched: bool,
+        reason: str | None,
+    ) -> None:
+        """Queue a ledger change for one URL. Transient outcomes queue nothing."""
+        if verdict is not None:
+            if record_id in self.ledger:
+                self._ledger_removals.add(record_id)
+                self._ledger_upserts.pop(record_id, None)
+        elif fetched and reason in STABLE_DROP_REASONS:
+            self._ledger_removals.discard(record_id)
+            self._ledger_upserts[record_id] = {
+                "url": entry.loc,
+                "domain": domain,
+                "reason": reason,
+            }
+
     def run(self, domains: list[str] | None = None) -> Iterator[FactCheck]:
-        """Yield one verdict per extractable discovered URL. Every skip is counted."""
+        """Yield one verdict per extractable discovered URL. Every skip is counted.
+
+        The ledger is written when the generator ends or is closed.
+        """
+        try:
+            yield from self._run(domains)
+        finally:
+            self.save_ledger()
+
+    def _run(self, domains: list[str] | None) -> Iterator[FactCheck]:
         extractor = self.extractor
         if domains is None:
             for domain in extractor.publishers:
@@ -505,12 +704,19 @@ class SitemapBackfill:
                 verdict = extractor.from_html(record, html) if html is not None else None
                 if html is not None:
                     stats.fetched += 1
+                reasons = []
                 for reason, count in extractor.dropped.items():
                     delta = count - before.get(reason, 0)
                     if delta:
                         stats.dropped[reason] = stats.dropped.get(reason, 0) + delta
+                        reasons.append(reason)
+                drop_reason = next((r for r in reasons if r in STABLE_DROP_REASONS), None)
                 if verdict is not None and not self._language_allowed(domain, verdict, stats):
                     verdict = None
+                    drop_reason = DropReason.BACKFILL_LANGUAGE_EXCLUDED.value
+                self._note_outcome(
+                    entry, domain, record["id"], verdict, html is not None, drop_reason
+                )
                 if verdict is not None:
                     stats.verdicts += 1
                     yield verdict

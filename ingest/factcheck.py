@@ -134,6 +134,13 @@ class DropReason(str, Enum):
     #: A backfilled verdict whose detected claim language is not in the
     #: publisher's `claim_languages`. The row is not written.
     BACKFILL_LANGUAGE_EXCLUDED = "backfill_language_excluded"
+    #: A backfill URL that an earlier run fetched and dropped for a stable reason,
+    #: so it is neither fetched nor counted against the URL bound. Not a failure:
+    #: `--recheck-dropped` fetches these pages again.
+    PREVIOUSLY_DROPPED = "previously_dropped"
+    #: The ledger of dropped backfill URLs could not be read. The run goes on as
+    #: if it were empty, so the cost is fetching those pages again.
+    LEDGER_UNREADABLE = "ledger_unreadable"
 
 
 @dataclass
