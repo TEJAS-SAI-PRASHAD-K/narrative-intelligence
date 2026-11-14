@@ -157,7 +157,8 @@ the honest entry in that cell, not a zero.
   fetched and dropped used the URL budget on every run. About 299 pages of each 300 were
   such pages, so each run added only a few verdicts. The backfill now records these pages
   in `data/factchecks/backfill_dropped.parquet` and skips them. It counts them as
-  `previously_dropped`. The option `--recheck-dropped` fetches them again. Sitemaps that
+  `previously_dropped`. The option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
+  disallows expire after 30 days. Sitemaps that
   hold no new URL no longer use the sitemap budget, so the older sitemaps can be reached.
   The unread sitemaps need new runs with this fix. The evaluation manifest
   `configs/factcheck_eval_manifest.csv` was refrozen at 1107 claims after this backfill.

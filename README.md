@@ -102,16 +102,25 @@ records such a page in `data/factchecks/backfill_dropped.parquet`. Later runs do
 and do not count it against the URL budget. They count it as `previously_dropped`, and the
 report shows the count in the column "skipped (dropped)".
 
-The backfill does not record a transient failure, such as an HTTP error or a timeout. It
-also does not record a page with no ClaimReview that does not look like an article, for
-example a consent page or a bot challenge. It counts that page as `no_claimreview_suspect`
-and removes its cached copy, so the next run fetches it again.
+A page looks like an article when it has an `<article>` element or an article `og:type`.
+Other text on the page does not change this. The backfill does not record a transient
+failure, such as an HTTP error or a timeout. It also does not record a page with no
+ClaimReview that does not look like an article, for example a consent page or a bot
+challenge. It counts that page as `no_claimreview_suspect` and removes its cached copy, so
+the next run fetches it again.
 
-Each ledger row holds a fingerprint of the rating map and `claim_languages` of the run that
-wrote it. If one of them changes, the row is stale. The backfill counts it as `ledger_stale`
-and fetches the page again. Use `--recheck-dropped` for one run that ignores the file. That
-run skips the HTML cache for ledger pages and takes the oldest rows first. If a page then
-gives a verdict, the backfill removes it from the file.
+Some rows can become wrong, so they have a limit. A row for a middle rating or an excluded
+language holds a fingerprint of the rating map and `claim_languages`. If one of them
+changes, the row is stale. A row for a 404 or 410 page, or for a robots.txt disallow, is
+stale after `backfill.ledger_recheck_days_transient` days (30 by default). The backfill
+counts a stale row as `ledger_stale` and fetches the page again. A domain that answers 404
+or 410 `fetch.max_consecutive_gone_per_domain` times in a row (20 by default) is given up
+for the run, and the backfill records no page-gone row for it in that run.
+
+The fingerprint does not cover the extraction code. After a change to the extraction code,
+use `--recheck-dropped`. This option ignores the file for one run. That run skips the HTML
+cache for ledger pages and takes the oldest rows first. If a page then gives a verdict, the
+backfill removes it from the file.
 
 If the file is unreadable, the backfill logs `ledger_unreadable` and goes on as if it were
 empty. It renames the bad file to `backfill_dropped.parquet.corrupt-<UTC timestamp>` before
@@ -122,7 +131,8 @@ pages again. The backfill writes the file after every 50 new rows.
 A sitemap budget also applies: `backfill.max_sitemaps_per_publisher` counts an index and
 each child sitemap that holds a URL that is not stored and not in the ledger. A child with no
 such URL is free and is counted as `sitemaps_exhausted`. The limit
-`backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests.
+`backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests. A sitemap that the
+budget or this limit skips is counted in the "sitemaps left unread".
 
 The option `--dry-run` writes no rows. It does fetch pages and save them in the HTML cache.
 The backfill has its own budget, `backfill.max_urls_per_publisher`. That budget is separate
