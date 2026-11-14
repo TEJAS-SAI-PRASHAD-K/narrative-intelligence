@@ -45,7 +45,18 @@ decision.
   URLs were such pages, and the older sitemaps were never reached. The backfill now keeps
   these pages in `data/factchecks/backfill_dropped.parquet`, skips them, and counts them
   as `previously_dropped`. Transient failures are not kept, so the next run retries them.
-  The option `--recheck-dropped` fetches the kept pages again.
+  A page with no ClaimReview that does not look like an article is counted as
+  `no_claimreview_suspect` and is not kept. Each row holds a fingerprint of the rating map
+  and `claim_languages`. A row from another config is `ledger_stale` and the page is
+  fetched again. The option `--recheck-dropped` fetches the kept pages again and skips the
+  HTML cache for them. A failed ledger write is counted as `ledger_write_failed` and does
+  not stop the run.
+- **Sitemaps that held no new URL used the sitemap budget.** After a few runs, the newest
+  sitemaps held only stored or dropped pages and used all of
+  `backfill.max_sitemaps_per_publisher`, so the older sitemaps were never read. A child
+  sitemap now uses the budget only when it holds a new URL. The new limit
+  `backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests. The report shows
+  `sitemaps_exhausted`.
 - **Romanized Hindi was being assigned a confident wrong language.** langdetect
   has no class for Hindi in Latin script, so it cannot abstain — on ten
   hand-written sentences it returned Swahili ×5, Estonian ×2, Somali ×2,

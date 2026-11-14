@@ -157,8 +157,9 @@ the honest entry in that cell, not a zero.
   fetched and dropped used the URL budget on every run. About 299 pages of each 300 were
   such pages, so each run added only a few verdicts. The backfill now records these pages
   in `data/factchecks/backfill_dropped.parquet` and skips them. It counts them as
-  `previously_dropped`. The option `--recheck-dropped` fetches them again. The unread
-  sitemaps need new runs with this fix. The evaluation manifest
+  `previously_dropped`. The option `--recheck-dropped` fetches them again. Sitemaps that
+  hold no new URL no longer use the sitemap budget, so the older sitemaps can be reached.
+  The unread sitemaps need new runs with this fix. The evaluation manifest
   `configs/factcheck_eval_manifest.csv` was refrozen at 1107 claims after this backfill.
   The reported comparison and the Hindi gate result include those claims. The unread URLs
   need another refreeze and a rerun of the comparison on a GPU host. The command
