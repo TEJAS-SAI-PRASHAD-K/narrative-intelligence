@@ -39,6 +39,15 @@ decision.
 
 ### Fixed
 
+- **Chart and drilldown series reported unmeasured engagement as 0.** The timeseries,
+  the drivers list, the author timeline and the narrative timeline summed engagement
+  with a per-row `coalesce(..., 0)`. A bucket where no post exposes likes, shares or
+  replies now returns null. A bucket with one measured value returns the sum of the
+  measured values. The engagement sort in the post list puts unmeasured posts last.
+  The fields `TimeseriesPoint.value`, `TimeseriesPoint.series`,
+  `AuthorTimelinePoint.engagement` and `TimelinePoint.engagement` are now nullable.
+  Regenerate the dashboard client.
+
 - **Romanized Hindi was being assigned a confident wrong language.** langdetect
   has no class for Hindi in Latin script, so it cannot abstain — on ten
   hand-written sentences it returned Swahili ×5, Estonian ×2, Somali ×2,
