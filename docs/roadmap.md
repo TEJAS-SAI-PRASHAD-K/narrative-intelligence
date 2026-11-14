@@ -16,7 +16,7 @@ the module being quietly described as present.
 | source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
-| fact-check verdicts | partial | 1108 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News backfill ran 7 times and the archive is not fully read |
+| fact-check verdicts | partial | 4311 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News archive read inside the 2022 window |
 | embeddings and clustering | done | MiniLM, HDBSCAN, narrative identity across runs |
 | misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
 | stance classifier | fine-tuned | macro-F1 0.797 on the FNC-1 competition test set, see the model card |
@@ -40,10 +40,10 @@ configured feeds gave 548 records across 16 domains, split 454 English, 90 Hindi
 and rejected candidates are recorded in `configs/sources.yaml` with the reason,
 so "why is this outlet missing" has an answer.
 
-**Fact-check extraction produces bilingual supervision.** The file holds 1108 verdicts:
-Vishvas News 1012, BOOM 53, The Quint WebQoof 38, Fact Crescendo 5. The claim language is
-Hindi for 1017, English for 90 and one other. Every verdict has the label false. The
-rating is `False` for 1105 verdicts and `Altered` for 3. Vishvas News and Fact Crescendo
+**Fact-check extraction produces bilingual supervision.** The file holds 4311 verdicts:
+Vishvas News 4203, BOOM 55, The Quint WebQoof 46, Fact Crescendo 7. The claim language is
+Hindi for 4210, English for 100 and one other. 4310 verdicts have the label false and one
+has the label true. Vishvas News and Fact Crescendo
 supply claims in Devanagari, so this path yields Hindi labels and not merely Hindi text.
 The corpus and the verdicts are not in the repo.
 
@@ -71,9 +71,11 @@ These are reported because a module that fails quietly is worse than one that
 fails loudly. None of them is a blocker for the pipeline running end to end.
 
 **The Hindi gate passes with clear limits.** The Laya multilingual fine-tune has a
-Hindi title lift of 1.834 [1.116, 3.981] over 1016 claims. Recall is 0.104, and the
-corpus has 211 Hindi titles. Almost all Hindi claims come from one publisher. On Hindi
-full text, the lift is 0.367 [0.280, 0.487], and the upper limit is below 1. See
+Hindi title lift of 1.760 [1.286, 2.630] over 4180 claims. Recall is 0.122, and the
+corpus has 431 Hindi titles. With 1016 claims the lift was 1.834 [1.116, 3.981], so the
+lower limit moved further from 1 and the interval is much narrower. 99.8 percent of the
+Hindi claims come from one publisher. On Hindi full text, the lift is 0.476
+[0.401, 0.573], and the upper limit is below 1. See
 `artifacts/model_cards/laya.md`.
 
 **The bot classifier does not generalize to unseen botnets.** Trained on
@@ -123,7 +125,7 @@ At the default threshold of 0.5, the gap between roberta and TF-IDF is 0.033. ro
 ### How to report the fact-check evaluation
 
 `data/factchecks/factchecks.parquet` is an **evaluation set, never a training set**. Published
-fact-checks are single-class: the measured split is 1108 false and 0 true, because
+fact-checks are single-class: the measured split is 4310 false and 1 true, because
 debunking a viral falsehood is news and confirming a true claim is not. Nothing
 can be trained on one class.
 
@@ -139,9 +141,10 @@ lift = recall on known-false claims / flag rate on the whole corpus
 85 percent flag rate is a model that learned to say "false", and the recall
 figure alone cannot distinguish them.
 
-Report English and Hindi separately. Of the 1108 verdicts, 1017 claims are Hindi, 90 are
-English and one is in another language. The frozen evaluation set has 1107 claims,
-and 1016 of them are Hindi. The freeze collapsed one duplicate verdict. The Hindi estimate rests on those 1016 claims, so show the
+Report English and Hindi separately. Of the 4311 verdicts, 4210 claims are Hindi, 100 are
+English and one is in another language. The frozen evaluation set has 4281 claims,
+and 4180 of them are Hindi. The freeze collapsed 29 duplicate false verdicts and left
+out the one true verdict. The Hindi estimate rests on those 4180 claims, so show the
 interval and not the point estimate alone. The roberta fine-tune and TF-IDF cannot
 score the Hindi subset at all. That asymmetry is the result, and "no score" is
 the honest entry in that cell, not a zero.
@@ -150,30 +153,31 @@ the honest entry in that cell, not a zero.
 
 ### Ingestion
 
-- **Hindi fact-check backfill.** The Vishvas News backfill ran 7 times on 2026-11-11.
-  The new verdicts per run were 210, 164, 125, 96, 73, 49 and 37. About 170 URLs and 12
-  sitemaps are still unread, so the archive is not fully read. Each run reads at most 300
-  URLs (`backfill.max_urls_per_publisher`). Before the fix, pages that the backfill
-  fetched and dropped used the URL budget on every run. About 299 pages of each 300 were
-  such pages, so each run added only a few verdicts. The backfill now records these pages
-  in `data/factchecks/backfill_dropped.parquet` and skips them. It counts them as
-  `previously_dropped`. The option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
-  disallows expire after 30 days. Sitemaps that
-  hold no new URL no longer use the sitemap budget, so the older sitemaps can be reached.
-  The unread sitemaps need new runs with this fix. The evaluation manifest
-  `configs/factcheck_eval_manifest.csv` was refrozen at 1107 claims after this backfill.
-  The reported comparison and the Hindi gate result include those claims. The unread URLs
-  need another refreeze and a rerun of the comparison on a GPU host. The command
+- **Hindi fact-check backfill.** The Vishvas News sitemap backfill now reads the whole
+  archive inside the `min_lastmod` window, which starts on 2022-01-01. The final loop
+  stopped by itself. No URL bound and no sitemap budget was reached. Pull request 21 made
+  this possible. Before it, pages that the backfill fetched and dropped used the URL
+  budget on every run, so each run added only a few verdicts. The backfill now records
+  these pages in `data/factchecks/backfill_dropped.parquet` and skips them. It counts
+  them as `previously_dropped`. The ledger holds 2713 pages: `rating_is_middle` 2384,
+  `backfill_language_excluded` 226, `no_claimreview` 102 and `robots_disallowed` 1. The
+  option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
+  disallows expire after 30 days. Sitemaps that hold no new URL do not use the sitemap
+  budget. The evaluation manifest `configs/factcheck_eval_manifest.csv` was refrozen at
+  4281 claims, and the comparison and the Hindi gate result include them. The archive before
+  2022-01-01 is outside the window and stays unread. One page is unread because robots.txt
+  disallows it. Each run reads at most
+  300 URLs (`backfill.max_urls_per_publisher`). The command
   `python -m ingest.cli factchecks --backfill` reads publisher sitemaps and sends each
   archive URL through the tier 1 ClaimReview path. The operator runs it on the data host.
   The budget is separate from `fetch.max_articles`. The Vishvas entry sets
   `claim_languages: [hi]`, so the backfill writes no English or Marathi row. The Hindi set
-  therefore comes mostly from one publisher. A Hindi result reflects the claims that
-  Vishvas News chose to check, not Hindi misinformation in general. Fact Crescendo and
-  the BOOM Hindi site are not configured. Fact Crescendo shows a ClaimReview on only some
-  pages. The BOOM Hindi site lists only the newest articles in its sitemaps. To add a
-  publisher, add a `backfill` block to `configs/factcheck.yaml`. No code change is
-  necessary.
+  therefore comes almost all from one publisher (99.8 percent). A Hindi result reflects
+  the claims that Vishvas News chose to check, not Hindi misinformation in general. Fact
+  Crescendo and the BOOM Hindi site are not configured. Fact Crescendo shows a ClaimReview
+  on only some pages. The BOOM Hindi site lists only the newest articles in its sitemaps.
+  To add a publisher, add a `backfill` block to `configs/factcheck.yaml`. No code change
+  is necessary.
 - **Fact-check extraction tiers 3 and 4.** Newschecker publishes no JSON-LD but
   renders a visible `Claim` block in the article body. Alt News and Factly
   publish neither, and their verdict lives in the headline predicate. Tier 3
@@ -186,7 +190,7 @@ the honest entry in that cell, not a zero.
   dependency and the 10,000 unit daily quota, and additionally yields subtitles.
 - **Cross-publisher claim deduplication over longer windows.** A 96-claim
   set measured earlier had zero near-duplicates at the project's own Hamming threshold.
-  The set of 1108 verdicts is not measured. Several publishers often debunk the same claim
+  The freeze collapsed 29 duplicate false verdicts among 4310 by exact claim hash. Near-duplicates are not measured. Several publishers often debunk the same claim
   within days, so a longer collection window will produce near-duplicates. Only
   `claim_simhash` is stored today, and no code compares claims yet.
 
@@ -194,17 +198,25 @@ the honest entry in that cell, not a zero.
 
 - **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
   statements, CoAID is COVID-era health claims, and this corpus is Indian
-  recontextualised media. The gap is currently unmeasured. Closing it needs 100
-  hand-labelled corpus records, and that single table is worth more than any
-  hyperparameter sweep. `modeling.cli sample-for-labelling` writes the blank CSV.
-  `modeling.cli sample-for-labelling misinfo [--lang en|hi]` writes the blank
-  sheet with no model score in it. Label the `label` column by hand, then
-  `modeling.cli evaluate misinfo` reports the transfer section. Blank labels are
-  not 0, null scores are excluded with a reason, and no metric is computed below
-  `MIN_LABELLED_ROWS` (50) labelled rows. The English sample sheet exists.
-  `modeling.cli sample-for-labelling misinfo --n 100` wrote 100 English records on
-  2026-11-11. The sample excludes 241 records that the misinfo stage cannot score. No row
-  has a label yet.
+  recontextualised media. The gap is still unmeasured. `modeling.cli sample-for-labelling`
+  writes the blank CSV. `modeling.cli sample-for-labelling misinfo [--lang en|hi]` writes
+  the blank sheet with no model score in it. Then `modeling.cli evaluate misinfo` reports
+  the transfer section. Blank labels are not 0, null scores are excluded with a reason,
+  and no metric is computed below `MIN_LABELLED_ROWS` (50) labelled rows. The 100-record
+  English sample from 2026-11-11 is now labelled, but an AI model wrote the labels. The
+  sheet marks every row `labeller=llm-unreviewed`, and a person did not check them. Every
+  label is 0. 20 rows are fact-check articles that debunk a claim, and 80 are news
+  reports, features or opinion. The 95 percent Wilson interval for the positive rate is
+  [0.000, 0.037]. At threshold 0.5, `misinfo` v0.2.0 flags 42 of 100 rows (Wilson
+  [0.328, 0.518]). All 42 flags are false positives against these labels. The model flags
+  all 20 debunks and 22 of the 80 other articles. It reacts to articles about false
+  claims, not only to articles that push one. The command `evaluate misinfo` refuses
+  transfer metrics here, because the labelled rows hold one class. The next sample needs
+  more likely positives, for example social posts or posts that fact-checkers debunked.
+  A person must label it. The fact-check comparison excludes fact-check publishers from
+  its corpus, but the live scoring stage scores them. In the live corpus, fact-check
+  articles receive high `misinfo` values, and fusion inherits them. The label sheet and
+  the corpus text are not in git.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination

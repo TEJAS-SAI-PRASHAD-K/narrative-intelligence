@@ -132,19 +132,20 @@ gap is the conservative figure.
 
 ### Fact-check set and the unlabelled corpus
 
-The set has 1107 known-false claims, and the frozen manifest is
-`configs/factcheck_eval_manifest.csv`. This model scores the 90 English claims and
-skips the 1017 other claims with `unsupported_language`.
+The set has 4281 known-false claims, and the frozen manifest is
+`configs/factcheck_eval_manifest.csv`. This model scores the 100 English claims and
+skips the 4181 other claims with `unsupported_language`. The skipped claims are 4180
+Hindi claims and one claim in another language.
 
 | measure, English titles | `misinfo` v0.2.0 | TF-IDF + logreg |
 |---|---|---|
-| recall on known-false claims | 0.489 [0.389, 0.589] | 0.033 [0.000, 0.078] |
-| flag rate on 612 corpus titles | 0.108 [0.083, 0.132] | 0.002 [0.000, 0.005] |
-| lift | 4.533 [3.352, 6.146] | 20.400 [0.000, no upper limit] |
+| recall on known-false claims | 0.520 [0.420, 0.610] | 0.030 [0.000, 0.070] |
+| flag rate on 1350 corpus titles | 0.081 [0.067, 0.096] | 0.004 [0.001, 0.008] |
+| lift | 6.382 [4.950, 8.297] | 6.750 [0.000, 31.556] |
 
 A TF-IDF lift has no useful meaning here, because the model flags almost no corpus
 title. The fact-check set holds only claims that publishers chose to debunk. Lift is
-not accuracy on the corpus, and the corpus has no labels. These 612 titles come from
+not accuracy on the corpus, and the corpus has no labels. These 1350 titles come from
 one source type in a short collection window.
 
 The operating threshold is a value of the comparison report. The scored tables hold
@@ -152,6 +153,33 @@ the calibrated probability, and `configs/models.yaml` does not store this thresh
 
 The files under `artifacts/eval/misinfo/v0.1.0/` are from the 55-row demo fixture.
 They are not a result.
+
+### Corpus sample labels
+
+The 100-record English sample from `modeling.cli sample-for-labelling misinfo --n 100`
+(2026-11-11) now has labels. An AI model wrote the labels, not a person. The sheet marks
+every row `labeller=llm-unreviewed`. A person did not check the labels.
+
+Every label is 0. Of the 100 rows, 20 are fact-check articles that debunk a claim
+(DigitEye, Newschecker, Alt News, BOOM, The Quint). The other 80 are news reports,
+features or opinion. No row pushes a false claim. The 95 percent Wilson interval for the
+positive rate is [0.000, 0.037].
+
+At its configured `decision_threshold` of 0.5, on the calibrated `record_scores`
+values, `misinfo` v0.2.0 flags 42 of the 100 rows (Wilson [0.328, 0.518]). Against these
+labels, every flag is a false positive. The model flags all 20 debunks (20 of 20,
+[0.839, 1.000]) and 22 of the 80 other articles (0.275, [0.189, 0.381]). The model
+reacts to articles about false claims, not only to articles that push one.
+
+The fact-check comparison excludes fact-check publishers from its corpus. The live
+scoring stage scores them. In the live corpus, fact-check articles therefore receive
+high `misinfo` values in the sample. Fusion reads that value with the weight
+`misinfo_likelihood_agg` (0.40) in `configs/fusion.yaml`.
+
+`modeling.cli evaluate misinfo` refuses transfer metrics on this sheet, because the
+labelled rows hold one class. The transfer gap stays unmeasured. A useful next sample
+needs more likely positives, for example social posts or posts that fact-checkers
+debunked, and a person must label it. The label sheet and the corpus text are not in git.
 
 ## Calibration
 
@@ -186,7 +214,9 @@ length distribution, and a different relationship between text and claim.
 holdout is run and reported. That number is more honest than in-domain F1
 because house style is memorizable and the underlying task is not.
 
-**The transfer gap is currently UNMEASURED.** Closing it needs a person:
+**The transfer gap is currently UNMEASURED.** A first sample is labelled, but the labels
+come from an AI model and hold one class (see "Corpus sample labels"). A person must close
+the gap:
 
 ```bash
 python -m modeling.cli sample-for-labelling misinfo --n 100

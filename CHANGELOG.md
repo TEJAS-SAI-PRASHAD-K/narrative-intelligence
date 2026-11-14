@@ -36,6 +36,12 @@ decision.
   Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Oriya and Sinhala are
   each used by one major language. Devanagari is excluded on purpose: Hindi,
   Marathi and Nepali share it, so short Devanagari stays an honest null.
+- **Labels for the English corpus sample, with a one-class result.** An AI model labelled
+  the 100-record sample from `modeling.cli sample-for-labelling misinfo --n 100`. A person
+  did not check the labels (`labeller=llm-unreviewed`). Every label is 0. `misinfo` v0.2.0
+  flags 42 of 100 rows at threshold 0.5, and all 42 are false positives. It flags all 20
+  debunk articles. The transfer gap stays unmeasured, and `evaluate misinfo` refuses
+  transfer metrics on one class.
 
 ### Fixed
 
@@ -108,11 +114,15 @@ decision.
 
 ### Changed
 
-- **The fact-check manifest is refrozen at 1107 claims.** The Vishvas News sitemap
-  backfill raised the set from 349 claims. All 349 old rows are unchanged. The Hindi gate
-  is measured again on 1016 Hindi claims. It still passes with a lift of 1.834
-  [1.116, 3.981]. On Hindi full text, the lift upper limit is now below 1 (0.367
-  [0.280, 0.487]). The stage scores titles only.
+- **The fact-check manifest is refrozen at 4281 claims after the full Hindi archive
+  read.** With the backfill fix of pull request 21, the Vishvas News sitemap backfill read
+  the whole archive inside the 2022 window. The set grew from 1107 claims. 1106 old rows
+  are unchanged. One claim is now kept under a different Vishvas News article with the
+  same `claim_sha256`. The Hindi gate is measured again on 4180 Hindi claims. It still
+  passes with a lift of 1.760 [1.286, 2.630]. The earlier result was 1.834
+  [1.116, 3.981] on 1016 claims. 99.8 percent of the Hindi claims come from one
+  publisher. On Hindi full text, the lift upper limit is still below 1 (0.476
+  [0.401, 0.573]). The stage scores titles only. Ship decisions did not change.
 - `configs/topics.yaml` replaced: four Indian topic areas (communal, electoral,
   health, scams and synthetic media) with English and Hindi seeds, replacing the
   US vaccine/election/climate case.
