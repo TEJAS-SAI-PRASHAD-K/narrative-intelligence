@@ -164,8 +164,9 @@ the honest entry in that cell, not a zero.
   option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
   disallows expire after 30 days. Sitemaps that hold no new URL do not use the sitemap
   budget. The evaluation manifest `configs/factcheck_eval_manifest.csv` was refrozen at
-  4281 claims, and the comparison and the Hindi gate result include them. The only part
-  of the archive that stays unread is what lies before 2022-01-01. Each run reads at most
+  4281 claims, and the comparison and the Hindi gate result include them. The archive before
+  2022-01-01 is outside the window and stays unread. One page is unread because robots.txt
+  disallows it. Each run reads at most
   300 URLs (`backfill.max_urls_per_publisher`). The command
   `python -m ingest.cli factchecks --backfill` reads publisher sitemaps and sends each
   archive URL through the tier 1 ClaimReview path. The operator runs it on the data host.

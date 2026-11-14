@@ -173,7 +173,8 @@ reacts to articles about false claims, not only to articles that push one.
 
 The fact-check comparison excludes fact-check publishers from its corpus. The live
 scoring stage scores them. In the live corpus, fact-check articles therefore receive
-high `misinfo` values, and fusion inherits them.
+high `misinfo` values in the sample. Fusion reads that value with the weight
+`misinfo_likelihood_agg` (0.40) in `configs/fusion.yaml`.
 
 `modeling.cli evaluate misinfo` refuses transfer metrics on this sheet, because the
 labelled rows hold one class. The transfer gap stays unmeasured. A useful next sample
@@ -214,8 +215,8 @@ holdout is run and reported. That number is more honest than in-domain F1
 because house style is memorizable and the underlying task is not.
 
 **The transfer gap is currently UNMEASURED.** A first sample is labelled, but the labels
-come from an AI model and hold one class (see "Corpus sample labels"). Closing the gap
-needs a person:
+come from an AI model and hold one class (see "Corpus sample labels"). A person must close
+the gap:
 
 ```bash
 python -m modeling.cli sample-for-labelling misinfo --n 100
