@@ -272,11 +272,12 @@ def factchecks(
         stream = extractor.run(records)
 
     verdicts = []
-    for verdict in stream:
-        verdicts.append(verdict)
-        if limit and len(verdicts) >= limit:
-            break
-    if backfiller is not None:
+    try:
+        for verdict in stream:
+            verdicts.append(verdict)
+            if limit and len(verdicts) >= limit:
+                break
+    finally:
         # Closing the generator runs its cleanup, which writes the backfill ledger.
         stream.close()
 
@@ -312,7 +313,7 @@ def factchecks(
             "publisher",
             "discovered",
             "already present",
-            "previously dropped",
+            "skipped (dropped)",
             "fetched",
             "verdicts",
         )
@@ -338,7 +339,9 @@ def factchecks(
                 f"kept with no lastmod {stat.lastmod_absent_kept}, "
                 f"kept with unreadable lastmod {stat.lastmod_unparseable}, "
                 f"empty loc {stat.empty_loc}, duplicate loc {stat.duplicate_loc}, "
-                f"sitemaps left unread {stat.sitemaps_unread}"
+                f"sitemaps left unread {stat.sitemaps_unread}, "
+                f"sitemaps with no new URL {stat.sitemaps_exhausted}, "
+                f"stale ledger rows {stat.ledger_stale}"
             )
             if stat.language_excluded:
                 console.print(
