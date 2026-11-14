@@ -36,7 +36,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +69,7 @@ DEFAULTS: dict[str, Any] = {
     "max_sitemap_depth": 3,
     "max_sitemap_bytes": 50_000_000,
     "min_lastmod": None,
+    "ledger_recheck_days_transient": 30,
 }
 
 
@@ -269,26 +270,53 @@ STABLE_DROP_REASONS = frozenset(
 #: most this many.
 LEDGER_FLUSH_EVERY = 50
 
-#: Text that a bot challenge or a consent wall holds and an article does not.
-_CHALLENGE_MARKERS = (
-    "cf-chl",
-    "just a moment",
-    "challenge-platform",
-    "cf-browser-verification",
-    "attention required",
-    "enable javascript and cookies",
+#: Reasons whose answer depends on the rating map or `claim_languages`. A ledger
+#: row with one of them skips a page only while the fingerprint still matches.
+CONFIG_DEPENDENT_REASONS = frozenset(
+    {DropReason.RATING_IS_MIDDLE.value, DropReason.BACKFILL_LANGUAGE_EXCLUDED.value}
 )
-_ARTICLE_RE = re.compile(
-    r"<article[\s>]|property=[\"']og:type[\"'][^>]*content=[\"']article[\"']", re.IGNORECASE
-)
+
+#: Reasons that one observation does not prove, so the row expires after
+#: `backfill.ledger_recheck_days_transient` days. A page can come back and a
+#: robots.txt can change.
+EXPIRING_REASONS = frozenset({DropReason.PAGE_GONE.value, DropReason.ROBOTS_DISALLOWED.value})
+
+_META_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+_OG_TYPE_RE = re.compile(r"""(?:property|name)\s*=\s*["']og:type["']""", re.IGNORECASE)
+_OG_ARTICLE_RE = re.compile(r"""content\s*=\s*["']article["']""", re.IGNORECASE)
+_ARTICLE_TAG_RE = re.compile(r"<article[\s>]", re.IGNORECASE)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+#: Text that only a bot challenge page holds. The Cloudflare script path
+#: `/cdn-cgi/challenge-platform/scripts/` is on normal pages, so it is not here.
+_CHALLENGE_TITLES = ("just a moment", "attention required")
+_CHALLENGE_MARKERS = ("cf-browser-verification", "/cdn-cgi/challenge-platform/h/")
 
 
 def looks_like_article(html: str) -> bool:
-    """True when ``html`` has an article element or an article `og:type`, and no challenge text."""
+    """True when ``html`` has an `<article>` element or an article `og:type`.
+
+    The presence of either makes the page article-like whatever else it holds:
+    a real article can mention "just a moment" and can load Cloudflare scripts.
+    """
+    if _ARTICLE_TAG_RE.search(html):
+        return True
+    for tag in _META_RE.findall(html):
+        if _OG_TYPE_RE.search(tag) and _OG_ARTICLE_RE.search(tag):
+            return True
+    return False
+
+
+def looks_like_challenge(html: str) -> bool:
+    """True when a page with no article markup has a bot challenge title or marker.
+
+    Used only to say why a page is suspect. A page with neither article markup
+    nor a challenge marker is still suspect: it may be a consent wall or a soft 404.
+    """
+    title = _TITLE_RE.search(html)
+    if title and any(t in title.group(1).lower() for t in _CHALLENGE_TITLES):
+        return True
     lowered = html.lower()
-    if any(marker in lowered for marker in _CHALLENGE_MARKERS):
-        return False
-    return _ARTICLE_RE.search(html) is not None
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS)
 
 
 def ledger_path(settings: Settings) -> Path:
@@ -422,6 +450,7 @@ class SitemapBackfill:
         self.recheck_dropped = recheck_dropped
         self.write_ledger = write_ledger
         self._flush_failed = False
+        self._fingerprints: dict[str, str] = {}
         self._ledger_upserts: dict[str, dict[str, Any]] = {}
         self._ledger_removals: set[str] = set()
         self.ledger: dict[str, dict[str, Any]] = {}
@@ -441,20 +470,42 @@ class SitemapBackfill:
         self.stats: dict[str, PublisherStats] = {}
 
     def fingerprint(self, domain: str) -> str:
-        """Hash of what decides a stable drop for ``domain``: the rating map and `claim_languages`.
+        """Hash of what decides a middle-rating or language drop for ``domain``.
 
-        A ledger row skips a page only while its fingerprint equals this one.
+        It covers the rating map and `claim_languages`. It does not cover the
+        extraction code: after a code change, `--recheck-dropped` is the remedy.
+        Computed once per domain, because the config does not change in a run.
         """
-        block = self.extractor.publishers.get(domain, {}).get("backfill") or {}
-        material = {
-            "ratings": sorted(self.extractor.ratings.items()),
-            "claim_languages": sorted(block.get("claim_languages") or []),
-        }
-        return hashlib.sha256(json.dumps(material).encode("utf-8")).hexdigest()[:16]
+        cached = self._fingerprints.get(domain)
+        if cached is None:
+            block = self.extractor.publishers.get(domain, {}).get("backfill") or {}
+            material = {
+                "ratings": sorted(self.extractor.ratings.items()),
+                "claim_languages": sorted(block.get("claim_languages") or []),
+            }
+            cached = hashlib.sha256(json.dumps(material).encode("utf-8")).hexdigest()[:16]
+            self._fingerprints[domain] = cached
+        return cached
 
     def _ledger_fresh(self, record_id: str, domain: str) -> bool:
+        """True when the ledger row for ``record_id`` still holds.
+
+        A row with no fingerprint is from an older file and is stale. Then only
+        the part of the config that the row's reason depends on is compared: a
+        middle rating or an excluded language needs the same fingerprint, and a
+        page-gone or robots row needs to be younger than the TTL.
+        """
         row = self.ledger.get(record_id)
-        return row is not None and row.get("fingerprint") == self.fingerprint(domain)
+        if row is None or row.get("fingerprint") is None:
+            return False
+        reason = row.get("reason")
+        if reason in CONFIG_DEPENDENT_REASONS and row["fingerprint"] != self.fingerprint(domain):
+            return False
+        if reason in EXPIRING_REASONS:
+            ttl = timedelta(days=float(self.bounds["ledger_recheck_days_transient"]))
+            if datetime.now(timezone.utc) - row["last_seen"] >= ttl:
+                return False
+        return True
 
     def _in_ledger(self, record_id: str, domain: str) -> bool:
         """True when the ledger lets a run skip this id. Always false under recheck."""
@@ -607,6 +658,7 @@ class SitemapBackfill:
                 return
             if charged >= max_sitemaps or fetches >= max_fetches:
                 self._count(stats, DropReason.SITEMAP_BUDGET_EXHAUSTED, url)
+                stats.sitemaps_unread += 1
                 continue
             fetches += 1
             result = self._read_sitemap(url, domain, stats)
@@ -796,6 +848,18 @@ class SitemapBackfill:
         detail: str,
     ) -> None:
         """Queue a ledger change for one URL. Transient outcomes queue nothing."""
+        if domain in self.extractor.gone_domains:
+            # A publisher that answers 404 for everything is blocking us or has
+            # moved. None of this run's page-gone rows for it can be trusted.
+            gone = DropReason.PAGE_GONE.value
+            for rid in [
+                r
+                for r, row in self._ledger_upserts.items()
+                if row["domain"] == domain and row["reason"] == gone
+            ]:
+                del self._ledger_upserts[rid]
+            if reason == gone:
+                return
         if verdict is not None:
             if record_id in self.ledger:
                 self._ledger_removals.add(record_id)
@@ -864,7 +928,8 @@ class SitemapBackfill:
                     # A 200 that is not an article may be a challenge or a soft
                     # 404. Remove the cached copy so the next run fetches it again.
                     drop_reason = None
-                    self._count(stats, DropReason.NO_CLAIMREVIEW_SUSPECT, entry.loc)
+                    kind = "challenge" if looks_like_challenge(html) else "no article markup"
+                    self._count(stats, DropReason.NO_CLAIMREVIEW_SUSPECT, f"{entry.loc}: {kind}")
                     extractor.evict_cached(entry.loc)
                 if verdict is not None and not self._language_allowed(domain, verdict, stats):
                     detail = verdict.claim_lang or "?"

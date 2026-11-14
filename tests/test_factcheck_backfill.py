@@ -22,6 +22,7 @@ from ingest.factcheck_backfill import (
     existing_record_ids,
     ledger_path,
     looks_like_article,
+    looks_like_challenge,
     parse_lastmod,
     parse_sitemap,
     read_ledger,
@@ -596,7 +597,9 @@ ARTICLE_NO_CLAIMREVIEW = b"<html><body><article><p>text</p></article></body></ht
 CHALLENGE_PAGE = b"<html><head><title>Just a moment...</title></head><body>cf-chl</body></html>"
 
 
-def seed_ledger(tmp_path, backfill, urls, reason="rating_is_middle", fingerprint=None) -> None:
+def seed_ledger(
+    tmp_path, backfill, urls, reason="rating_is_middle", fingerprint=None, now=None
+) -> None:
     """Write ledger rows for ``urls`` as an earlier run would have."""
     rows = {
         record_for_url(u, DOMAIN)["id"]: {
@@ -608,7 +611,7 @@ def seed_ledger(tmp_path, backfill, urls, reason="rating_is_middle", fingerprint
         }
         for u in urls
     }
-    update_ledger(ledger_path(Settings(data_dir=tmp_path)), rows, set())
+    update_ledger(ledger_path(Settings(data_dir=tmp_path)), rows, set(), now=now)
 
 
 def urls_of(verdicts) -> set[str]:
@@ -788,6 +791,7 @@ class TestSitemapBudget:
         list(backfill.run())
         assert backfill.stats[DOMAIN].sitemaps_read == 2
         assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_BUDGET_EXHAUSTED.value] == 2
+        assert backfill.stats[DOMAIN].sitemaps_unread == 2
 
     def test_the_hard_fetch_cap_stops_free_sitemaps_too(self, tmp_path, web):
         self.routes(web)
@@ -799,6 +803,7 @@ class TestSitemapBudget:
         assert list(backfill.run()) == []
         assert SITEMAP_3 not in web.calls
         assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_BUDGET_EXHAUSTED.value] == 2
+        assert backfill.stats[DOMAIN].sitemaps_unread == 2
 
 
 class TestLedgerSafety:
@@ -827,9 +832,47 @@ class TestLedgerSafety:
 
     def test_article_detection(self):
         assert looks_like_article("<html><article>x</article></html>")
-        assert looks_like_article('<meta property="og:type" content="article">')
         assert not looks_like_article("<html><body>x</body></html>")
-        assert not looks_like_article("<article>Just a moment...</article>")
+
+    def test_a_real_article_with_cloudflare_scripts_or_challenge_words_is_article_like(self):
+        jsd = '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+        assert looks_like_article(f"<html>{jsd}<article>x</article></html>")
+        assert looks_like_article("<article>Wait, just a moment. Attention required.</article>")
+
+    def test_a_challenge_title_without_an_article_is_suspect(self):
+        page = "<html><head><title>Just a moment...</title></head><body></body></html>"
+        assert not looks_like_article(page)
+        assert looks_like_challenge(page)
+        assert not looks_like_challenge("<article>just a moment</article>")
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            '<meta property="og:type" content="article">',
+            '<meta content="article" property="og:type">',
+            '<meta name="og:type" content="article" />',
+        ],
+    )
+    def test_og_type_is_found_in_either_attribute_order(self, meta):
+        assert looks_like_article(f"<html><head>{meta}</head></html>")
+
+    def test_an_og_type_that_is_not_article_does_not_count(self):
+        assert not looks_like_article('<meta property="og:type" content="website">')
+
+    def test_a_real_article_without_claimreview_is_recorded_despite_cloudflare_scripts(
+        self, tmp_path, web
+    ):
+        page = (
+            b'<html><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+            b"<article>Just a moment of silence.</article></html>"
+        )
+        web.routes[NEWER_URL] = Response(200, page)
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"]: r["reason"] for r in rows.values()} == {
+            NEWER_URL: DropReason.NO_CLAIMREVIEW.value
+        }
 
     def test_a_stale_fingerprint_is_fetched_again_and_counted(self, tmp_path, web, small_budget):
         self.middle_pages(web)
@@ -962,6 +1005,82 @@ class TestLedgerSafety:
         assert backfill.extractor._fetch_failures[DOMAIN] == 0
         rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
         assert [r["reason"] for r in rows.values()] == [DropReason.PAGE_GONE.value]
+
+    def gone(self):
+        class Gone(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        return Gone("HTTP 404")
+
+    def test_a_run_of_404_answers_gives_the_domain_up_and_ledgers_no_page_gone(
+        self, tmp_path, web
+    ):
+        for url in (NEWER_URL, NEW_URL, STORED_URL, NO_LASTMOD_URL):
+            web.routes[url] = self.gone()
+        config = make_config()
+        config["fetch"]["max_consecutive_gone_per_domain"] = 2
+        backfill = make_backfill(tmp_path, config, ledger=True)
+        assert list(backfill.run()) == []
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.DOMAIN_GIVEN_UP.value] >= 1
+        assert DOMAIN in backfill.extractor.gone_domains
+        assert not ledger_path(Settings(data_dir=tmp_path)).exists()
+
+    def test_a_200_resets_the_404_streak(self, tmp_path, web):
+        web.routes[NEWER_URL] = self.gone()
+        web.routes[STORED_URL] = self.gone()
+        config = make_config()
+        config["fetch"]["max_consecutive_gone_per_domain"] = 2
+        backfill = make_backfill(tmp_path, config, ledger=True)
+        list(backfill.run())
+        assert DropReason.DOMAIN_GIVEN_UP.value not in backfill.stats[DOMAIN].dropped
+        assert backfill.stats[DOMAIN].dropped[DropReason.PAGE_GONE.value] == 2
+
+    def test_a_404_does_not_reset_the_failure_count(self, tmp_path, web):
+        web.routes[NEWER_URL] = self.gone()
+        extractor = make_backfill(tmp_path).extractor
+        extractor.set_budget(5)
+        extractor._fetch_failures[DOMAIN] = 2
+        assert extractor.fetch_html(NEWER_URL, expected_domain=DOMAIN) is None
+        assert extractor._fetch_failures[DOMAIN] == 2
+        assert extractor._gone_streak[DOMAIN] == 1
+        web.routes[NEW_URL] = Response(200, ARTICLE_NO_CLAIMREVIEW)
+        assert extractor.fetch_html(NEW_URL, expected_domain=DOMAIN) is not None
+        assert (extractor._fetch_failures[DOMAIN], extractor._gone_streak[DOMAIN]) == (0, 0)
+
+    @pytest.mark.parametrize("reason", ["page_gone", "robots_disallowed"])
+    def test_expiring_rows_skip_a_page_only_inside_the_ttl(self, tmp_path, web, reason):
+        from datetime import datetime, timedelta
+
+        seeder = make_backfill(tmp_path)
+        seed_ledger(tmp_path, seeder, [NEWER_URL], reason=reason)
+        seed_ledger(
+            tmp_path,
+            seeder,
+            [NEW_URL],
+            reason=reason,
+            now=datetime.now(timezone.utc) - timedelta(days=40),
+        )
+        backfill = make_backfill(tmp_path, ledger=True)
+        verdicts = list(backfill.run())
+        stats = backfill.stats[DOMAIN]
+        assert stats.previously_dropped == 1
+        assert stats.ledger_stale == 1
+        assert NEW_URL in urls_of(verdicts) and NEWER_URL not in urls_of(verdicts)
+
+    def test_page_stable_rows_ignore_a_changed_config(self, tmp_path, web):
+        seeder = make_backfill(tmp_path)
+        seed_ledger(tmp_path, seeder, [NEWER_URL], reason="no_claimreview", fingerprint="old")
+        seed_ledger(tmp_path, seeder, [NEW_URL], reason="rating_is_middle", fingerprint="old")
+        backfill = make_backfill(tmp_path, ledger=True)
+        verdicts = list(backfill.run())
+        stats = backfill.stats[DOMAIN]
+        assert (stats.previously_dropped, stats.ledger_stale) == (1, 1)
+        assert NEWER_URL not in urls_of(verdicts) and NEW_URL in urls_of(verdicts)
+
+    def test_the_fingerprint_is_computed_once_per_domain(self, tmp_path):
+        backfill = make_backfill(tmp_path)
+        assert backfill.fingerprint(DOMAIN) is backfill.fingerprint(DOMAIN)
 
     def test_an_unreadable_ledger_is_renamed_aside_before_it_is_replaced(self, tmp_path, web):
         path = ledger_path(Settings(data_dir=tmp_path))

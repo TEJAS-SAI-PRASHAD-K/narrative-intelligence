@@ -332,6 +332,10 @@ class FactCheckExtractor:
         self.last_rating = ""
         self._robots: dict[str, RobotFileParser | None] = {}
         self._fetch_failures: dict[str, int] = {}
+        #: Consecutive 404 or 410 answers per domain. Any 200 resets it.
+        self._gone_streak: dict[str, int] = {}
+        #: Domains whose 404 streak reached the limit this run.
+        self.gone_domains: set[str] = set()
         self._budget = int((self.config.get("fetch") or {}).get("max_articles", 200))
 
     # --- bookkeeping -----------------------------------------------------
@@ -495,14 +499,24 @@ class FactCheckExtractor:
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status in (404, 410):
-                # The publisher answered, so the domain is healthy.
-                self._fetch_failures[domain] = 0
+                # One missing page is not a failure of the domain. A long run of
+                # them is: a WAF or a site move answers 404 for everything, so
+                # the domain is given up like any other failing domain.
+                streak = self._gone_streak.get(domain, 0) + 1
+                self._gone_streak[domain] = streak
+                limit_gone = int(config.get("max_consecutive_gone_per_domain", 20))
+                if streak >= limit_gone:
+                    self.gone_domains.add(domain)
+                    self._fetch_failures[domain] = limit
+                    self.drop(DropReason.DOMAIN_GIVEN_UP, f"{url}: {streak} 404 answers in a row")
+                    return None
                 self.drop(DropReason.PAGE_GONE, f"{url}: HTTP {status}")
                 return None
             self._fetch_failures[domain] = self._fetch_failures.get(domain, 0) + 1
             self.drop(DropReason.FETCH_FAILED, f"{url}: {type(exc).__name__}: {exc}")
             return None
         self._fetch_failures[domain] = 0
+        self._gone_streak[domain] = 0
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(html, encoding="utf-8")
