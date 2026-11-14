@@ -7,6 +7,7 @@ socket.
 
 from __future__ import annotations
 
+import re
 from datetime import timezone
 from pathlib import Path
 
@@ -17,11 +18,17 @@ from ingest import cli, factcheck
 from ingest.config import Settings
 from ingest.factcheck import DropReason, FactCheckExtractor, write_factchecks
 from ingest.factcheck_backfill import (
+    LEDGER_FILENAME,
     SitemapBackfill,
     existing_record_ids,
+    ledger_path,
+    looks_like_article,
+    looks_like_challenge,
     parse_lastmod,
     parse_sitemap,
+    read_ledger,
     record_for_url,
+    update_ledger,
 )
 from ingest.sources.news_rss import _article_id
 
@@ -136,11 +143,18 @@ def web(monkeypatch):
     return fake
 
 
-def make_backfill(tmp_path, config=None, known=None) -> SitemapBackfill:
+def make_backfill(
+    tmp_path, config=None, known=None, ledger=False, recheck=False
+) -> SitemapBackfill:
     extractor = FactCheckExtractor(
         settings=Settings(data_dir=tmp_path), config=config or make_config()
     )
-    return SitemapBackfill(extractor, known if known is not None else set())
+    return SitemapBackfill(
+        extractor,
+        known if known is not None else set(),
+        ledger_file=ledger_path(Settings(data_dir=tmp_path)) if ledger else None,
+        recheck_dropped=recheck,
+    )
 
 
 class TestParseSitemap:
@@ -572,6 +586,555 @@ class TestRun:
         again = list(make_backfill(tmp_path).run())
         assert len(again) == 4
         assert web.articles() == []
+
+
+def middle_page() -> Response:
+    html = fixture_bytes("hindi_claimreview.html").replace(b'"False"', b'"Misleading"')
+    assert b"Misleading" in html
+    return Response(200, html)
+
+
+ARTICLE_NO_CLAIMREVIEW = b"<html><body><article><p>text</p></article></body></html>"
+CHALLENGE_PAGE = b"<html><head><title>Just a moment...</title></head><body>cf-chl</body></html>"
+
+
+def seed_ledger(
+    tmp_path, backfill, urls, reason="rating_is_middle", fingerprint=None, now=None
+) -> None:
+    """Write ledger rows for ``urls`` as an earlier run would have."""
+    rows = {
+        record_for_url(u, DOMAIN)["id"]: {
+            "url": u,
+            "domain": DOMAIN,
+            "reason": reason,
+            "fingerprint": fingerprint or backfill.fingerprint(DOMAIN),
+            "detail": "",
+        }
+        for u in urls
+    }
+    update_ledger(ledger_path(Settings(data_dir=tmp_path)), rows, set(), now=now)
+
+
+def urls_of(verdicts) -> set[str]:
+    return {v.url for v in verdicts}
+
+
+class TestDroppedLedger:
+    @pytest.fixture
+    def small_budget(self):
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 2
+        return config
+
+    def test_dropped_pages_are_skipped_and_the_budget_reaches_later_pages(
+        self, tmp_path, web, small_budget
+    ):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        first = make_backfill(tmp_path, small_budget, ledger=True)
+        assert list(first.run()) == []
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"] for r in rows.values()} == {NEWER_URL, NEW_URL}
+        row = rows[record_for_url(NEWER_URL, DOMAIN)["id"]]
+        assert row["reason"] == DropReason.RATING_IS_MIDDLE.value
+        assert row["domain"] == DOMAIN
+        assert row["first_seen"].tzinfo is not None and row["last_seen"].tzinfo is not None
+
+        second = make_backfill(tmp_path, small_budget, ledger=True)
+        verdicts = list(second.run())
+        stats = second.stats[DOMAIN]
+        assert stats.previously_dropped == 2
+        assert stats.dropped[DropReason.PREVIOUSLY_DROPPED.value] == 2
+        assert second.extractor.dropped[DropReason.PREVIOUSLY_DROPPED.value] == 2
+        assert urls_of(verdicts) == {STORED_URL, NO_LASTMOD_URL}
+        assert stats.fetched == 2
+
+    def test_a_ledger_hit_makes_no_request_for_the_page(self, tmp_path, web, small_budget):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        # The page cache would hide a request, so remove it.
+        for cached in (tmp_path).rglob("*.html"):
+            cached.unlink()
+        web.calls.clear()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        assert NEWER_URL not in web.calls and NEW_URL not in web.calls
+
+    def test_language_and_no_claimreview_drops_are_recorded(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("marathi_claimreview.html"))
+        web.routes[NEW_URL] = Response(200, ARTICLE_NO_CLAIMREVIEW)
+        config = make_config(block={"claim_languages": ["hi"]})
+        list(make_backfill(tmp_path, config, ledger=True).run())
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        reasons = {r["url"]: r["reason"] for r in rows.values()}
+        assert reasons == {
+            NEWER_URL: DropReason.BACKFILL_LANGUAGE_EXCLUDED.value,
+            NEW_URL: DropReason.NO_CLAIMREVIEW.value,
+        }
+
+    def test_transient_failures_are_not_recorded(self, tmp_path, web):
+        web.routes[NEWER_URL] = ConnectionError("down")
+        web.routes[NEW_URL] = Response(500)
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.FETCH_FAILED.value] == 2
+        assert not ledger_path(Settings(data_dir=tmp_path)).exists()
+
+    def test_recheck_dropped_fetches_ledger_urls_again(self, tmp_path, web, small_budget):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        path = ledger_path(Settings(data_dir=tmp_path))
+        first_rows = read_ledger(path)
+        web.calls.clear()
+
+        again = make_backfill(tmp_path, small_budget, ledger=True, recheck=True)
+        assert list(again.run()) == []
+        assert {NEWER_URL, NEW_URL} <= set(web.calls)
+        assert again.stats[DOMAIN].previously_dropped == 0
+        rewritten = read_ledger(path)
+        for record_id, row in first_rows.items():
+            assert rewritten[record_id]["first_seen"] == row["first_seen"]
+            assert rewritten[record_id]["last_seen"] >= row["last_seen"]
+
+    def test_an_unreadable_ledger_warns_and_the_run_goes_on(self, tmp_path, web, caplog):
+        path = ledger_path(Settings(data_dir=tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not a parquet file")
+        with caplog.at_level("WARNING", logger="ingest.factcheck.backfill"):
+            backfill = make_backfill(tmp_path, ledger=True)
+            verdicts = list(backfill.run())
+        assert len(verdicts) == 4
+        assert DropReason.LEDGER_UNREADABLE.value in caplog.text
+        assert backfill.extractor.dropped[DropReason.LEDGER_UNREADABLE.value] == 1
+
+    def test_a_url_that_later_gives_a_verdict_leaves_the_ledger(
+        self, tmp_path, web, small_budget
+    ):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        # The publisher changes its rating.
+        web.routes[NEWER_URL] = Response(200, fixture_bytes("hindi_claimreview.html"))
+        again = make_backfill(tmp_path, small_budget, ledger=True, recheck=True)
+        verdicts = list(again.run())
+        assert urls_of(verdicts) == {NEWER_URL}
+        remaining = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"] for r in remaining.values()} == {NEW_URL}
+
+
+SITEMAP_3 = "https://www.vishvasnews.com/post-sitemap3.xml"
+SITEMAP_4 = "https://www.vishvasnews.com/post-sitemap4.xml"
+
+
+def urlset(*urls: str) -> Response:
+    body = "".join(
+        f"<url><loc>{u}</loc><lastmod>2026-02-19T00:00:00+00:00</lastmod></url>" for u in urls
+    )
+    return Response(
+        200,
+        f'<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</urlset>'.encode(),
+    )
+
+
+def index_of(*children: str) -> Response:
+    """An index that lists ``children`` newest first."""
+    body = "".join(
+        f"<sitemap><loc>{c}</loc><lastmod>2026-02-{20 - i:02d}T00:00:00+00:00</lastmod></sitemap>"
+        for i, c in enumerate(children)
+    )
+    return Response(
+        200,
+        f'<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</sitemapindex>'.encode(),
+    )
+
+
+class TestSitemapBudget:
+    L1 = "https://www.vishvasnews.com/viral/fact-check-ledgered/"
+    S1 = "https://www.vishvasnews.com/viral/fact-check-stored/"
+    N1 = "https://www.vishvasnews.com/viral/fact-check-fresh/"
+
+    def routes(self, web, children=(SITEMAP_1, SITEMAP_2, SITEMAP_3)):
+        page = Response(200, fixture_bytes("hindi_claimreview.html"))
+        web.routes[INDEX_URL] = index_of(*children)
+        web.routes[SITEMAP_1] = urlset(self.L1)
+        web.routes[SITEMAP_2] = urlset(self.S1)
+        web.routes[SITEMAP_3] = urlset(self.N1)
+        web.routes[SITEMAP_4] = urlset(self.N1)
+        for url in (self.L1, self.S1, self.N1):
+            web.routes[url] = page
+
+    def config(self, **bounds):
+        config = make_config()
+        config["backfill"].update({"max_sitemaps_per_publisher": 2, "min_lastmod": None})
+        config["backfill"].update(bounds)
+        return config
+
+    def test_sitemaps_with_nothing_new_do_not_use_the_sitemap_budget(self, tmp_path, web):
+        self.routes(web)
+        seeder = make_backfill(tmp_path, self.config())
+        seed_ledger(tmp_path, seeder, [self.L1])
+        known = {record_for_url(self.S1, DOMAIN)["id"]}
+        backfill = make_backfill(tmp_path, self.config(), known=known, ledger=True)
+        verdicts = list(backfill.run())
+        assert urls_of(verdicts) == {self.N1}
+        stats = backfill.stats[DOMAIN]
+        assert stats.sitemaps_exhausted == 2
+        assert stats.sitemaps_unread == 0
+        assert DropReason.SITEMAP_BUDGET_EXHAUSTED.value not in stats.dropped
+
+    def test_a_sitemap_with_new_urls_still_uses_the_budget(self, tmp_path, web):
+        self.routes(web)
+        # Every child holds a new URL, so the budget of 2 (the index and one child) ends it.
+        web.routes[SITEMAP_1] = urlset(self.N1)
+        backfill = make_backfill(tmp_path, self.config())
+        list(backfill.run())
+        assert backfill.stats[DOMAIN].sitemaps_read == 2
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_BUDGET_EXHAUSTED.value] == 2
+        assert backfill.stats[DOMAIN].sitemaps_unread == 2
+
+    def test_the_hard_fetch_cap_stops_free_sitemaps_too(self, tmp_path, web):
+        self.routes(web)
+        seeder = make_backfill(tmp_path, self.config())
+        seed_ledger(tmp_path, seeder, [self.L1])
+        config = self.config(max_sitemap_fetches_per_publisher=2)
+        known = {record_for_url(self.S1, DOMAIN)["id"]}
+        backfill = make_backfill(tmp_path, config, known=known, ledger=True)
+        assert list(backfill.run()) == []
+        assert SITEMAP_3 not in web.calls
+        assert backfill.stats[DOMAIN].dropped[DropReason.SITEMAP_BUDGET_EXHAUSTED.value] == 2
+        assert backfill.stats[DOMAIN].sitemaps_unread == 2
+
+
+class TestLedgerSafety:
+    def middle_pages(self, web):
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+
+    @pytest.fixture
+    def small_budget(self):
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 2
+        return config
+
+    def test_a_page_that_is_not_an_article_is_suspect_and_not_recorded(self, tmp_path, web):
+        web.routes[NEWER_URL] = Response(200, CHALLENGE_PAGE)
+        web.routes[NEW_URL] = Response(200, b"<html><body>cookie wall</body></html>")
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.NO_CLAIMREVIEW_SUSPECT.value] == 2
+        assert not ledger_path(Settings(data_dir=tmp_path)).exists()
+        # The suspect copies are removed, so the next run fetches them again.
+        web.calls.clear()
+        list(make_backfill(tmp_path, ledger=True).run())
+        assert {NEWER_URL, NEW_URL} <= set(web.calls)
+
+    def test_article_detection(self):
+        assert looks_like_article("<html><article>x</article></html>")
+        assert not looks_like_article("<html><body>x</body></html>")
+
+    def test_a_real_article_with_cloudflare_scripts_or_challenge_words_is_article_like(self):
+        jsd = '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+        assert looks_like_article(f"<html>{jsd}<article>x</article></html>")
+        assert looks_like_article("<article>Wait, just a moment. Attention required.</article>")
+
+    def test_a_challenge_title_without_an_article_is_suspect(self):
+        page = "<html><head><title>Just a moment...</title></head><body></body></html>"
+        assert not looks_like_article(page)
+        assert looks_like_challenge(page)
+        assert not looks_like_challenge("<article>just a moment</article>")
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            '<meta property="og:type" content="article">',
+            '<meta content="article" property="og:type">',
+            '<meta name="og:type" content="article" />',
+        ],
+    )
+    def test_og_type_is_found_in_either_attribute_order(self, meta):
+        assert looks_like_article(f"<html><head>{meta}</head></html>")
+
+    def test_an_og_type_that_is_not_article_does_not_count(self):
+        assert not looks_like_article('<meta property="og:type" content="website">')
+
+    def test_a_real_article_without_claimreview_is_recorded_despite_cloudflare_scripts(
+        self, tmp_path, web
+    ):
+        page = (
+            b'<html><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+            b"<article>Just a moment of silence.</article></html>"
+        )
+        web.routes[NEWER_URL] = Response(200, page)
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"]: r["reason"] for r in rows.values()} == {
+            NEWER_URL: DropReason.NO_CLAIMREVIEW.value
+        }
+
+    def test_a_stale_fingerprint_is_fetched_again_and_counted(self, tmp_path, web, small_budget):
+        self.middle_pages(web)
+        list(make_backfill(tmp_path, small_budget, ledger=True).run())
+        # The publisher rating map now counts "misleading" as false.
+        changed = make_config()
+        changed["backfill"]["max_urls_per_publisher"] = 2
+        changed["ratings"]["misleading"] = "false"
+        again = make_backfill(tmp_path, changed, ledger=True)
+        verdicts = list(again.run())
+        stats = again.stats[DOMAIN]
+        assert urls_of(verdicts) == {NEWER_URL, NEW_URL}
+        assert stats.ledger_stale == 2
+        assert stats.previously_dropped == 0
+        assert again.extractor.dropped[DropReason.LEDGER_STALE.value] == 2
+        assert read_ledger(ledger_path(Settings(data_dir=tmp_path))) == {}
+
+    def test_a_ledger_without_the_fingerprint_column_is_stale_not_a_crash(self, tmp_path, web):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        path = ledger_path(Settings(data_dir=tmp_path))
+        path.parent.mkdir(parents=True)
+        now = __import__("datetime").datetime.now(timezone.utc)
+        old = pa.table(
+            {
+                "record_id": [record_for_url(NEWER_URL, DOMAIN)["id"]],
+                "url": [NEWER_URL],
+                "domain": [DOMAIN],
+                "reason": ["rating_is_middle"],
+                "first_seen": pa.array([now], pa.timestamp("us", tz="UTC")),
+                "last_seen": pa.array([now], pa.timestamp("us", tz="UTC")),
+            }
+        )
+        pq.write_table(old, path)
+        backfill = make_backfill(tmp_path, ledger=True)
+        verdicts = list(backfill.run())
+        assert NEWER_URL in urls_of(verdicts)
+        assert backfill.stats[DOMAIN].ledger_stale == 1
+
+    def test_recheck_covers_the_least_recently_seen_first(self, tmp_path, web, small_budget):
+        from datetime import datetime
+
+        seeder = make_backfill(tmp_path, small_budget)
+        seed_ledger(tmp_path, seeder, [NEWER_URL, NEW_URL])
+        path = ledger_path(Settings(data_dir=tmp_path))
+        # NEW_URL is the older row, although NEWER_URL is the newer page.
+        update_ledger(path, {record_for_url(NEWER_URL, DOMAIN)["id"]: {
+            "url": NEWER_URL, "domain": DOMAIN, "reason": "rating_is_middle",
+            "fingerprint": seeder.fingerprint(DOMAIN), "detail": ""}}, set(),
+            now=datetime(2026, 3, 1, tzinfo=timezone.utc))
+        update_ledger(path, {record_for_url(NEW_URL, DOMAIN)["id"]: {
+            "url": NEW_URL, "domain": DOMAIN, "reason": "rating_is_middle",
+            "fingerprint": seeder.fingerprint(DOMAIN), "detail": ""}}, set(),
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        small_budget["backfill"]["max_urls_per_publisher"] = 1
+        backfill = make_backfill(tmp_path, small_budget, ledger=True, recheck=True)
+        list(backfill.run())
+        assert web.articles()[0] == NEW_URL
+
+    def test_a_ledger_write_failure_is_counted_and_the_run_goes_on(
+        self, tmp_path, web, monkeypatch, caplog
+    ):
+        from ingest import factcheck_backfill
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(factcheck_backfill, "update_ledger", boom)
+        self.middle_pages(web)
+        backfill = make_backfill(tmp_path, ledger=True)
+        with caplog.at_level("WARNING", logger="ingest.factcheck.backfill"):
+            verdicts = list(backfill.run())
+        assert len(verdicts) == 2
+        assert backfill.extractor.dropped[DropReason.LEDGER_WRITE_FAILED.value] >= 1
+        assert DropReason.LEDGER_WRITE_FAILED.value in caplog.text
+
+    def test_the_cli_still_writes_the_verdicts_when_the_ledger_cannot_be_written(
+        self, tmp_path, web, monkeypatch
+    ):
+        from ingest import factcheck_backfill
+
+        settings = Settings(data_dir=tmp_path)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: make_config())
+        monkeypatch.setattr(
+            factcheck_backfill, "update_ledger", lambda *a, **k: (_ for _ in ()).throw(OSError("x"))
+        )
+        web.routes[NEWER_URL] = middle_page()
+        result = CliRunner().invoke(cli.app, ["factchecks", "--backfill"])
+        assert result.exit_code == 0, result.output
+        assert len(existing_record_ids(settings)) == 3
+        assert "ledger_write_failed" in result.output
+
+    def test_the_ledger_is_flushed_every_n_drops(self, tmp_path, web, monkeypatch):
+        from ingest import factcheck_backfill
+
+        monkeypatch.setattr(factcheck_backfill, "LEDGER_FLUSH_EVERY", 1)
+        self.middle_pages(web)
+        backfill = make_backfill(tmp_path, ledger=True)
+        stream = backfill.run()
+        next(stream)  # the first verdict arrives after both middle pages were noted
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert {r["url"] for r in rows.values()} == {NEWER_URL, NEW_URL}
+        stream.close()
+
+    def test_robots_disallow_and_no_rating_are_recorded(self, tmp_path, web):
+        web.routes[ROBOTS_URL] = Response(200, b"User-agent: *\nDisallow: /viral/\n")
+        norating = (
+            b'<html><article></article><script type="application/ld+json">'
+            b'{"@type":"ClaimReview","claimReviewed":"x"}</script></html>'
+        )
+        web.routes[NEWER_URL] = Response(200, norating)
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        reasons = {r["url"]: r["reason"] for r in rows.values()}
+        assert reasons[NEW_URL] == DropReason.ROBOTS_DISALLOWED.value
+        assert reasons[NEWER_URL] == DropReason.NO_RATING.value
+
+    def test_a_404_is_page_gone_recorded_and_not_a_domain_failure(self, tmp_path, web):
+        class Gone(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        web.routes[NEWER_URL] = Gone("HTTP 404")
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        assert backfill.stats[DOMAIN].dropped[DropReason.PAGE_GONE.value] == 1
+        assert DropReason.FETCH_FAILED.value not in backfill.stats[DOMAIN].dropped
+        assert backfill.extractor._fetch_failures[DOMAIN] == 0
+        rows = read_ledger(ledger_path(Settings(data_dir=tmp_path)))
+        assert [r["reason"] for r in rows.values()] == [DropReason.PAGE_GONE.value]
+
+    def gone(self):
+        class Gone(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        return Gone("HTTP 404")
+
+    def test_a_run_of_404_answers_gives_the_domain_up_and_ledgers_no_page_gone(
+        self, tmp_path, web
+    ):
+        for url in (NEWER_URL, NEW_URL, STORED_URL, NO_LASTMOD_URL):
+            web.routes[url] = self.gone()
+        config = make_config()
+        config["fetch"]["max_consecutive_gone_per_domain"] = 2
+        backfill = make_backfill(tmp_path, config, ledger=True)
+        assert list(backfill.run()) == []
+        dropped = backfill.stats[DOMAIN].dropped
+        assert dropped[DropReason.DOMAIN_GIVEN_UP.value] >= 1
+        assert DOMAIN in backfill.extractor.gone_domains
+        assert not ledger_path(Settings(data_dir=tmp_path)).exists()
+
+    def test_a_200_resets_the_404_streak(self, tmp_path, web):
+        web.routes[NEWER_URL] = self.gone()
+        web.routes[STORED_URL] = self.gone()
+        config = make_config()
+        config["fetch"]["max_consecutive_gone_per_domain"] = 2
+        backfill = make_backfill(tmp_path, config, ledger=True)
+        list(backfill.run())
+        assert DropReason.DOMAIN_GIVEN_UP.value not in backfill.stats[DOMAIN].dropped
+        assert backfill.stats[DOMAIN].dropped[DropReason.PAGE_GONE.value] == 2
+
+    def test_a_404_does_not_reset_the_failure_count(self, tmp_path, web):
+        web.routes[NEWER_URL] = self.gone()
+        extractor = make_backfill(tmp_path).extractor
+        extractor.set_budget(5)
+        extractor._fetch_failures[DOMAIN] = 2
+        assert extractor.fetch_html(NEWER_URL, expected_domain=DOMAIN) is None
+        assert extractor._fetch_failures[DOMAIN] == 2
+        assert extractor._gone_streak[DOMAIN] == 1
+        web.routes[NEW_URL] = Response(200, ARTICLE_NO_CLAIMREVIEW)
+        assert extractor.fetch_html(NEW_URL, expected_domain=DOMAIN) is not None
+        assert (extractor._fetch_failures[DOMAIN], extractor._gone_streak[DOMAIN]) == (0, 0)
+
+    @pytest.mark.parametrize("reason", ["page_gone", "robots_disallowed"])
+    def test_expiring_rows_skip_a_page_only_inside_the_ttl(self, tmp_path, web, reason):
+        from datetime import datetime, timedelta
+
+        seeder = make_backfill(tmp_path)
+        seed_ledger(tmp_path, seeder, [NEWER_URL], reason=reason)
+        seed_ledger(
+            tmp_path,
+            seeder,
+            [NEW_URL],
+            reason=reason,
+            now=datetime.now(timezone.utc) - timedelta(days=40),
+        )
+        backfill = make_backfill(tmp_path, ledger=True)
+        verdicts = list(backfill.run())
+        stats = backfill.stats[DOMAIN]
+        assert stats.previously_dropped == 1
+        assert stats.ledger_stale == 1
+        assert NEW_URL in urls_of(verdicts) and NEWER_URL not in urls_of(verdicts)
+
+    def test_page_stable_rows_ignore_a_changed_config(self, tmp_path, web):
+        seeder = make_backfill(tmp_path)
+        seed_ledger(tmp_path, seeder, [NEWER_URL], reason="no_claimreview", fingerprint="old")
+        seed_ledger(tmp_path, seeder, [NEW_URL], reason="rating_is_middle", fingerprint="old")
+        backfill = make_backfill(tmp_path, ledger=True)
+        verdicts = list(backfill.run())
+        stats = backfill.stats[DOMAIN]
+        assert (stats.previously_dropped, stats.ledger_stale) == (1, 1)
+        assert NEWER_URL not in urls_of(verdicts) and NEW_URL in urls_of(verdicts)
+
+    def test_the_fingerprint_is_computed_once_per_domain(self, tmp_path):
+        backfill = make_backfill(tmp_path)
+        assert backfill.fingerprint(DOMAIN) is backfill.fingerprint(DOMAIN)
+
+    def test_an_unreadable_ledger_is_renamed_aside_before_it_is_replaced(self, tmp_path, web):
+        path = ledger_path(Settings(data_dir=tmp_path))
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"not a parquet file")
+        self.middle_pages(web)
+        backfill = make_backfill(tmp_path, ledger=True)
+        list(backfill.run())
+        aside = list(path.parent.glob(f"{LEDGER_FILENAME}.corrupt-*"))
+        assert len(aside) == 1 and aside[0].read_bytes() == b"not a parquet file"
+        assert backfill.extractor.dropped[DropReason.LEDGER_QUARANTINED.value] == 1
+        assert len(read_ledger(path)) == 2
+
+
+class TestLedgerCli:
+    runner = CliRunner()
+
+    @pytest.fixture
+    def env(self, tmp_path, web, monkeypatch):
+        settings = Settings(data_dir=tmp_path)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        config = make_config()
+        config["backfill"]["max_urls_per_publisher"] = 2
+        monkeypatch.setattr(factcheck, "load_yaml", lambda name: config)
+        web.routes[NEWER_URL] = middle_page()
+        web.routes[NEW_URL] = middle_page()
+        return settings
+
+    def test_the_second_run_reports_previously_dropped_and_adds_rows(self, env):
+        first = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert first.exit_code == 0, first.output
+        assert (env.data_dir / "factchecks" / LEDGER_FILENAME).exists()
+        second = self.runner.invoke(cli.app, ["factchecks", "--backfill"])
+        assert second.exit_code == 0, second.output
+        assert "'previously_dropped': 2" in second.output
+        assert len(existing_record_ids(env)) == 2
+
+    def test_the_dry_run_writes_no_ledger(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--backfill", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert not (env.data_dir / "factchecks").exists()
+
+    def test_the_flag_needs_backfill(self, env):
+        result = self.runner.invoke(cli.app, ["factchecks", "--recheck-dropped"])
+        assert result.exit_code == 1
+
+    def test_the_flag_is_in_the_help(self, env):
+        # CI forces colour, and Rich then puts escape codes inside the option name.
+        result = self.runner.invoke(
+            cli.app, ["factchecks", "--help"], env={"COLUMNS": "200", "TERM": "dumb"}
+        )
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--recheck-dropped" in plain
 
 
 class TestCli:

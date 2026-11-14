@@ -134,6 +134,28 @@ class DropReason(str, Enum):
     #: A backfilled verdict whose detected claim language is not in the
     #: publisher's `claim_languages`. The row is not written.
     BACKFILL_LANGUAGE_EXCLUDED = "backfill_language_excluded"
+    #: A backfill URL that an earlier run fetched and dropped for a stable reason,
+    #: so it is neither fetched nor counted against the URL bound. Not a failure:
+    #: `--recheck-dropped` fetches these pages again.
+    PREVIOUSLY_DROPPED = "previously_dropped"
+    #: The ledger of dropped backfill URLs could not be read. The run goes on as
+    #: if it were empty, so the cost is fetching those pages again.
+    LEDGER_UNREADABLE = "ledger_unreadable"
+    #: A ledger row was written under another rating map or `claim_languages`
+    #: than the current one, so its page is fetched again.
+    LEDGER_STALE = "ledger_stale"
+    #: The ledger could not be written. The run goes on and its verdicts are
+    #: still stored, but the next run fetches these pages again.
+    LEDGER_WRITE_FAILED = "ledger_write_failed"
+    #: An unreadable ledger was renamed aside before a new one was written.
+    LEDGER_QUARANTINED = "ledger_quarantined"
+    #: A page with no ClaimReview whose HTML does not look like an article: a
+    #: consent page, a bot challenge, a soft 404 or a cut-off body. It can be
+    #: transient, so it is not put in the ledger and its cached copy is removed.
+    NO_CLAIMREVIEW_SUSPECT = "no_claimreview_suspect"
+    #: The publisher answered 404 or 410. The page is gone, so the answer will
+    #: not change. It does not count as a failure of the domain.
+    PAGE_GONE = "page_gone"
 
 
 @dataclass
@@ -306,8 +328,14 @@ class FactCheckExtractor:
         #: rather than inferred. `ratings_seen` includes dropped and unknown.
         self.ratings_seen: dict[str, int] = {}
         self.unknown_ratings: dict[str, int] = {}
+        #: The normalized rating that `label_for` read last.
+        self.last_rating = ""
         self._robots: dict[str, RobotFileParser | None] = {}
         self._fetch_failures: dict[str, int] = {}
+        #: Consecutive 404 or 410 answers per domain. Any 200 resets it.
+        self._gone_streak: dict[str, int] = {}
+        #: Domains whose 404 streak reached the limit this run.
+        self.gone_domains: set[str] = set()
         self._budget = int((self.config.get("fetch") or {}).get("max_articles", 200))
 
     # --- bookkeeping -----------------------------------------------------
@@ -324,6 +352,7 @@ class FactCheckExtractor:
         vocabulary, and only the second one is a bug to go and fix.
         """
         key = normalize_rating(rating)
+        self.last_rating = key
         self.ratings_seen[key] = self.ratings_seen.get(key, 0) + 1
         mapped = self.ratings.get(key)
         if mapped is None:
@@ -420,7 +449,9 @@ class FactCheckExtractor:
         )
 
     # --- fetching --------------------------------------------------------
-    def fetch_html(self, url: str, expected_domain: str | None = None) -> str | None:
+    def fetch_html(
+        self, url: str, expected_domain: str | None = None, bypass_cache: bool = False
+    ) -> str | None:
         """Article HTML, within budget and robots.txt, cached on disk.
 
         Cached permanently and never revalidated: an article is immutable once
@@ -434,10 +465,13 @@ class FactCheckExtractor:
         ``expected_domain`` is set only by the backfill. A response that ends on
         another registrable domain after redirects is then discarded, not cached,
         and counted as BACKFILL_OFF_DOMAIN_REDIRECT. The daily pass leaves it unset.
+
+        ``bypass_cache`` skips the cached copy, so the page is fetched again and
+        the new body replaces the cached one.
         """
         config = self.config.get("fetch") or {}
         cache_path = self._cache_path(url) if config.get("cache", True) else None
-        if cache_path and cache_path.exists():
+        if cache_path and cache_path.exists() and not bypass_cache:
             return cache_path.read_text(encoding="utf-8", errors="replace")
 
         if self._budget <= 0:
@@ -463,10 +497,26 @@ class FactCheckExtractor:
             log.warning("discarded %s: %s", url, exc)
             return None
         except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (404, 410):
+                # One missing page is not a failure of the domain. A long run of
+                # them is: a WAF or a site move answers 404 for everything, so
+                # the domain is given up like any other failing domain.
+                streak = self._gone_streak.get(domain, 0) + 1
+                self._gone_streak[domain] = streak
+                limit_gone = int(config.get("max_consecutive_gone_per_domain", 20))
+                if streak >= limit_gone:
+                    self.gone_domains.add(domain)
+                    self._fetch_failures[domain] = limit
+                    self.drop(DropReason.DOMAIN_GIVEN_UP, f"{url}: {streak} 404 answers in a row")
+                    return None
+                self.drop(DropReason.PAGE_GONE, f"{url}: HTTP {status}")
+                return None
             self._fetch_failures[domain] = self._fetch_failures.get(domain, 0) + 1
             self.drop(DropReason.FETCH_FAILED, f"{url}: {type(exc).__name__}: {exc}")
             return None
         self._fetch_failures[domain] = 0
+        self._gone_streak[domain] = 0
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(html, encoding="utf-8")
@@ -525,6 +575,13 @@ class FactCheckExtractor:
             return body if as_bytes else body.decode(response.encoding or "utf-8", "replace")
         finally:
             response.close()
+
+    def evict_cached(self, url: str) -> None:
+        """Remove the cached copy of ``url``, so the next run fetches it again."""
+        try:
+            self._cache_path(url).unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("cannot remove the cached copy of %s: %s", url, exc)
 
     def set_budget(self, articles: int) -> None:
         """Set the number of live article fetches left in this run."""

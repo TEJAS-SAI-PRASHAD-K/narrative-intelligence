@@ -111,9 +111,17 @@ publishers:
 backfill:
   # Most URLs one publisher can add in one run. The newest pages go first.
   max_urls_per_publisher: 300
-  # Most sitemap files one publisher can read in one run.
+  # Most sitemap files one publisher can read in one run. An index counts. A
+  # child sitemap counts only when it holds a URL that is not stored and not in
+  # the dropped-page ledger, so old, fully read sitemaps do not use this budget.
   max_sitemaps_per_publisher: 8
+  # Most sitemap requests, counted or not, for one publisher in one run. This is
+  # a politeness limit. It is 4 times max_sitemaps_per_publisher when absent.
+  max_sitemap_fetches_per_publisher: 32
   max_sitemap_depth: 3
+  # A dropped-page ledger row for a 404 or 410 page, or for a robots.txt
+  # disallow, skips the page only for this many days. Then the page is fetched again.
+  ledger_recheck_days_transient: 30
   max_sitemap_bytes: 50000000
   # Pages and child sitemaps last modified before this date are skipped. A page
   # with no `lastmod` is kept and counted. Set to null to read the full archive.
@@ -201,6 +209,10 @@ fetch:
   request_delay_seconds: 1.0
   timeout_seconds: 30
   max_consecutive_failures_per_domain: 3
+  # A domain that answers 404 or 410 this many times in a row, with no 200
+  # between, is given up for the run. One missing page is not a failure, but a
+  # long run of them means a firewall or a site move.
+  max_consecutive_gone_per_domain: 20
   # Articles are immutable once published and a verdict does not change, so a
   # fetched page is cached on disk and never re-fetched. This also keeps a
   # rerun from hammering a publisher who is doing us a favour.

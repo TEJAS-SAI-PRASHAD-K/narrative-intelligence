@@ -39,6 +39,29 @@ decision.
 
 ### Fixed
 
+- **The fact-check backfill spent its URL budget on pages that it had already dropped.**
+  Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
+  verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
+  URLs were such pages, and the older sitemaps were never reached. The backfill now keeps
+  these pages in `data/factchecks/backfill_dropped.parquet`, skips them, and counts them
+  as `previously_dropped`. Transient failures are not kept, so the next run retries them.
+  A page with no ClaimReview that does not look like an article is counted as
+  `no_claimreview_suspect` and is not kept. Each row holds a fingerprint of the rating map
+  and `claim_languages`. A row from another config is `ledger_stale` and the page is
+  fetched again. Only a middle rating or an excluded language depends on that fingerprint.
+  A row for a 404 or 410 page, or for a robots.txt disallow, expires after
+  `backfill.ledger_recheck_days_transient` days. A domain that answers 404 or 410
+  `fetch.max_consecutive_gone_per_domain` times in a row is given up for the run. The
+  option `--recheck-dropped` fetches the kept pages again and skips the HTML cache for
+  them. A page is article-like when it has an `<article>` element or an article
+  `og:type`, whatever else it holds. A failed ledger write is counted as
+  `ledger_write_failed` and does not stop the run.
+- **Sitemaps that held no new URL used the sitemap budget.** After a few runs, the newest
+  sitemaps held only stored or dropped pages and used all of
+  `backfill.max_sitemaps_per_publisher`, so the older sitemaps were never read. A child
+  sitemap now uses the budget only when it holds a new URL. The new limit
+  `backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests. The report shows
+  `sitemaps_exhausted`, and a sitemap that a bound skips is counted as unread.
 - **Chart and drilldown series reported unmeasured engagement as 0.** The timeseries,
   the drivers list, the author timeline and the narrative timeline summed engagement
   with a per-row `coalesce(..., 0)`. A bucket where no post exposes likes, shares or

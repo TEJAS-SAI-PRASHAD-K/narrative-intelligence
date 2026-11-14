@@ -88,11 +88,51 @@ block and `tier: claimreview`. It does not run in `make collect-daily`.
 python -m ingest.cli factchecks --backfill --dry-run   # report, write no rows, still cache pages
 python -m ingest.cli factchecks --backfill             # add the new verdicts
 python -m ingest.cli factchecks --backfill --limit 100 # stop after 100 verdicts
+python -m ingest.cli factchecks --backfill --recheck-dropped # fetch the dropped pages again
 ```
 
 The report shows these counts for each publisher: URLs discovered, URLs already present,
-pages fetched, verdicts, and each drop reason. A rerun does not fetch a URL that is
-already in `factchecks.parquet`.
+URLs skipped as previously dropped, pages fetched, verdicts, and each drop reason. A rerun does not
+fetch a URL that is already in `factchecks.parquet`.
+
+A page can give no verdict for a stable reason: a middle rating, no ClaimReview on a page
+that looks like an article, a ClaimReview with no usable rating, a page that answers 404 or
+410, a robots.txt disallow, or a claim language that `claim_languages` excludes. The backfill
+records such a page in `data/factchecks/backfill_dropped.parquet`. Later runs do not fetch it
+and do not count it against the URL budget. They count it as `previously_dropped`, and the
+report shows the count in the column "skipped (dropped)".
+
+A page looks like an article when it has an `<article>` element or an article `og:type`.
+Other text on the page does not change this. The backfill does not record a transient
+failure, such as an HTTP error or a timeout. It also does not record a page with no
+ClaimReview that does not look like an article, for example a consent page or a bot
+challenge. It counts that page as `no_claimreview_suspect` and removes its cached copy, so
+the next run fetches it again.
+
+Some rows can become wrong, so they have a limit. A row for a middle rating or an excluded
+language holds a fingerprint of the rating map and `claim_languages`. If one of them
+changes, the row is stale. A row for a 404 or 410 page, or for a robots.txt disallow, is
+stale after `backfill.ledger_recheck_days_transient` days (30 by default). The backfill
+counts a stale row as `ledger_stale` and fetches the page again. A domain that answers 404
+or 410 `fetch.max_consecutive_gone_per_domain` times in a row (20 by default) is given up
+for the run, and the backfill records no page-gone row for it in that run.
+
+The fingerprint does not cover the extraction code. After a change to the extraction code,
+use `--recheck-dropped`. This option ignores the file for one run. That run skips the HTML
+cache for ledger pages and takes the oldest rows first. If a page then gives a verdict, the
+backfill removes it from the file.
+
+If the file is unreadable, the backfill logs `ledger_unreadable` and goes on as if it were
+empty. It renames the bad file to `backfill_dropped.parquet.corrupt-<UTC timestamp>` before
+it writes a new one (`ledger_quarantined`). If a write fails, the backfill logs
+`ledger_write_failed`. The run still stores its verdicts, and the next run fetches those
+pages again. The backfill writes the file after every 50 new rows.
+
+A sitemap budget also applies: `backfill.max_sitemaps_per_publisher` counts an index and
+each child sitemap that holds a URL that is not stored and not in the ledger. A child with no
+such URL is free and is counted as `sitemaps_exhausted`. The limit
+`backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests. A sitemap that the
+budget or this limit skips is counted in the "sitemaps left unread".
 
 The option `--dry-run` writes no rows. It does fetch pages and save them in the HTML cache.
 The backfill has its own budget, `backfill.max_urls_per_publisher`. That budget is separate

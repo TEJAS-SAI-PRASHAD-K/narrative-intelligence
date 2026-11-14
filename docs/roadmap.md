@@ -153,7 +153,14 @@ the honest entry in that cell, not a zero.
 - **Hindi fact-check backfill.** The Vishvas News backfill ran 7 times on 2026-11-11.
   The new verdicts per run were 210, 164, 125, 96, 73, 49 and 37. About 170 URLs and 12
   sitemaps are still unread, so the archive is not fully read. Each run reads at most 300
-  URLs (`backfill.max_urls_per_publisher`). The evaluation manifest
+  URLs (`backfill.max_urls_per_publisher`). Before the fix, pages that the backfill
+  fetched and dropped used the URL budget on every run. About 299 pages of each 300 were
+  such pages, so each run added only a few verdicts. The backfill now records these pages
+  in `data/factchecks/backfill_dropped.parquet` and skips them. It counts them as
+  `previously_dropped`. The option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
+  disallows expire after 30 days. Sitemaps that
+  hold no new URL no longer use the sitemap budget, so the older sitemaps can be reached.
+  The unread sitemaps need new runs with this fix. The evaluation manifest
   `configs/factcheck_eval_manifest.csv` was refrozen at 1107 claims after this backfill.
   The reported comparison and the Hindi gate result include those claims. The unread URLs
   need another refreeze and a rerun of the comparison on a GPU host. The command

@@ -193,6 +193,14 @@ def factchecks(
         "--backfill",
         help="read publisher sitemaps for archive URLs instead of the news records on disk",
     ),
+    recheck_dropped: bool = typer.Option(
+        False,
+        "--recheck-dropped",
+        help=(
+            "with --backfill, fetch again the pages that an earlier run dropped "
+            "(listed in data/factchecks/backfill_dropped.parquet) instead of skipping them"
+        ),
+    ),
 ) -> None:
     """Extract published fact-check verdicts into `data/factchecks/`.
 
@@ -200,6 +208,9 @@ def factchecks(
     new ones -- see ingest/factcheck.py for why these are a side artifact
     rather than a new source. With `--backfill` the URLs come from the
     sitemaps in configs/factcheck.yaml, and only tier 1 publishers are read.
+    A backfill skips URLs that an earlier run fetched and dropped for a stable
+    reason (a middle rating, no ClaimReview, an excluded claim language), so
+    they do not use the URL bound again. `--recheck-dropped` ignores that list.
     """
     from ingest.factcheck import (
         CollapseReason,
@@ -217,11 +228,22 @@ def factchecks(
         console.print("[red]configs/factcheck.yaml has no publishers configured.")
         raise typer.Exit(code=1)
 
+    if recheck_dropped and not backfill:
+        console.print("[red]--recheck-dropped needs --backfill.")
+        raise typer.Exit(code=1)
+
     backfiller = None
     if backfill:
-        from ingest.factcheck_backfill import SitemapBackfill, existing_record_ids
+        from ingest.factcheck_backfill import SitemapBackfill, existing_record_ids, ledger_path
 
-        backfiller = SitemapBackfill(extractor, existing_record_ids(settings))
+        backfiller = SitemapBackfill(
+            extractor,
+            existing_record_ids(settings),
+            ledger_file=ledger_path(settings),
+            # A dry run writes no rows, so it writes no ledger either.
+            write_ledger=not dry_run,
+            recheck_dropped=recheck_dropped,
+        )
         if not backfiller.eligible():
             console.print("[red]no publisher in configs/factcheck.yaml has a backfill block.")
             raise typer.Exit(code=1)
@@ -250,10 +272,14 @@ def factchecks(
         stream = extractor.run(records)
 
     verdicts = []
-    for verdict in stream:
-        verdicts.append(verdict)
-        if limit and len(verdicts) >= limit:
-            break
+    try:
+        for verdict in stream:
+            verdicts.append(verdict)
+            if limit and len(verdicts) >= limit:
+                break
+    finally:
+        # Closing the generator runs its cleanup, which writes the backfill ledger.
+        stream.close()
 
     table = Table(title="verdicts extracted", header_style="bold")
     for column in ("publisher", "tier", "verdicts", "langs"):
@@ -283,7 +309,14 @@ def factchecks(
 
     if backfiller is not None:
         report = Table(title="backfill per publisher", header_style="bold")
-        columns = ("publisher", "discovered", "already present", "fetched", "verdicts")
+        columns = (
+            "publisher",
+            "discovered",
+            "already present",
+            "skipped (dropped)",
+            "fetched",
+            "verdicts",
+        )
         for column in columns:
             report.add_column(column, justify="left" if column == "publisher" else "right")
         for stat in backfiller.stats.values():
@@ -291,6 +324,7 @@ def factchecks(
                 stat.publisher,
                 f"{stat.discovered:,}",
                 f"{stat.already_present:,}",
+                f"{stat.previously_dropped:,}",
                 f"{stat.fetched:,}",
                 f"{stat.verdicts:,}",
             )
@@ -305,7 +339,9 @@ def factchecks(
                 f"kept with no lastmod {stat.lastmod_absent_kept}, "
                 f"kept with unreadable lastmod {stat.lastmod_unparseable}, "
                 f"empty loc {stat.empty_loc}, duplicate loc {stat.duplicate_loc}, "
-                f"sitemaps left unread {stat.sitemaps_unread}"
+                f"sitemaps left unread {stat.sitemaps_unread}, "
+                f"sitemaps with no new URL {stat.sitemaps_exhausted}, "
+                f"stale ledger rows {stat.ledger_stale}"
             )
             if stat.language_excluded:
                 console.print(
