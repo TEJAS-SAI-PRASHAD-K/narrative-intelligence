@@ -33,10 +33,14 @@
 #                terms (Fact Crescendo ships `['False', 'International', ...]`).
 #                Structured, but positional -- the verdict is just another tag.
 #
+#   dom_block    a visible block in the rendered article body, found with the
+#                publisher's own CSS selectors (the `dom_block` key below). The
+#                publisher states the rating, but the markup is not a published
+#                interface and changes when the site is reskinned, so a page
+#                where the verdict selector matches nothing is counted as
+#                `dom_block_not_found` and never guessed at.
+#
 # NOT IMPLEMENTED HERE, and listed so the gap is explicit rather than implied:
-#   dom_block       newschecker.in has no JSON-LD at all but renders a visible
-#                   "Claim" heading in the article body. Parsing it needs a
-#                   per-publisher CSS selector that breaks when they reskin.
 #   title_predicate altnews.in and factly.in publish neither. Their verdict
 #                   lives in the headline's predicate ("... Is AI-Generated",
 #                   "Old Video Falsely Shared as ..."), which is inference, not
@@ -84,6 +88,40 @@ publishers:
     name: Fact Crescendo
     tier: rss_tag
     languages: [hi, en]
+  newschecker.in:
+    name: Newschecker
+    tier: dom_block
+    # English pages sit under /fact-check/ and Hindi pages under /hi/. The claim
+    # is in the page language, the rating label is English on both.
+    languages: [en, hi]
+    # Selectors for tier `dom_block`. Newschecker is a Next.js site with no
+    # ClaimReview script tag in the served HTML, only a visible block.
+    #   verdict             the element holding the rating text. It is the span
+    #                       next to the result icon, which lives under
+    #                       `post-result/` on the image host. The first match in
+    #                       document order is used (`src` and `srcset` both match).
+    #   claim_heading       elements that may head the claim block
+    #   claim_heading_text  the heading text that marks the claim, compared after
+    #                       lowercasing and stripping punctuation
+    #   claim_body          selector for the claim text: the first following sibling
+    #                       of the claim heading that matches it
+    # Tailwind utility classes are left out on purpose: they change with every
+    # restyle, while the "Claim" heading and the result icon path have not.
+    # Recorded markup: fixtures/newschecker/.
+    # Error rate: 0 of 137 extracted verdicts wrong (0.0%) on 2026-11-18. The
+    # sample is 60 English and 77 Hindi pages from the two fact-check listings,
+    # and each extracted rating and claim was compared with the rendered result
+    # and Claim blocks. Seven weekly wraps, six listing or policy pages and one
+    # article with no result block were counted as `dom_block_not_found` and are
+    # not in the sample. This is a self-check of the selectors against the
+    # rendered page, not an independent label: a blind hand check of 50 verdicts
+    # by a person who has not seen the extractor output is still owed before
+    # this rate is quoted as measured.
+    dom_block:
+      verdict: 'img[srcset*="/post-result/"] + span, img[src*="/post-result/"] + span'
+      claim_heading: "h2"
+      claim_heading_text: ["claim"]
+      claim_body: "p"
 
 # ---------------------------------------------------------------------------
 # Archive backfill
@@ -155,6 +193,8 @@ ratings:
   "staged": "false"
   "ai generated": "false"
   "ai-generated": "false"
+  "altered photo/video": "false"
+  "altered media": "false"
   "hoax": "false"
   "misattributed": "false"
   "no evidence": "false"
@@ -200,10 +240,10 @@ on_unknown_rating: report
 # ---------------------------------------------------------------------------
 # Fetching
 # ---------------------------------------------------------------------------
-# Tier-1 extraction needs the article HTML, which the news adapter does not
-# keep. Same politeness rules as `news_rss.fulltext`: robots.txt honoured, a
-# descriptive User-Agent, a delay between requests, and a per-domain give-up
-# after repeated failure.
+# Tier-1 and tier-3 extraction need the article HTML, which the news adapter
+# does not keep. Same politeness rules as `news_rss.fulltext`: robots.txt
+# honoured, a descriptive User-Agent, a delay between requests, and a per-domain
+# give-up after repeated failure.
 fetch:
   max_articles: 200
   request_delay_seconds: 1.0

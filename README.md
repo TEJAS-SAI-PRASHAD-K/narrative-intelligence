@@ -617,14 +617,16 @@ Two more things the numbers say:
 |---|---|---|
 | BOOM, The Quint, Vishvas News | ✅ | structured, tier 1 |
 | Fact Crescendo | ❌ | verdict is an RSS `<category>` term, tier 2 |
-| Newschecker | ❌ | visible `Claim` block in the DOM — **not implemented** |
+| Newschecker | ❌ | rating in the visible result block, claim in the `Claim` block, tier 3 (`dom_block`) |
 | Alt News, Factly | ❌ | headline predicate only — **not implemented** |
 | DigitEye | — | site unreachable when probed |
 
-Tiers 3 and 4 are deliberately absent. Parsing a DOM block needs a per-publisher CSS
-selector that breaks on a reskin, and inferring a verdict from a headline is inference
-rather than extraction — it deserves its own measured error rate, not a quiet seat next
-to structured data. Every row records which tier produced it, so Phase 2 can filter and
+Tier 3 reads a visible block with per-publisher CSS selectors kept in
+`configs/factcheck.yaml`, so a reskin is a config edit. A page where the selector matches
+nothing is counted as `dom_block_not_found`, which makes a reskin show up as a count.
+Tier 4 is absent: inferring a verdict from a headline is inference rather than
+extraction, and it deserves its own measured error rate, not a quiet seat next to
+structured data. Every row records which tier produced it, so Phase 2 can filter and
 the eval can report per tier.
 
 Also worth knowing: **the publisher's claim is not the headline**, and the extractor
