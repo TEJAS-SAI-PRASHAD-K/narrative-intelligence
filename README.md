@@ -653,16 +653,22 @@ Two more things the numbers say:
 | BOOM, The Quint, Vishvas News | ✅ | structured, tier 1 |
 | Fact Crescendo | partial | a ClaimReview on some pages; the daily verdict is an RSS `<category>` term, tier 2 |
 | Newschecker | ❌ | rating in the visible result block, claim in the `Claim` block, tier 3 (`dom_block`) |
-| Alt News, Factly | ❌ | headline predicate only — **not implemented** |
+| Alt News, Factly | ❌ | headline predicate, tier 4 (`title_predicate`), inference with its own measured error rate |
 | DigitEye | — | site unreachable when probed |
 
 Tier 3 reads a visible block with per-publisher CSS selectors kept in
 `configs/factcheck.yaml`, so a reskin is a config edit. A page where the selector matches
 nothing is counted as `dom_block_not_found`, which makes a reskin show up as a count.
-Tier 4 is absent: inferring a verdict from a headline is inference rather than
-extraction, and it deserves its own measured error rate, not a quiet seat next to
-structured data. Every row records which tier produced it, so Phase 2 can filter and
-the eval can report per tier.
+Tier 4 reads the verdict from the headline predicate of Alt News (English and Hindi) and
+Factly, with the regular expressions in `title_predicate` in `configs/factcheck.yaml`. It is
+inference, not extraction. Its rows carry the tier `title_predicate`. They stay out of the
+primary evaluation while `title_predicate.include_in_primary_evaluation` is false, which is
+the default, and the comparison report shows them as a separate cell. A headline that matches
+no pattern is counted as `title_predicate_no_match`, and a headline that a guard cancels (a
+negated verdict, genuine media, a question) as `title_predicate_guarded`. The claim text of a
+tier 4 row is the debunk headline, not the false claim. The error rate is measured on a
+hand-labelled sample of 100 headlines: see `docs/factcheck-tiers.md`. Every
+row records which tier produced it, so Phase 2 can filter and the eval can report per tier.
 
 Also worth knowing: **the publisher's claim is not the headline**, and the extractor
 keeps the claim. A headline is written to be read; a claim is written to be checked.

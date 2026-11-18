@@ -13,12 +13,26 @@ decision.
 
 ### Added
 
-- **`PostScores.model_versions` on the API.** The field is a map from module name to
-  version stamp, read from the stored `model_versions` column. A Hindi post scored by Laya
-  carries a `laya` key and an English post carries `misinfo`, so a client can tell which
-  model produced `misinfo_likelihood`. Null means no module stamped the row, and an empty stored map reads as null. The live
-  `score.posts` upsert now writes `model_versions`, so a rescore replaces a stale map.
-  `DEMO_MODE=1` and `openapi.json` carry the field.
+- **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
+  from the headline with the English and Hindi regular expressions and guards in
+  `configs/factcheck.yaml`. A guard cancels a negated verdict, a headline that calls the
+  media genuine, a quoted verdict word and a question. Rows carry the tier
+  `title_predicate`. A headline with no match is counted as `title_predicate_no_match`, and a
+  cancelled one as `title_predicate_guarded`. Tier 4 rows stay out of the primary evaluation,
+  the frozen manifest and the Hindi publisher shares while
+  `title_predicate.include_in_primary_evaluation` is false, which is the default. The
+  comparison report shows them in a separate section and says that their claim text is the
+  debunk headline. Claim deduplication keeps tier 4 rows apart from the other tiers, and
+  with the switch on a tier 4 row collapses into the stated verdict. `altnews.in` and
+  `factly.in` move from `other_fact_checkers` to `publishers`, and the eight-domain skip
+  list is the same. Two commands measure the reader: `ingest.cli title-predicate-sample`
+  draws 100 headlines (seed 20260813, stratified by language and by match) into a blind
+  sheet and a key file outside git, and `ingest.cli title-predicate-score` writes weighted
+  precision and recall with Wilson intervals, per language and per publisher, against the
+  adjudicated label, against each labeller, and in a worst case. A result is a measured
+  error rate only with `human` labels, adjudication on every row, a kappa of at least 0.6,
+  30 rows per language and an unchanged pattern set. The error rate is not measured yet.
+  See `docs/factcheck-tiers.md`.
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
