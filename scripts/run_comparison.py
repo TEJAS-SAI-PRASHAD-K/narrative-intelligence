@@ -1767,8 +1767,14 @@ def stage_calibrate_laya(ctx: Context) -> None:
     # The filter keeps every other part, test included, out of memory.
     val = pd.read_parquet(
         score_file(ctx, "laya_multi"),
-        columns=["part", "score", "label"],
+        columns=["part", "id", "score", "label"],
         filters=[("part", "==", "val")],
+    )
+    group_of = (
+        pd.read_parquet(ctx.eval_rows_file, columns=["id", "group_id"])
+        .astype({"id": str, "group_id": str})
+        .drop_duplicates("id")
+        .set_index("id")["group_id"]
     )
     usable = val.loc[val["score"].notna() & val["label"].notna()]
     dropped = len(val) - len(usable)
@@ -1779,8 +1785,17 @@ def stage_calibrate_laya(ctx: Context) -> None:
     if not len(usable):
         raise StageError(EXIT_FAILED, "[calibrate-laya] no validation row has a score and a label")
     try:
+        groups = usable["id"].astype(str).map(group_of)
+        if groups.isna().any():
+            ctx.say(
+                f"[calibrate-laya] {int(groups.isna().sum())} validation ids have no group, "
+                "so the out-of-fold check is skipped"
+            )
+            groups = None
         calibrator, report = fit_calibrator(
-            usable["score"].to_numpy(dtype=float), usable["label"].to_numpy(dtype=int)
+            usable["score"].to_numpy(dtype=float),
+            usable["label"].to_numpy(dtype=int),
+            groups=None if groups is None else groups.to_numpy(),
         )
     except LayaCalibratorError as exc:
         raise StageError(EXIT_FAILED, f"[calibrate-laya] {exc}. Nothing was written.") from exc
@@ -1801,7 +1816,8 @@ def stage_calibrate_laya(ctx: Context) -> None:
     ctx.say(
         f"[calibrate-laya] {report['method']} on {report['rows']} rows: "
         f"Brier {report['brier_before']} -> {report['brier_after']}, "
-        f"ECE {report['ece_before']} -> {report['ece_after']}"
+        f"ECE {report['ece_before']} -> {report['ece_after']} on the fit rows. "
+        f"Out of fold: {report['oof']}"
     )
     ctx.say(f"[calibrate-laya] wrote {path}")
     ctx.say(f"[calibrate-laya] {report['label_statement']}")

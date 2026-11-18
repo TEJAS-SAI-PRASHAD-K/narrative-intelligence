@@ -27,6 +27,7 @@ from sklearn.metrics import roc_auc_score
 
 from modeling.checkpoint_identity import directory_identity
 from modeling.eval.calibrate import Calibrator, expected_calibration_error
+from modeling.text.laya_temperature import isotonic_oof_ece
 
 CALIBRATOR_FILE = "misinfo_prob_calibrator.json"
 REPORT_FILE = "misinfo_prob_calibration_report.json"
@@ -39,6 +40,11 @@ CALIBRATOR_FILES = (CALIBRATOR_FILE, REPORT_FILE)
 #: noise as a probability. The multilingual fine-tune is far above it on the English
 #: validation rows.
 MIN_FIT_AUC = 0.60
+
+#: A fit is refused when its out-of-fold ECE is above the raw ECE by more than this. The ECE
+#: on the fit rows is near zero for any isotonic map, so it cannot show a rise. The
+#: out-of-fold value can. The margin covers the noise of a fold split.
+MAX_OOF_ECE_RISE = 0.005
 
 #: A calibrator is refused when its output takes fewer distinct values than this over the
 #: fitted score range. A constant or near-constant map gives every record the same
@@ -101,15 +107,23 @@ def distinct_outputs(calibrator: Calibrator, fit_range: tuple[float, float]) -> 
 
 
 def fit_calibrator(
-    scores: np.ndarray, labels: np.ndarray, method: str = "isotonic"
+    scores: np.ndarray,
+    labels: np.ndarray,
+    method: str = "isotonic",
+    groups: np.ndarray | None = None,
 ) -> tuple[Calibrator, dict[str, Any]]:
     """Fit on validation scores and return the calibrator with its report.
 
     Raises :class:`LayaCalibratorError` with reason ``calibrator_rejected`` when the
     labels hold one class only, when the raw scores do not rank the labels above
     ``MIN_FIT_AUC``, when ``Calibrator`` rejects the fit because it inverted the ranking,
-    or when the fitted map has fewer than ``MIN_DISTINCT_OUTPUTS`` distinct values.
+    when the fitted map has fewer than ``MIN_DISTINCT_OUTPUTS`` distinct values, or when
+    the out-of-fold ECE is higher than the raw ECE by more than ``MAX_OOF_ECE_RISE``.
     Nothing is returned in that case, so nothing can be written.
+
+    ``groups`` holds one group id per row. With groups, the report has the out-of-fold ECE,
+    from five folds that never split a group. Without groups the report says that the check
+    did not run, and the reason is counted in ``oof_skipped``.
     """
     scores = np.asarray(scores, dtype=float).ravel()
     labels = np.asarray(labels).ravel().astype(int)
@@ -145,6 +159,29 @@ def fit_calibrator(
             f"the minimum {MIN_DISTINCT_OUTPUTS}",
         )
     calibrated = calibrator.transform(scores)
+    oof: dict[str, Any] = {}
+    if groups is None:
+        oof["oof_skipped"] = "no_groups"
+    else:
+        group_array = np.asarray(groups).ravel()
+        if len(group_array) != len(scores):
+            raise LayaCalibratorError(REJECTED, "groups and scores differ in length")
+        if method != "isotonic":
+            oof["oof_skipped"] = "method_not_isotonic"
+        else:
+            try:
+                oof.update(isotonic_oof_ece(scores, labels, group_array))
+            except ValueError as exc:
+                oof["oof_skipped"] = f"fold_error: {exc}"
+            else:
+                rise = oof["ece_after_oof"] - oof["ece_before"]
+                if rise > MAX_OOF_ECE_RISE:
+                    raise LayaCalibratorError(
+                        REJECTED,
+                        f"the out-of-fold ECE rises from {oof['ece_before']:.4f} to "
+                        f"{oof['ece_after_oof']:.4f}. The calibrator makes the scores worse "
+                        "on rows it did not see",
+                    )
     report = {
         "method": result.method,
         "requested_method": method,
@@ -157,6 +194,7 @@ def fit_calibrator(
         "brier_after": round(result.brier_after, 6),
         "ece_before": round(expected_calibration_error(labels, scores), 6),
         "ece_after": round(expected_calibration_error(labels, calibrated), 6),
+        "oof": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in oof.items()},
         "degraded": bool(result.degraded),
         "note": result.note,
         "label_statement": LABEL_STATEMENT,
