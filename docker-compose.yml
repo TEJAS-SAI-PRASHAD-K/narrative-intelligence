@@ -19,12 +19,10 @@ x-app-env: &app-env
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
   EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
   MAX_GRAPH_NODES: ${MAX_GRAPH_NODES:-20000}
-  MEDIA_RETENTION_HOURS: ${MEDIA_RETENTION_HOURS:-24}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   LLM_MODEL: ${LLM_MODEL:-claude-haiku-4-5-20251001}
   DATA_DIR: /srv/data
   MODELS_DIR: /srv/models
-  UPLOADS_DIR: /srv/uploads
   REPORTS_DIR: /srv/reports
 
 x-app-volumes: &app-volumes
@@ -34,7 +32,6 @@ x-app-volumes: &app-volumes
   - ./data:/srv/data
   - ./models:/srv/models:ro
   - ./configs:/srv/configs:ro
-  - uploads:/srv/uploads
   - reports:/srv/reports
 
 services:
@@ -144,5 +141,4 @@ services:
 volumes:
   pgdata:
   redisdata:
-  uploads:
   reports:

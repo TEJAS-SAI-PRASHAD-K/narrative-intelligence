@@ -51,7 +51,6 @@ celery = Celery(
         "app.tasks.domains",
         "app.tasks.alerts",
         "app.tasks.reports",
-        "app.tasks.maintenance",
     ],
 )
 
@@ -84,7 +83,6 @@ celery.conf.update(
         "graph.*": {"queue": "cpu"},
         "alerts.*": {"queue": "cpu"},
         "reports.*": {"queue": "cpu"},
-        "maint.*": {"queue": "cpu"},
     },
     # Per-queue time limits. A task with no ceiling is a worker slot that can be
     # lost forever to one wedged HTTP call.
@@ -125,13 +123,6 @@ celery.conf.update(
             "schedule": 3600.0,
             "kwargs": {"batch": True},
             "options": {"queue": "io"},
-        },
-        # Clears files that a deployment uploaded before the upload route was
-        # removed. Files are images of real people, so they must not stay forever.
-        "purge-uploads": {
-            "task": "maint.purge_uploads",
-            "schedule": 3600.0,
-            "options": {"queue": "cpu"},
         },
     },
 )

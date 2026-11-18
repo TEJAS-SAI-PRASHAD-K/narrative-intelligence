@@ -34,7 +34,6 @@ JobKind = Literal[
     "domain.enrich",
     "alerts.evaluate",
     "reports.render",
-    "maint.purge_uploads",
 ]
 
 

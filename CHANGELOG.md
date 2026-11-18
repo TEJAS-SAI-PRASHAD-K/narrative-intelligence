@@ -152,9 +152,9 @@ decision.
   - The `media` extra, `modeling/media/`, the DFDC and FaceForensics++ loaders,
     the `deepfake` trainer, the `media` scoring stage and the `media_scores` table
     are removed. A leftover `data/scored/media_scores` directory is ignored.
-  - `maint.purge_uploads` stays as a file-system-only sweep. It deletes every entry
-    under `uploads_dir` that is older than `media_retention_hours`. It clears files
-    that a deployment uploaded before this removal.
+  - The `maint.purge_uploads` task, its beat schedule entry, the `uploads_dir` and
+    `media_retention_hours` settings (`UPLOADS_DIR`, `MEDIA_RETENTION_HOURS`) and the
+    compose `uploads` volume are removed. No deployment holds stored uploads.
 
 ### Known gaps
 
