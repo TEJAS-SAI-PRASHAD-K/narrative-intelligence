@@ -957,28 +957,24 @@ def lift_estimate(
 # Claims, corpus and the cells of the report
 # ---------------------------------------------------------------------------
 def load_factcheck_publishers(path: Path | None = None) -> frozenset[str]:
-    """Publisher domains from ``configs/factcheck.yaml``. An empty list refuses.
+    """Every fact-checker domain from ``configs/factcheck.yaml``. An empty list refuses.
 
     With no publishers to exclude, the flag rate would include the articles the
-    claims came from, which measures the model on its own answer key.
+    claims came from, which measures the model on its own answer key. Fact-checkers
+    with no extraction tier count too: their articles are debunks all the same.
     """
-    import yaml
+    from modeling.config import FactCheckDomainsMissing, fact_check_domains
 
-    from modeling.config import CONFIG_DIR
-
-    path = Path(path) if path else CONFIG_DIR / "factcheck.yaml"
-    if not path.exists():
-        raise EvalInputError(f"{path} not found; cannot tell which corpus rows are fact-checkers")
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    domains = frozenset(_normalise_domain(d) for d in (data.get("publishers") or {}))
-    if not domains:
-        raise EvalInputError(f"{path} lists no publishers; refusing to compute a flag rate")
-    return domains
+    try:
+        return fact_check_domains(path)
+    except FactCheckDomainsMissing as exc:
+        raise EvalInputError(f"{exc}; refusing to compute a flag rate") from exc
 
 
 def _normalise_domain(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    return text[4:] if text.startswith("www.") else text
+    from modeling.config import normalise_domain
+
+    return normalise_domain(value)
 
 
 def _split_claims(
