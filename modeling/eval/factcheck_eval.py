@@ -2415,8 +2415,8 @@ def write_factcheck_report(
     settings = settings or get_settings()
     data_dir = data_dir or settings.data_dir
     target = eval_dir(EVAL_MODULE, label, settings)
-    fingerprint = run_fingerprint(result["seed"])
     public = redact_paths(result, data_dir, known_paths)
+    fingerprint = redact_paths(run_fingerprint(result["seed"]), data_dir, known_paths)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run": fingerprint,

@@ -646,3 +646,37 @@ def test_a_real_result_holds_no_path_object_after_redaction(env):
 
     public = redact_paths(result, env["data"])
     assert not list(path_objects(public))
+
+
+def test_the_reproducibility_block_prints_no_machine_local_path(env, tmp_path, monkeypatch):
+    import modeling.config as config
+    from modeling.eval.factcheck_eval import write_factcheck_report
+
+    spaced = tmp_path / "with space" / "libs"
+
+    def fingerprint(seed=None):
+        return {
+            "seed": 2,
+            "device": "cpu",
+            "input_manifest_hash": "abc",
+            "languages": ["en"],
+            "module_languages": {},
+            "library_versions": {"pandas": "2.2.0", "wheel": str(spaced / "pandas")},
+        }
+
+    monkeypatch.setattr(config, "run_fingerprint", fingerprint)
+    result, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+    paths = write_factcheck_report(
+        result,
+        label="fp",
+        settings=get_settings(),
+        known_paths=[str(spaced / "pandas")],
+    )
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert str(tmp_path) not in text
+    assert json.loads(paths[0].read_text())["run"]["library_versions"]["wheel"] == (
+        "pandas (outside the repository)"
+    )
