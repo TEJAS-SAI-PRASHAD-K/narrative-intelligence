@@ -24,6 +24,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from modeling.config import (
@@ -513,9 +514,24 @@ def dedup_claims(
     except EvalInputError as exc:
         console.print(f"[red]refused:[/] {exc}")
         raise typer.Exit(code=1) from exc
+    sample_path = cd.hand_check_sample_path(out_dir)
+    side_path = cd.side_sample_path(sample_path)
+    # Validate every existing sample before any write, so a refusal leaves the disk as it was.
+    try:
+        keep_sample = not overwrite_sample and cd.sample_has_labels(sample_path)
+        if keep_sample:
+            cd.embedding_precision(sample_path)
+            if cd.sample_has_labels(side_path):
+                raise cd.ClaimSampleError(
+                    f"{side_path} has labels and {sample_path} has labels. Neither is "
+                    "replaced. Move one of them, or pass --overwrite-sample to replace both"
+                )
+    except cd.ClaimSampleError as exc:
+        console.print(f"[red]refused:[/] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
     result = cd.run_claim_dedup(rows, config=config, merge_tier4=merge_tier4)
     links_path = cd.claim_links_path(out_dir)
-    sample_path = cd.hand_check_sample_path(out_dir)
     cd.write_claim_links(
         result,
         links_path,
@@ -523,19 +539,21 @@ def dedup_claims(
         sample_path=sample_path,
     )
     sample_size_used = sample_size or config.sample_size
-    if cd.sample_has_labels(sample_path) and not overwrite_sample:
+    if keep_sample:
         # A labelled sample is hand work. The new blank sample goes beside it.
-        written_sample = cd.side_sample_path(sample_path)
+        written_sample = side_path
         cd.write_hand_check_sample(result, rows, written_sample, size=sample_size_used)
         console.print(
-            f"[yellow]warning:[/] {sample_path} has labels and is kept "
-            f"(reason code {cd.PrecisionReason.SAMPLE_HAS_LABELS.value}, 1 sample kept). "
-            f"The new blank sample is {written_sample}. Use --overwrite-sample to replace it.",
-            markup=True,
+            f"[yellow]warning:[/] {escape(str(sample_path))} has labels and is kept "
+            f"(reason code {cd.PrecisionReason.SAMPLE_HAS_LABELS.value}). "
+            f"The new blank sample is {escape(str(written_sample))}. "
+            "Use --overwrite-sample to replace it."
         )
     else:
         written_sample = sample_path
         cd.write_hand_check_sample(result, rows, sample_path, size=sample_size_used)
+        # An older side file no longer matches the main sample.
+        side_path.unlink(missing_ok=True)
 
     for name in ("simhash", "embedding"):
         outcome = result.outcome(name)
@@ -544,14 +562,20 @@ def dedup_claims(
         count = "not measured" if outcome.collapsed is None else str(outcome.collapsed)
         reason = f" ({outcome.reason})" if outcome.reason else ""
         console.print(f"{name}: {count} collapsed{reason}")
+    embedding_outcome = result.outcome("embedding")
+    pairs = (
+        cd.embedding_pairs(result.links)
+        if embedding_outcome is not None and embedding_outcome.collapsed is not None
+        else None
+    )
     try:
-        precision = cd.embedding_precision(sample_path)
+        precision = cd.embedding_precision(sample_path, pairs=pairs)
     except cd.ClaimSampleError as exc:
-        console.print(f"[red]refused:[/] {exc}")
+        console.print(f"[red]refused:[/] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
     console.print(cd.describe_precision(precision.as_dict()), markup=False)
-    console.print(f"wrote {links_path}")
-    console.print(f"wrote {written_sample}")
+    console.print(f"wrote {links_path}", markup=False)
+    console.print(f"wrote {written_sample}", markup=False)
 
 
 @app.command(name="freeze-factchecks")

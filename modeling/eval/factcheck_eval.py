@@ -799,11 +799,11 @@ def _claim_dedup_block(
         "label_conflict": int(result.counts.get("label_conflict", 0)),
     }
     source = settings.data_dir / "factchecks" / "factchecks.parquet"
-    sample_path = (
-        Path(links["sample"]) if links and links.get("sample") else cd.hand_check_sample_path(
-            settings.data_dir
-        )
-    )
+    sample_note = None
+    if links is None:
+        sample_path = cd.hand_check_sample_path(settings.data_dir)
+    else:
+        sample_path, sample_note = cd.resolve_sample_path(links, links_path)
     if links is None:
         block = cd.embedding_report(
             None,
@@ -833,6 +833,7 @@ def _claim_dedup_block(
         simhash_considered=len(result.kept) + len(result.collapsed),
         reason=None,
         sample_path=sample_path,
+        sample_note=sample_note,
     )
     return kept, collapsed_embedding, counts, block
 
@@ -1852,17 +1853,19 @@ def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
             f"{_escape('; '.join(details))} |"
         )
     precision = block.get("precision") or {}
-    if precision.get("precision") is not None:
+    if precision.get("status") == "refused" or precision.get("precision") is not None:
         from modeling.eval.claim_dedup import describe_precision
 
-        lines += [
-            "",
-            f"{describe_precision(precision)} Sample `{precision['sample']}`.",
-        ]
-        if precision.get("status") != "measured":
+        lines += ["", f"{describe_precision(precision)} Sample `{precision['sample']}`."]
+        if precision.get("sample_note"):
+            lines.append(f"Note: {precision['sample_note']}.")
+        if precision.get("status") == "refused":
+            lines.append("Fix the sample and rerun the evaluation.")
+        elif precision.get("status") != "measured":
             lines.append(
-                "A person must label the sample, with `labeller_kind` set to `human`, "
-                "before this is a measured precision."
+                "A measured precision needs labels from a person: `labeller_kind` `human`, two "
+                "different labeller names on each row, at least one double-labelled pair, and "
+                "pairs that are in the current links."
             )
     elif precision:
         reason = precision.get("reason") or "not_measured"

@@ -221,6 +221,84 @@ def test_a_model_unreviewed_sample_is_marked_in_the_report(env):
     assert "reason code labeller_not_human".lower() in text.lower()
 
 
+def test_a_stale_sample_is_provisional_in_the_report(env):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,yes,yes\n"
+        "c9,c1,0.88,false,x,false,y,human,ana,raj,no,no,no\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    result, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    precision = result["evaluation_set"]["claim_dedup"]["precision"]
+    assert precision["status"] == "provisional"
+    assert precision["reason"] == "sample_pairs_stale"
+    assert precision["n_stale"] == 1
+    assert "1 of 2 labelled pairs are not in the current embedding links" in paths[1].read_text()
+
+
+def test_a_refused_sample_does_not_stop_the_report(env):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,,\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    result, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    assert result["evaluation_set"]["claim_dedup"]["precision"]["status"] == "refused"
+    assert "half-filled" in paths[1].read_text()
+
+
+def test_a_moved_sample_falls_back_beside_the_links(env):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,yes,yes\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=env["data"] / "gone" / "claim_dedup_sample.csv",
+    )
+
+    result, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    precision = result["evaluation_set"]["claim_dedup"]["precision"]
+    assert precision["precision"] == 1.0
+    assert "does not exist" in precision["sample_note"]
+    assert "does not exist" in paths[1].read_text()
+
+
 def test_cli_runs_and_prints_the_decision(env):
     result = runner.invoke(
         cli.app,
