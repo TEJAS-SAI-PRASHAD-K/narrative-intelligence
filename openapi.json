@@ -617,6 +617,71 @@
         "title": "ApiKeyOut",
         "type": "object"
       },
+      "ApiKeySelf": {
+        "description": "The calling key as it sees itself. Never contains the secret or the hash.",
+        "properties": {
+          "can_admin": {
+            "title": "Can Admin",
+            "type": "boolean"
+          },
+          "can_read": {
+            "title": "Can Read",
+            "type": "boolean"
+          },
+          "can_write": {
+            "title": "Can Write",
+            "type": "boolean"
+          },
+          "effective_scopes": {
+            "description": "Scopes the key can exercise: `admin` implies `read` and `write`.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Effective Scopes",
+            "type": "array"
+          },
+          "id": {
+            "description": "Key id, or 'demo' when DEMO_MODE answers without a key.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "First 8 characters of the key. Null when the caller is not a stored key.",
+            "title": "Prefix"
+          },
+          "scopes": {
+            "description": "Scopes granted to the key, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "scopes",
+          "effective_scopes",
+          "can_read",
+          "can_write",
+          "can_admin"
+        ],
+        "title": "ApiKeySelf",
+        "type": "object"
+      },
       "AuthorGroupCreate": {
         "properties": {
           "description": {
@@ -12075,6 +12140,56 @@
           }
         },
         "summary": "Mint an API key",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/keys/me": {
+      "get": {
+        "description": "Any valid key can call this, including a read-only one, so a client can disable write actions before a write fails. Declared before the `/{key_id}` route so `me` is never read as a key id. Without a database round trip: the answer comes from the key already resolved for the request. Under DEMO_MODE no key is needed and the answer is the fixed demo principal (id `demo`, scopes `read` and `write`, no prefix).",
+        "operationId": "whoami_api_v1_keys_me_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeySelf"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scopes of the calling API key",
         "tags": [
           "auth"
         ]

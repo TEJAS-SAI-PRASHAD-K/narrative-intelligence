@@ -16,10 +16,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.deps import RequireAdmin, rate_limit
+from app.deps import RequireAdmin, RequireRead, rate_limit
 from app.errors import NotFound
 from app.schemas.common import PageResponse
-from app.schemas.keys import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
+from app.schemas.keys import ApiKeyCreate, ApiKeyCreated, ApiKeyOut, ApiKeySelf
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +77,33 @@ async def create_key(
         principal.key_id,
     )
     return ApiKeyCreated(**_to_out(row).model_dump(), key=minted.plaintext)
+
+
+@router.get(
+    "/me",
+    response_model=ApiKeySelf,
+    summary="Scopes of the calling API key",
+    description=(
+        "Any valid key can call this, including a read-only one, so a client can "
+        "disable write actions before a write fails. Declared before the "
+        "`/{key_id}` route so `me` is never read as a key id. Without a database "
+        "round trip: the answer comes from the key already resolved for the request. "
+        "Under DEMO_MODE no key is needed and the answer is the fixed demo principal "
+        "(id `demo`, scopes `read` and `write`, no prefix)."
+    ),
+)
+async def whoami(principal: RequireRead) -> ApiKeySelf:
+    effective = [s for s in ("read", "write", "admin") if principal.has(s)]
+    return ApiKeySelf(
+        id=principal.key_id,
+        name=principal.name,
+        prefix=principal.prefix,
+        scopes=sorted(principal.scopes),
+        effective_scopes=effective,
+        can_read="read" in effective,
+        can_write="write" in effective,
+        can_admin="admin" in effective,
+    )
 
 
 @router.get("", response_model=PageResponse[ApiKeyOut], summary="List API keys")

@@ -13,6 +13,11 @@ decision.
 
 ### Added
 
+- **`GET /keys/me`** returns the calling key's id, name, prefix and scopes
+  (granted and effective, plus `can_read`/`can_write`/`can_admin`), never the
+  secret or hash. It needs only `read`, so a read-only client can disable write
+  actions up front. Under `DEMO_MODE` it answers as the `demo` principal
+  (`read` and `write`, null prefix).
 - **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
   in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
   Vishvas News, DigitEye) carry a claim *and a verdict* and are the only

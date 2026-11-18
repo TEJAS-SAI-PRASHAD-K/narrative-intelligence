@@ -132,6 +132,16 @@ def test_projects(demo_client, demo_ids):
     )
 
 
+def test_keys_me_in_demo_mode(demo_client):
+    from app.schemas.keys import ApiKeySelf
+
+    response = demo_client.get("/api/v1/keys/me")
+    assert response.status_code == 200
+    body = ApiKeySelf.model_validate(response.json())
+    assert (body.id, body.scopes, body.prefix) == ("demo", ["read", "write"], None)
+    assert (body.can_read, body.can_write, body.can_admin) == (True, True, False)
+
+
 def test_ingest(demo_client, demo_ids):
     from app.schemas.common import JobAccepted, PageResponse
     from app.schemas.ingest import IngestRunOut
