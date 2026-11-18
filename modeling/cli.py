@@ -145,7 +145,20 @@ def checkpoint_pull(
 ) -> None:
     """Resolve a checkpoint, pull it from HF_REPO if absent, and verify its sha256."""
     _bootstrap()
-    from modeling.registry import CheckpointIntegrityError, CheckpointNotFound, resolve
+    from modeling.config import module_config
+    from modeling.registry import (
+        CheckpointIntegrityError,
+        CheckpointNotFound,
+        resolve,
+        sha256_versions,
+    )
+
+    known = sha256_versions(module)
+    wanted = version or str(module_config(module).get("version", ""))
+    if known and wanted not in known:
+        console.print(f"[red]no sha256 for {module}/{wanted}. Pass --version with one of:[/]")
+        console.print(", ".join(known))
+        raise typer.Exit(1)
 
     try:
         found = resolve(module, version)
