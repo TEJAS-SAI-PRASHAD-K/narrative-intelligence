@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-18
+
 ### Added
 
 - **Per-source coordination report.** `CoordinationDetector.detect` now returns observed
