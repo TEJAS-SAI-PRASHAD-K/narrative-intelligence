@@ -32,21 +32,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Corpus label results for #30 (English transfer), provisional.** A 150-row English sample
-  has labels from two models, and no person reviewed them. No row is positive, so the card
-  reports the flag rate on negatives and the agreement. ROC-AUC, precision and recall are not
-  measured. The 100-row sample of 2026-11-11 is no longer quoted as a result.
-
-- **Hindi transfer and calibration for #31, provisional.** The Laya card reports 0 of 150
-  positive Hindi titles and a mean calibrated probability of 0.446 [0.401, 0.491]. Labels are
-  from models and no person reviewed them. Calibration on Hindi corpus titles is poor by this
-  sample. Issue #76 tracks the refit.
-
-- **Reporting negatives candidate `v0.3.0-rn` for #32, provisional and not shipped.** The
-  candidate flags 0 of 8 reporting rows in the sample, against 7 of 8 for v0.2.0 (labeller:
-  model, unreviewed by a person), and it meets the shipping bar. `configs/models.yaml` does not change, because the checkpoint
-  registry does not hold the candidate yet.
-
 - **The claim dedup hand-check sample records who labelled it.** The sample has the new
   columns `labeller_kind`, `labeller_1`, `labeller_2`, `label_1` and `label_2`.
   `embedding_precision` returns a Wilson interval, Cohen's kappa, raw agreement and the
@@ -64,31 +49,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one double-labelled pair and pairs that are in the current links. Stale pairs, a half-filled
   row, mixed kinds and a refused sample show on the rendered line. The Wilson interval treats
   pairs as independent, and the sample is systematic over the similarity range.
-
-- **`relabel-eval` reports what a sample with one class can still measure.** With only
-  negatives, it keeps the refusal of ROC-AUC, precision and recall (reason code
-  `one_class_only`, exit code 1). It now also reports the observed positive rate with a
-  Wilson interval, the flag rate at the decision threshold (unweighted, with Wilson and
-  bootstrap intervals, and reweighted), the flag rate per stratum, the mean predicted
-  probability and the ECE. The flag rate on rows that report on a false claim against the
-  other rows now carries Wilson intervals and a bootstrap interval of the difference, also
-  when both classes exist. A null Laya threshold prints "no threshold configured".
-
-- **Reporting articles as extra negatives for `misinfo`.** `modeling.cli train misinfo
-  --extra-negatives PATH --output-version VERSION` adds the rows of a Parquet file as label 0
-  and writes a candidate checkpoint to `models/misinfo/VERSION`. `--output-version` is
-  required with it. `fine_tune` refuses a folder that holds files, so a plain `train misinfo`
-  into a folder with weights is refused too. The benchmark split
-  and the calibration set do not change. The report records the file name, sha256, rows,
-  publishers per side and a publisher bootstrap interval of the held-out flag rate. The run
-  saves the held-out ids, and `modeling.cli score-reporting-heldout` scores any checkpoint on
-  them. `modeling.cli reporting-negatives --out PATH` builds the file from the fact-check
-  articles of the corpus and drops every article that the fact-check evaluation scores, by id,
-  claim text and claim simhash.
-  `modeling.cli score --misinfo-version VERSION` and `scripts/run_comparison.py score
-  --misinfo-version VERSION` score with a candidate. A candidate with no `sha256` loads only
-  with `--allow-unverified-candidate`. The comparison writes `misinfo@VERSION` to its own
-  file. `configs/models.yaml` does not change. The effect is not measured yet. Refs #32.
 
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
@@ -128,6 +88,129 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   records that sit in a cluster with each other language. Both embedders cluster the same
   sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
   each size. The narratives manifest records `min_cluster_size`.
+
+- **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
+  visible result block and the claim from the `Claim` block, in English and Hindi, with
+  the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
+  selector matches nothing is counted as `dom_block_not_found`, so a reskin shows up as a
+  count. Other new reason codes: `dom_block_bad_config`, `html_parser_unavailable`. The
+  rating map gains `Altered Photo/Video` and `Altered Media` (both `false`). The
+  evaluation report now lists fact-check rows per extraction tier, including a tier that
+  only appears after the evaluation set was frozen. Markup fixtures are in
+  `fixtures/newschecker/`.
+
+- **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
+  `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
+  subtitle text, so a video carries thousands of characters instead of a few hundred.
+  A manual track in the video's language is preferred, then the original auto caption
+  track; machine translations are never used. `raw` records `subtitle_lang` and
+  `subtitle_kind` (`manual`, `auto` or `none`). The run summary counts
+  `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`, and every
+  skip has a reason code (`extract_failed`, `search_failed`, `subtitle_fetch_failed`,
+  `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
+  a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
+  `fixtures/youtube_ytdlp_info.json`.
+
+- **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
+  a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
+  reaction total to `likes` and the reply count to `replies`; each is `None` when the
+  channel does not expose it. Needs `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and
+  `TELEGRAM_SESSION` (a `StringSession`), all optional: without them the source is skipped
+  with `missing_credentials`. Channels are listed under `telegram` in
+  `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
+  API source enums and `openapi.json`.
+
+- **Read-side claim deduplication by multilingual embedding, with counts per pass.**
+  `collapse_duplicate_claims` links two verdicts when their claim simhashes are within
+  3 bits. A reworded claim, and the same claim debunked in English and in Hindi, sit
+  outside that radius. `python -m modeling.cli dedup-claims` writes
+  `data/factchecks/claim_links.json` with cluster ids, links and a collapse count for
+  the simhash pass and for a second pass over the cosine similarity of
+  `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` claim embeddings. It
+  also writes a hand-check sample. `factchecks.parquet` is never modified. The
+  evaluation report states how many claims each pass collapsed. The threshold is
+  `claim_dedup.min_similarity` in `configs/factcheck.yaml`, provisionally 0.85 pending
+  a hand check of the sample; the report records the precision once the sample has
+  labels and `not_measured` until then. A missing `sentence-transformers` install is
+  `sentence_transformers_not_installed` on the embedding pass, never a silent no-op.
+
+- **BOOM Hindi and Fact Crescendo archive backfill.** BOOM Hindi lists only its newest
+  day in its sitemaps, so the backfill reads the paginated `/fact-check` listing
+  (`backfill.listing`) and walks about 600 articles. Fact Crescendo keeps its `rss_tag`
+  daily path but opts into the ClaimReview backfill (`backfill.claimreview`), because
+  ClaimReview is appearing on its recent posts. Pages without one are counted as
+  `no_claimreview`. The frozen-set summary and the comparison report now print the Hindi
+  claim share per publisher, so a set that still rests on one publisher is visible.
+
+### Changed
+
+- **The embedder comparison result is reported and the default stays.** The multilingual model
+  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
+  English and 759 Hindi records and 72 records with other detector codes. The silhouette
+  is 0.102 against 0.45. The cluster model card has the tables.
+
+- **The coordination result is reported per source.** YouTube has an observed modularity of
+  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
+  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
+  `artifacts/model_cards/coordination.md`.
+
+- **The coordination null leaves out shuffles with no edges.** The coordination module
+  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
+  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
+  threading exemption that was fixed to Mastodon in code is now the config list
+  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
+  `eligible_sources`.
+
+### Removed
+
+- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
+  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
+  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
+  Data API's `regionCode` did.
+
+## [0.6.0] — 2026-11-18
+
+### Added
+
+- **Corpus label results for #30 (English transfer), provisional.** A 150-row English sample
+  has labels from two models, and no person reviewed them. No row is positive, so the card
+  reports the flag rate on negatives and the agreement. ROC-AUC, precision and recall are not
+  measured. The 100-row sample of 2026-11-11 is no longer quoted as a result.
+
+- **Hindi transfer and calibration for #31, provisional.** The Laya card reports 0 of 150
+  positive Hindi titles and a mean calibrated probability of 0.446 [0.401, 0.491]. Labels are
+  from models and no person reviewed them. Calibration on Hindi corpus titles is poor by this
+  sample. Issue #76 tracks the refit.
+
+- **Reporting negatives candidate `v0.3.0-rn` for #32, provisional and not shipped.** The
+  candidate flags 0 of 8 reporting rows in the sample, against 7 of 8 for v0.2.0 (labeller:
+  model, unreviewed by a person), and it meets the shipping bar. `configs/models.yaml` does not change, because the checkpoint
+  registry does not hold the candidate yet.
+
+- **`relabel-eval` reports what a sample with one class can still measure.** With only
+  negatives, it keeps the refusal of ROC-AUC, precision and recall (reason code
+  `one_class_only`, exit code 1). It now also reports the observed positive rate with a
+  Wilson interval, the flag rate at the decision threshold (unweighted, with Wilson and
+  bootstrap intervals, and reweighted), the flag rate per stratum, the mean predicted
+  probability and the ECE. The flag rate on rows that report on a false claim against the
+  other rows now carries Wilson intervals and a bootstrap interval of the difference, also
+  when both classes exist. A null Laya threshold prints "no threshold configured".
+
+- **Reporting articles as extra negatives for `misinfo`.** `modeling.cli train misinfo
+  --extra-negatives PATH --output-version VERSION` adds the rows of a Parquet file as label 0
+  and writes a candidate checkpoint to `models/misinfo/VERSION`. `--output-version` is
+  required with it. `fine_tune` refuses a folder that holds files, so a plain `train misinfo`
+  into a folder with weights is refused too. The benchmark split
+  and the calibration set do not change. The report records the file name, sha256, rows,
+  publishers per side and a publisher bootstrap interval of the held-out flag rate. The run
+  saves the held-out ids, and `modeling.cli score-reporting-heldout` scores any checkpoint on
+  them. `modeling.cli reporting-negatives --out PATH` builds the file from the fact-check
+  articles of the corpus and drops every article that the fact-check evaluation scores, by id,
+  claim text and claim simhash.
+  `modeling.cli score --misinfo-version VERSION` and `scripts/run_comparison.py score
+  --misinfo-version VERSION` score with a candidate. A candidate with no `sha256` loads only
+  with `--allow-unverified-candidate`. The comparison writes `misinfo@VERSION` to its own
+  file. `configs/models.yaml` does not change. The effect is not measured yet. Refs #32.
 
 - **Weighted hand-labelling sample and two-labeller workflow (issues 30 and 31).**
   `modeling sample-for-labelling misinfo --lang en` and `--lang hi` now draw a stratified
@@ -181,37 +264,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `artifacts/eval/labelling/<lang>/` (agreement, disagreement ids, transfer metrics). Every
   interval uses seed 20260813, and `transfer.json` records it.
 
-- **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
-  visible result block and the claim from the `Claim` block, in English and Hindi, with
-  the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
-  selector matches nothing is counted as `dom_block_not_found`, so a reskin shows up as a
-  count. Other new reason codes: `dom_block_bad_config`, `html_parser_unavailable`. The
-  rating map gains `Altered Photo/Video` and `Altered Media` (both `false`). The
-  evaluation report now lists fact-check rows per extraction tier, including a tier that
-  only appears after the evaluation set was frozen. Markup fixtures are in
-  `fixtures/newschecker/`.
-
-- **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
-  `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
-  subtitle text, so a video carries thousands of characters instead of a few hundred.
-  A manual track in the video's language is preferred, then the original auto caption
-  track; machine translations are never used. `raw` records `subtitle_lang` and
-  `subtitle_kind` (`manual`, `auto` or `none`). The run summary counts
-  `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`, and every
-  skip has a reason code (`extract_failed`, `search_failed`, `subtitle_fetch_failed`,
-  `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
-  a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
-  `fixtures/youtube_ytdlp_info.json`.
-
-- **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
-  a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
-  reaction total to `likes` and the reply count to `replies`; each is `None` when the
-  channel does not expose it. Needs `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and
-  `TELEGRAM_SESSION` (a `StringSession`), all optional: without them the source is skipped
-  with `missing_credentials`. Channels are listed under `telegram` in
-  `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
-  API source enums and `openapi.json`.
-
 - **`GET /keys/me`** returns the calling key's id, name, prefix and scopes
   (granted and effective, plus `can_read`/`can_write`/`can_admin`), never the
   secret or hash. It needs only `read`, so a read-only client can disable write
@@ -228,31 +280,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `author_group_not_found`) for an unknown id. Narratives already resolve through
   `GET /narratives/{narrative_id}`.
 
-- **Read-side claim deduplication by multilingual embedding, with counts per pass.**
-  `collapse_duplicate_claims` links two verdicts when their claim simhashes are within
-  3 bits. A reworded claim, and the same claim debunked in English and in Hindi, sit
-  outside that radius. `python -m modeling.cli dedup-claims` writes
-  `data/factchecks/claim_links.json` with cluster ids, links and a collapse count for
-  the simhash pass and for a second pass over the cosine similarity of
-  `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` claim embeddings. It
-  also writes a hand-check sample. `factchecks.parquet` is never modified. The
-  evaluation report states how many claims each pass collapsed. The threshold is
-  `claim_dedup.min_similarity` in `configs/factcheck.yaml`, provisionally 0.85 pending
-  a hand check of the sample; the report records the precision once the sample has
-  labels and `not_measured` until then. A missing `sentence-transformers` install is
-  `sentence_transformers_not_installed` on the embedding pass, never a silent no-op.
-
 - **Labels for an English corpus sample.** An AI model labelled a 100-record sample from
   `modeling.cli sample-for-labelling misinfo --n 100`, and a person did not check the labels.
   The 150-row sample of #30 supersedes this sample. This entry quotes no number from it.
-
-- **BOOM Hindi and Fact Crescendo archive backfill.** BOOM Hindi lists only its newest
-  day in its sitemaps, so the backfill reads the paginated `/fact-check` listing
-  (`backfill.listing`) and walks about 600 articles. Fact Crescendo keeps its `rss_tag`
-  daily path but opts into the ClaimReview backfill (`backfill.claimreview`), because
-  ClaimReview is appearing on its recent posts. Pages without one are counted as
-  `no_claimreview`. The frozen-set summary and the comparison report now print the Hindi
-  claim share per publisher, so a set that still rests on one publisher is visible.
 
 - **Cursor pagination on `/drivers/authors`, `/drivers/hashtags` and `/drivers/urls`.**
   `DriversResponse` gains `next_cursor`, `total` and `filters_applied`, with the same
@@ -261,16 +291,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **The embedder comparison result is reported and the default stays.** The multilingual model
-  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
-  English and 759 Hindi records and 72 records with other detector codes. The silhouette
-  is 0.102 against 0.45. The cluster model card has the tables.
-
-- **The coordination result is reported per source.** YouTube has an observed modularity of
-  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
-  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
-  `artifacts/model_cards/coordination.md`.
-
 - **The Laya calibration diagnosis is recorded, and the clamp at 5 stays.** The optimum
   temperature on validation is 11.846 for the multilingual fine-tune and 11.408 for the
   English fine-tune, inside the search of 0.05 to 100. The cause is overconfident logits.
@@ -278,20 +298,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stored scores from 0.159 to 0.009 and from 0.151 to 0.009 out of fold. The model card holds
   the full table. Both diagnosis reports are `valid: false`, so the card bases the decision
   on the stored scores. Issue 33.
-
-- **The coordination null leaves out shuffles with no edges.** The coordination module
-  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
-  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
-  threading exemption that was fixed to Mastodon in code is now the config list
-  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
-  `eligible_sources`.
-
-### Removed
-
-- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
-  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
-  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
-  Data API's `regionCode` did.
 
 ## [0.5.0] — 2026-11-18
 
