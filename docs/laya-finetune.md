@@ -262,6 +262,25 @@ Notes that matter:
   to `run_summary.json` in each output directory. It is the run fingerprint for
   the model card.
 
+### Check the temperature fit
+
+`finetune` clamps its temperature to `[0.5, 5]`. A fit on the clamp has not converged. Run the
+diagnosis once for each fine-tune after the `score` stage. It computes the logit gap of every
+validation row, stores it in `<out>.logits.npz`, and writes a JSON report to `--out`.
+
+```bash
+python scripts/diagnose_laya_calibration.py --model laya_en \
+  --out reports/laya_en_temperature.json --wait-for-gpu
+python scripts/diagnose_laya_calibration.py --model laya_multi \
+  --out reports/laya_multi_temperature.json --wait-for-gpu
+```
+
+Add `--reuse-logits` to repeat the analysis with no GPU. Read `findings` in the report first.
+The report holds the NLL curve from 0.05 to 100, the argmin, the argmin for each source
+dataset, and ECE with a 95 percent group bootstrap interval (seed 20260813). The ECE rows for
+the fitted variants are out of fold, because the ECE of an isotonic fit on its own rows is
+near zero by construction.
+
 Then confirm it loads back:
 
 ```bash

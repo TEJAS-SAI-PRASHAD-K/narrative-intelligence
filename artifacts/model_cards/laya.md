@@ -71,6 +71,29 @@ records this issue. Expected calibration error on validation is 0.152 for the En
 fine-tune. For the multilingual fine-tune, it increased from 0.068 to 0.159. Do not
 read a Laya score as a calibrated probability.
 
+The temperature fit is part of `laya.train.finetune`. This repository does not own it. The
+fit uses the negative log likelihood of the two-option softmax, which is the right
+objective for a `noul`. The clamp is `[0.5, 5]`, and the fit uses a calibration slice of at
+most 400 rows. A fit that ends on the clamp has not converged.
+
+`scripts/diagnose_laya_calibration.py` measures where the optimum lies on the validation
+rows. It searches 0.05 to 100 and reports the argmin, the NLL curve, a fit with an
+intercept, and the spread of fits on 400-row slices. It reports ECE with a group bootstrap
+interval for the raw score, for temperature only, for isotonic only and for both.
+
+| item | English fine-tune | multilingual fine-tune |
+|---|---|---|
+| Optimum T on validation, wide search | not measured yet | not measured yet |
+| ECE raw, checkpoint temperature | ECE: not measured yet | ECE: not measured yet |
+| ECE temperature only, out of fold | ECE: not measured yet | ECE: not measured yet |
+| ECE isotonic only, out of fold | ECE: not measured yet | ECE: not measured yet |
+| ECE temperature and isotonic, out of fold | ECE: not measured yet | ECE: not measured yet |
+
+Isotonic regression is monotone. A temperature before it changes no ranking, so it adds
+nothing when the isotonic map follows. The served `misinfo_prob` therefore does not depend
+on the clamp. The calibrator fit now refuses a map whose out-of-fold ECE is higher than
+the raw ECE.
+
 ## Out-of-scope use
 
 Laya scores are not a determination that a claim is false. Do not use them for
