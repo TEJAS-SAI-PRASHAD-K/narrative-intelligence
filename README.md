@@ -810,7 +810,7 @@ python -m modeling.cli score --all --demo    # committed fixtures, ~12s, no netw
 | `datasets` | what benchmark data is on disk, and how to get what is not |
 | `registry` | local checkpoints (weights are never in git) |
 | `show-config` | seed, device, corpus hash, library versions |
-| `sample-for-labelling misinfo` | write the CSV for the corpus-transfer hand-label |
+| `sample-for-labelling misinfo --lang en\|hi` | write the weighted sheet for the corpus-transfer hand-label (needs `--lang`) |
 
 ## What Phase 2 produces
 
@@ -956,8 +956,10 @@ Everything in Phase 1's limitations still holds. Phase 2 adds:
   statements, FakeNewsNet is news headlines, CoAID is COVID-era health claims, and this
   corpus is Reddit comments, Mastodon toots and GDELT article metadata. **Expect a large
   drop.** The transfer gap is currently **unmeasured**; closing it needs a person to
-  hand-label 100 corpus records (`sample-for-labelling misinfo`), and that single table is
-  worth more than any hyperparameter sweep.
+  label corpus records twice and adjudicate them (`sample-for-labelling misinfo --lang en`,
+  then `make relabel-eval`), and that single table is worth more than any hyperparameter
+  sweep. `evaluate misinfo` reads `adjudicated_label` and refuses labels with a
+  `labeller_kind` that no person reviewed, unless `--allow-model-labels` is set.
 - **English-only scoring, over an English-and-Hindi corpus.** This was a clean decision
   when the corpus was English; since the India retarget it is a **gap**, and the honest
   framing has changed with it. Non-English text is skipped with a reason code and never

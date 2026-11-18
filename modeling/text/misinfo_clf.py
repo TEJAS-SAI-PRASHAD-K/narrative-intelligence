@@ -20,8 +20,9 @@ reported so the mixture is visible rather than averaged away.
 *The corpus is none of the above.* This project's records are Reddit comments,
 Mastodon toots and GDELT article metadata. **Expect a large drop.** Benchmark F1
 is not production accuracy and must never be presented as such. The transfer gap
-is measured directly: 100 real corpus records, hand-labelled, scored by this
-model, reported as its own table. That table is worth more than any
+is measured directly: real corpus records, labelled by two people and adjudicated,
+scored by this model, reported as its own table (`modeling evaluate misinfo`, which
+refuses labels that no person reviewed). That table is worth more than any
 hyperparameter sweep.
 
 *Grouping.* By claim/statement id and by speaker within LIAR, by article id and

@@ -61,6 +61,7 @@ MUST_BE_TRACKABLE = [
     "modeling/models/any_new_model.py",
     "modeling/data/any_new_loader.py",
     "ingest/data/any_new_module.py",
+    "artifacts/hand_labels/README.md",
 ]
 
 #: The build products the anchored patterns still have to catch. Anchoring is
@@ -76,6 +77,12 @@ MUST_STAY_IGNORED = [
     ".env",
     "artifacts/eval/factcheck/comparison/factcheck_eval.json",
     "kaggle.json",
+    "artifacts/hand_labels/misinfo_corpus_sample_en.csv",
+    "artifacts/hand_labels/misinfo_corpus_sample_en.sampling.json",
+    "artifacts/hand_labels/misinfo_corpus_sample_en.design.csv",
+    "artifacts/hand_labels/misinfo_corpus_sample_hi.xlsx",
+    "artifacts/hand_labels/misinfo_corpus_sample_hi.ods",
+    "artifacts/hand_labels/copy_of_sheet.csv",
     "app/__pycache__/config.cpython-311.pyc",
     "narrative_intelligence.egg-info/PKG-INFO",
     ".pytest_cache/v/cache/lastfailed",

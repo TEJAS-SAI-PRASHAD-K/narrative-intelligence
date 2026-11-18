@@ -65,8 +65,11 @@ htmlcov/
 # Local agent settings
 .claude/settings.local.json
 
-# Hand-label CSVs carry verbatim corpus text; see artifacts/hand_labels/README.md
-artifacts/hand_labels/*.csv
+# Hand-label sheets carry verbatim corpus text, and the design and sampling files describe
+# the sample. Nothing in the folder is committed except its README.
+# See artifacts/hand_labels/README.md.
+/artifacts/hand_labels/*
+!/artifacts/hand_labels/README.md
 
 # Fitted baseline models are build products, never committed
 /artifacts/baselines/

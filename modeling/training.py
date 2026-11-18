@@ -402,11 +402,15 @@ def _domain_holdout_note(
 def _corpus_transfer_note(settings: ModelingSettings) -> str:
     """The hand-labelled corpus-transfer check.
 
-    100 real corpus records, hand-labelled, scored by this model. This is the
-    single most informative table in the report and it cannot be automated --
-    the labels have to come from a person.
+    Real corpus records, labelled by two people and adjudicated, scored by this model.
+    This is the single most informative table in the report and it cannot be automated:
+    the labels have to come from a person. The table itself comes from
+    ``modeling evaluate misinfo``, which joins the scores on disk. Training has no scores of
+    this model on the sample yet, so this note reports the state of the sheet only.
     """
-    path = settings.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv"
+    from modeling.eval.labelling import resolve_sheet_file
+
+    path = settings.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv"
     if not path.exists():
         return "\n".join(
             [
@@ -418,44 +422,25 @@ def _corpus_transfer_note(settings: ModelingSettings) -> str:
                 "To measure the gap:",
                 "",
                 "```bash",
-                "python -m modeling.cli sample-for-labelling misinfo --n 100",
+                "python -m modeling.cli sample-for-labelling misinfo --lang en --n 100",
                 "```",
                 "",
-                f"That writes `{path.relative_to(settings.artifacts_dir.parent)}` with a blank "
-                "`label` column. Fill it in by hand, rerun `modeling evaluate misinfo`, and "
-                "this section becomes a table. Until then, the honest statement is that the "
+                f"That writes `{path.relative_to(settings.artifacts_dir.parent)}`. Two "
+                "labellers fill it in as `docs/labelling-guide.md` says, and each labelled "
+                "row gets `labeller_kind` set. Then run `make relabel-eval`, and this "
+                "section becomes a table. Until then, the honest statement is that the "
                 "transfer gap is **unmeasured and expected to be large**.",
             ]
         )
 
-    frame = pd.read_csv(path)
-    labelled = frame.loc[frame["label"].notna()]
-    if len(labelled) < 20:
-        return (
-            f"_Only {len(labelled)} of {len(frame)} sampled records have been hand-labelled; "
-            "at least 20 are needed before reporting a transfer number._"
-        )
-    if "score" not in labelled.columns:
-        return "_Hand labels present but not yet scored; rerun `modeling evaluate misinfo`._"
-
-    report = classification_report(
-        labelled["label"].to_numpy().astype(int),
-        (labelled["score"].to_numpy() >= 0.5).astype(int),
-        y_score=labelled["score"].to_numpy(),
-        module="misinfo",
-        split_description=f"{len(labelled)} hand-labelled corpus records",
-        seed=settings.seed,
-    )
-    return "\n".join(
-        [
-            f"**{len(labelled)} real corpus records, hand-labelled.** This is the number that "
-            "describes production behaviour; the benchmark numbers above describe the "
-            "benchmarks.",
-            "",
-            f"- macro F1: {report.macro_f1}",
-            f"- PR-AUC: {report.pr_auc}" if report.pr_auc else "",
-            f"- positive rate in the sample: {report.positive_rate:.3f}",
-        ]
+    resolved = resolve_sheet_file(path)
+    if resolved.refusal:
+        return f"_The corpus sample is not usable as a result: {resolved.refusal}_"
+    labelled = int(resolved.frame["label"].str.strip().isin(["0", "1"]).sum())
+    return (
+        f"_{labelled} of {len(resolved.frame)} sampled records carry an adjudicated label "
+        "from a person. Run `modeling evaluate misinfo` for the transfer table; it joins "
+        "the scores on disk._"
     )
 
 

@@ -1,0 +1,47 @@
+# How the hand-labelling sample is drawn. Read by `modeling sample-for-labelling misinfo`.
+#
+# The sample is stratified. A uniform draw from the corpus holds very few
+# misinformation-like rows, so the labelled set would have one class and the transfer
+# metrics would refuse. Each stratum gets a share of the sample, and every sampled row
+# records its weight (stratum pool size over stratum sample size). Metrics that must
+# describe the whole corpus are reweighted with that column.
+#
+# The sheet holds no stratum and no weight. They go to a separate design file beside the sheet
+# (`<sheet>.design.csv`), and the evaluation joins that file on `id`. A labeller who knows that
+# a row matched a debunked claim anchors on that fact. The sheet rows are shuffled with the
+# seed. Stratum codes (S1, S2, ...) follow the order of `strata` below. Their meaning is
+# written in `<sheet>.sampling.json`.
+
+seed: 20260813
+
+# Sources whose posts are more likely to carry a false claim than a news article is.
+likely_positive_sources: [reddit, mastodon, youtube, telegram]
+
+# Order sets the stratum codes. `claim_match` holds rows that match a fact-check claim.
+# A row goes to the first stratum that fits: claim_match, then its own platform, then
+# `other`. Shares need not sum to 1. A stratum with no rows gives its share to the others.
+strata:
+  - {name: claim_match, share: 0.30}
+  - {name: reddit, share: 0.15}
+  - {name: mastodon, share: 0.15}
+  - {name: youtube, share: 0.15}
+  - {name: telegram, share: 0.10}
+  - {name: other, share: 0.15}
+
+# How a corpus record matches a fact-check claim. This is a separate decision from the
+# claim-to-claim dedup in `configs/factcheck.yaml`: a post is matched to a claim, and a post
+# is longer and noisier than a claim. Both numbers are PROVISIONAL and not checked against
+# hand labels. The sampler prints and records how many records match, so a threshold that
+# matches nothing or everything shows up in the run.
+claim_match:
+  # Hamming distance between the simhash of the record and of the claim, in bits or fewer.
+  simhash_hamming: 3
+  # Cosine similarity of the record embedding and the claim embedding, at least this value.
+  # Used only when `--embeddings` supplies record embeddings.
+  min_similarity: 0.85
+  # Model that made the record embeddings. null means `claim_dedup.model_name` of
+  # `configs/factcheck.yaml`. The sampler refuses an embeddings file that names another model.
+  embedding_model: null
+
+# Only claims with these verdict labels count as false claims.
+claim_labels: [false]

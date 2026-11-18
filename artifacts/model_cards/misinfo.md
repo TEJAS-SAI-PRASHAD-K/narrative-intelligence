@@ -221,9 +221,9 @@ come from an AI model and hold one class (see "Corpus sample labels"). A person 
 the gap:
 
 ```bash
-python -m modeling.cli sample-for-labelling misinfo --n 100
-# fill in the blank `label` column by hand, then:
-python -m modeling.cli evaluate misinfo
+python -m modeling.cli sample-for-labelling misinfo --lang en --n 100
+# two labellers fill in the sheet (docs/labelling-guide.md), adjudicate, set labeller_kind, then:
+python -m modeling.cli evaluate misinfo   # or: make relabel-eval
 ```
 
 That single table is worth more than any hyperparameter sweep, and until it

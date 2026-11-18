@@ -60,6 +60,9 @@ train-misinfo: ## Train the misinformation classifier (needs a benchmark on disk
 eval-report: ## Regenerate artifacts/eval/** from saved predictions, no retraining
 	$(BIN)/python -m modeling.cli report
 
+relabel-eval: ## Read the filled label sheets and rewrite the agreement and transfer outputs
+	$(BIN)/python -m modeling.cli relabel-eval $(ARGS)
+
 ablate: ## The module-ablation table
 	$(BIN)/python -m modeling.cli ablate
 
