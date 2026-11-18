@@ -147,6 +147,31 @@ Do not look at a model score. If you see a score, tell the lead and stop.
 Run the evaluation with `make relabel-eval`. It rewrites the agreement reports and the
 transfer metrics from the sheets in one run.
 
+## A sample with only negatives
+
+Sometimes both labellers find no misinformation-like row. The evaluation then refuses
+ROC-AUC, precision and recall, because they need both classes. The output names the reason
+code `one_class_only`, and the command exits with code 1 so that a script sees the gap.
+
+The evaluation still reports these figures for the rows that it has:
+
+- The observed positive rate with a Wilson 95% interval. A result of 0 of 150 has an upper
+  limit of about 0.025. It does not prove that the corpus has no positives.
+- The flag rate at the decision threshold. On a sample of negatives, this is the
+  false-positive rate. It has Wilson and bootstrap intervals, and a reweighted figure with a
+  bootstrap interval. Laya has no threshold until a person sets one. The output then says
+  "no threshold configured". Pass `--laya-threshold` to try one. The output says that this
+  threshold is not the configured one.
+- The flag rate per stratum, and the flag rate on rows that report on a false claim against
+  the other rows, with the interval of the difference.
+- The mean predicted probability and the ECE. With one class, the ECE equals the mean
+  predicted probability. It shows how high the scores sit on negatives. It does not show
+  whether the scores rank positives above negatives.
+
+A sample with only negatives cannot measure recall, precision, ranking or the transfer gap.
+It cannot tell a good threshold from a bad one for finding positives. Draw a sample that
+holds positives for those figures.
+
 ## Keep the sheets private
 
 The lead gives each labeller only the sheet file, for example
