@@ -239,12 +239,32 @@ def score(
     end: str | None = typer.Option(None, help="YYYY-MM-DD upper bound."),
     limit: int | None = typer.Option(None, help="Cap the number of records."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Compute but do not write."),
+    misinfo_version: str | None = typer.Option(
+        None,
+        "--misinfo-version",
+        help="Score the misinfo stage with models/misinfo/VERSION for this run. "
+        "configs/models.yaml does not change. Rows carry VERSION+sha8. "
+        "The run overwrites misinfo_prob of rows that another version scored, so use "
+        "a separate DATA_DIR.",
+    ),
+    allow_unverified_candidate: bool = typer.Option(
+        False,
+        "--allow-unverified-candidate",
+        help="Load a --misinfo-version checkpoint that has no sha256 in configs/models.yaml. "
+        "A warning is logged.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Produce the scored Parquet tables. Resumable and idempotent."""
     _bootstrap(verbose)
     if not all_stages and stage is None:
         raise typer.BadParameter("give a stage name or --all")
+    if allow_unverified_candidate and not misinfo_version:
+        raise typer.BadParameter("--allow-unverified-candidate needs --misinfo-version")
+    if misinfo_version:
+        from modeling import candidate
+
+        candidate.set_request(misinfo_version, unverified=allow_unverified_candidate)
 
     from modeling.scoring import run_stages
 
@@ -292,6 +312,18 @@ def train(
     data: Path | None = typer.Option(None, help="Local benchmark path."),
     demo: bool = typer.Option(False, "--demo", help="Train on the committed fixture."),
     epochs: int | None = typer.Option(None, help="Override the configured epochs."),
+    extra_negatives: Path | None = typer.Option(
+        None,
+        "--extra-negatives",
+        help="misinfo only. Parquet with text, group_id and optional domain. "
+        "Every row is added as label 0. Build it with `reporting-negatives`.",
+    ),
+    output_version: str | None = typer.Option(
+        None,
+        "--output-version",
+        help="misinfo only. Write the checkpoint to models/misinfo/VERSION. "
+        "Refuses an existing folder. configs/models.yaml does not change.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Train one module, then write its eval report and model card."""
@@ -306,7 +338,14 @@ def train(
     # indistinguishable from success to anyone reading a terminal, so every
     # failure is caught, named, and given a non-zero exit.
     try:
-        result = train_module(module, data_path=data, demo=demo, epochs=epochs)
+        result = train_module(
+            module,
+            data_path=data,
+            demo=demo,
+            epochs=epochs,
+            extra_negatives=extra_negatives,
+            output_version=output_version,
+        )
     except Exception as exc:
         log.exception("training %s failed", module)
         console.print(f"\n[red]training {module} failed:[/] {type(exc).__name__}: {exc}")
@@ -319,6 +358,61 @@ def train(
             console.print(f"  {path}")
     if result.skipped:
         raise typer.Exit(code=1)
+
+
+@app.command(name="reporting-negatives")
+def reporting_negatives(
+    out: Path = typer.Option(..., "--out", help="Parquet file to write."),
+    lang: str = typer.Option("en", "--lang", help="Language of the rows to keep."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Write the fact-check articles of the corpus as extra negatives for `train misinfo`.
+
+    A row is a corpus record whose domain is in configs/factcheck.yaml, in the chosen
+    language, with text. The group id is the domain. The output holds corpus text, so
+    keep it out of git.
+    """
+    _bootstrap(verbose)
+    from modeling.config import FactCheckDomainsMissing, fact_check_domains
+    from modeling.io import CorpusReader
+    from modeling.text.extra_negatives import ExtraNegativesRefused, select_reporting_rows
+
+    try:
+        domains = fact_check_domains()
+    except FactCheckDomainsMissing as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    records = CorpusReader(get_settings()).records(
+        columns=["id", "source", "source_detail", "text", "lang"]
+    )
+    if not len(records):
+        console.print("[red]no_corpus_on_disk[/]: run `make data` first")
+        raise typer.Exit(code=1)
+    try:
+        frame, dropped = select_reporting_rows(records, domains, lang=lang)
+    except ExtraNegativesRefused as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    for reason, count in dropped.items():
+        log.info("reporting-negatives: skipped %d record(s), reason=%s", count, reason)
+    if not len(frame):
+        console.print(
+            f"[red]no_rows[/]: no {lang} record from a fact-check domain has text. Nothing written."
+        )
+        raise typer.Exit(code=1)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(out, index=False)
+    table = Table(title=f"reporting negatives, lang={lang}")
+    table.add_column("domain")
+    table.add_column("rows", justify="right")
+    for domain, count in frame["group_id"].value_counts().sort_index().items():
+        table.add_row(str(domain), str(count))
+    console.print(table)
+    console.print(f"{len(frame)} rows, {frame['group_id'].nunique()} groups -> {out}")
+    console.print(
+        "skipped records: " + ", ".join(f"{k}={v}" for k, v in dropped.items())
+    )
 
 
 @app.command()
