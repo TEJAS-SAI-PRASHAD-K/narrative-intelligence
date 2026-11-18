@@ -1,6 +1,6 @@
 # Model card — coordination detection
 
-**Module:** `modeling/accounts/coordination.py` · **Version:** `v0.3.0`
+**Module:** `modeling/accounts/coordination.py` · **Version:** `v0.2.1`
 **Outputs:** `coordination_edges`, `author_scores.community_id`,
 `author_scores.coordination_score`
 
@@ -60,16 +60,35 @@ suppressed, and it is exactly the outcome the null model exists to surface.
 
 The report gives observed and null modularity for all eligible records and for each
 source alone. A source is a separate graph, so an edge never joins two sources. Each null
-is a set of within-author time shuffles. The seed is `null_seed` (20260813). The report
-lists the null mean, the 2.5th to 97.5th percentile interval and the empirical p value
-`(1 + k) / (1 + n)`. Here k counts shuffles at or above the observed value and n is the
-number of shuffles. The p value cannot fall below `1 / (1 + n)`, so use 200 shuffles or
-more. A source with fewer than `min_source_authors` authors, no edges, or fewer than
-`min_source_edges` edges has a reason code (`too_few_authors`, `no_edges`,
-`too_few_edges`) and no number. Run it with `python -m modeling.cli coordination-report`.
+is a set of within-author time shuffles that starts from the settings seed (20260813),
+the same seed as the observed partition. A shuffle with no edges has no modularity. It is
+counted in `null_empty_shuffles` and left out of the null. When more than half of the
+shuffles are empty the row status is `null_degenerate`. Each row also gives the mean edge
+count of the null graphs, the null mean, the 2.5th to 97.5th percentile interval and the
+empirical p value `(1 + k) / (1 + n)`. Here n counts the non-empty shuffles and k counts
+those at or above the observed value. The column `p_floor` is `1 / (1 + n)`. The default
+is 200 shuffles. A source with fewer than `min_source_authors` authors, no edges, or fewer
+than `min_source_edges` edges has a reason code (`too_few_authors`, `no_edges`,
+`too_few_edges`) and no number.
 
-Result on a social corpus: not measured. The run needs the Telegram and YouTube data on
-the data host.
+A sparse shuffled graph can have a high modularity, so a corpus with few edges does not
+beat its null. Read the null mean edge count beside each row.
+
+Run it with `python -m modeling.cli coordination-report --sources ...`. The option
+`--sources` may name a source that the production eligible set leaves out. That run is a
+research measurement. It never writes to the scored tables.
+
+### Telegram
+
+Telegram is not in `eligible_sources`, so it does not reach `author_scores.coordination_score`
+or `coordinated_author_ratio`. The research report may include it. A Telegram author is a
+channel, so the measure is channel co-posting and not account behaviour. The report drops
+posts with `raw.forwarded_from` and counts them as `telegram_forward`, so a forward does
+not create an edge. The seed list in `configs/sources.yaml` has 6 channels. That is below
+`min_source_authors` (10), so the Telegram row reports `too_few_authors` until the list
+grows.
+
+Result on a social corpus: not measured. The run needs the social data on the data host.
 
 ## `coordination_score` — a formula, not a model
 
@@ -108,9 +127,8 @@ Only sources with real threading and stable author identity, filtered on
 **threading availability rather than source name** so a future flat dump is
 excluded automatically:
 
-- **Included:** ConvoKit Reddit, Mastodon, YouTube comments, Telegram channel posts.
-  Mastodon and Telegram are in `threading_optional_sources`. Their evidence is shared
-  text and links, not reply threads. A Telegram author is a channel, not a person.
+- **Included:** ConvoKit Reddit, Mastodon, YouTube comments. Mastodon is in
+  `threading_optional_sources`, so it stays without reply threads.
 - **Excluded:** GDELT (its "authors" are outlet domains, not people), news RSS
   (same), Kaggle-flat Reddit (`parent_id = None` honestly), and any record whose
   author is the `__deleted__` sentinel — keeping those would merge every
