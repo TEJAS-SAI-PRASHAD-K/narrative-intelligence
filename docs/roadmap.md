@@ -252,8 +252,9 @@ the honest entry in that cell, not a zero.
   this possible. Before it, pages that the backfill fetched and dropped used the URL
   budget on every run, so each run added only a few verdicts. The backfill now records
   these pages in `data/factchecks/backfill_dropped.parquet` and skips them. It counts
-  them as `previously_dropped`. The ledger holds 2713 pages: `rating_is_middle` 2384,
-  `backfill_language_excluded` 226, `no_claimreview` 102 and `robots_disallowed` 1. The
+  them as `previously_dropped`. At the Vishvas News read, the ledger held 2713 pages, all from Vishvas News:
+  `rating_is_middle` 2384, `backfill_language_excluded` 226, `no_claimreview` 102 and
+  `robots_disallowed` 1. The
   option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
   disallows expire after 30 days. Sitemaps that hold no new URL do not use the sitemap
   budget. The evaluation manifest `configs/factcheck_eval_manifest.csv` was refrozen at
@@ -275,10 +276,13 @@ the honest entry in that cell, not a zero.
   4428 claims, and the Hindi gate was rerun on it. The Hindi share per publisher in the
   report of 2026-11-18 is Vishvas News 3789 of 4334 (87.4 percent), BOOM 524 (12.1 percent)
   and Fact Crescendo 21 (0.5 percent). The Hindi set now has claims from three publishers.
-  Vishvas News still gives most of them. The report holds no count of Fact Crescendo pages
-  without a ClaimReview. The ledger `backfill_dropped.parquet` has a `domain` column and a
-  `reason` column, so the operator can count them on the data host, but no per-publisher
-  figure is recorded here. The `no_claimreview` count of 102 above is not split by publisher.
+  Vishvas News still gives most of them. The ledger `backfill_dropped.parquet` held 3130 rows
+  on 2026-11-18. The rows by domain and reason are:
+  boomlive.in `backfill_language_excluded` 1, `no_claimreview` 9, `no_rating` 2 and
+  `rating_is_middle` 55. factcrescendo.com `no_claimreview` 320 and `rating_is_middle` 29.
+  vishvasnews.com `backfill_language_excluded` 226, `no_claimreview` 102,
+  `rating_is_middle` 2385 and `robots_disallowed` 1. Fact Crescendo pages without a
+  ClaimReview number 320. The comparison report does not hold these counts.
 - **Fact-check extraction tier 4, and a tier 3 run on the data host.** Tier 3 reads
   the Newschecker result and claim blocks with selectors from `configs/factcheck.yaml`.
   Tier 4 reads the verdict from the Alt News and Factly headline. Both are implemented.
