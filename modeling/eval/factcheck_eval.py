@@ -1881,18 +1881,23 @@ def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
 
         lines += ["", f"{describe_precision(precision)} Sample `{precision['sample']}`."]
         bands = precision.get("bands") or []
-        if bands:
+        chain = precision.get("chain")
+        if bands or chain:
             lines += [
                 "",
-                "| similarity band | pairs | same claim | precision | Wilson 95% interval |",
+                "| link type and similarity band | pairs | same claim | precision | "
+                "Wilson 95% interval |",
                 "|---|---|---|---|---|",
             ]
-            for band in bands:
+            rows = [(f"direct {band['label']}", band) for band in bands]
+            if chain:
+                rows.append((f"chain {chain['label']}", chain))
+            for name, band in rows:
                 if not band["n"]:
-                    lines.append(f"| {band['label']} | 0 | 0 | no pairs in this band | |")
+                    lines.append(f"| {name} | 0 | 0 | no pairs in this band | |")
                     continue
                 lines.append(
-                    f"| {band['label']} | {band['n']} | {band['n_same']} | "
+                    f"| {name} | {band['n']} | {band['n_same']} | "
                     f"{band['precision']:.3f} | [{band['ci_low']:.3f}, {band['ci_high']:.3f}] |"
                 )
             lines.append("")

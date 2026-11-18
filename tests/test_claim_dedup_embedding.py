@@ -813,7 +813,7 @@ def test_the_cli_keeps_a_labelled_sample_and_writes_the_new_one_beside_it(
     assert side.exists()
     assert not cd.sample_has_labels(side)
     assert "sample_has_labels" in output
-    assert "embedding precision: 1.000" in output
+    assert "embedding precision of collapses: 1.000" in output
     assert "labeller: human" in output
 
 
@@ -1023,40 +1023,50 @@ def _threshold_sample(tmp_path):
     )
 
 
-def test_precision_counts_only_pairs_at_or_above_the_threshold(tmp_path):
+def test_the_headline_counts_all_labelled_link_pairs_and_splits_direct_from_chain(tmp_path):
     result = cd.embedding_precision(
         _threshold_sample(tmp_path), threshold=0.85, threshold_source="links"
     )
-    assert (result.n_same, result.n_labelled) == (4, 6)
-    assert result.precision == pytest.approx(4 / 6)
-    assert (result.n_below, result.n_same_below) == (3, 1)
-    assert result.same_below_share == pytest.approx(1 / 5)
+    assert (result.n_same, result.n_labelled) == (5, 9)
+    assert result.precision == pytest.approx(5 / 9)
+    assert (result.direct["n"], result.direct["n_same"]) == (6, 4)
+    assert (result.chain["n"], result.chain["n_same"]) == (3, 1)
+    assert result.direct["ci_low"] < result.direct["precision"] < result.direct["ci_high"]
+    assert result.chain["label"] == "[0.00, 0.85)"
+    assert result.chain_share_of_same == pytest.approx(1 / 5)
     assert result.threshold == 0.85
     assert result.status == "measured"
 
 
-def test_a_pair_exactly_at_the_threshold_is_counted(tmp_path):
+def test_a_pair_exactly_at_the_threshold_is_a_direct_link(tmp_path):
     path = _write_sample(tmp_path, _sim_row("a", "0.850000", True))
     result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
-    assert result.n_labelled == 1
-    assert result.n_below == 0
+    assert result.direct["n"] == 1
+    assert result.chain["n"] == 0
 
 
-def test_without_a_threshold_every_labelled_pair_counts(tmp_path):
+def test_without_a_threshold_there_is_no_split(tmp_path):
     result = cd.embedding_precision(_threshold_sample(tmp_path))
     assert result.n_labelled == 9
-    assert result.n_below == 0
-    assert result.same_below_share is None
+    assert result.direct is None
+    assert result.chain is None
+    assert result.chain_share_of_same is None
+    assert result.weighted_precision is None
 
 
-def test_the_rendered_line_shows_used_and_below_counts(tmp_path):
+def test_the_rendered_text_names_the_headline_and_both_link_types(tmp_path):
     result = cd.embedding_precision(
         _threshold_sample(tmp_path), threshold=0.85, threshold_source="links"
     )
     text = cd.describe_precision(result.as_dict())
-    assert "4 of 6 labelled pairs at or above similarity 0.85" in text
-    assert "3 labelled pairs below 0.85 are not counted (1 of them are the same claim)" in text
-    assert "0.200 of the same-claim pairs in the sample are below the threshold" in text
+    assert "embedding precision of collapses: 0.556 (5 of 9 labelled link pairs" in text
+    assert (
+        "Direct links (similarity to the representative at or above 0.85): 4 of 6 = 0.667"
+    ) in text
+    assert "Chain links (below 0.85, joined through other members): 1 of 3 = 0.333" in text
+    assert "0.200 of the same-claim pairs are chain links" in text
+    assert "systematic over similarity and not uniform over collapses" in text
+    assert "not a design-weighted precision of all collapses" in text
     assert "from the config" not in text
     config_text = cd.describe_precision(
         cd.embedding_precision(
@@ -1064,6 +1074,44 @@ def test_the_rendered_line_shows_used_and_below_counts(tmp_path):
         ).as_dict()
     )
     assert "The threshold is from the config, not from the links file" in config_text
+
+
+def test_a_design_weighted_precision_uses_each_bands_share_of_all_links(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sim_row("a1", "0.860000", True),
+        _sim_row("a2", "0.880000", False),
+        _sim_row("a3", "0.990000", True),
+        _sim_row("b1", "0.700000", False),
+    )
+    # 10 links: 4 in [0.85,0.90), 2 in [0.90,0.95) (no labelled pair), 2 in the last band,
+    # 2 in the chain band.
+    sims = [0.86, 0.87, 0.88, 0.89, 0.92, 0.93, 0.96, 0.99, 0.5, 0.6]
+    blocked = cd.embedding_precision(
+        path, threshold=0.85, threshold_source="links", link_similarities=sims
+    )
+    assert blocked.weighted_precision is None
+    assert "holds links but no labelled pair" in blocked.weighted_note
+
+    sims = [0.86, 0.87, 0.88, 0.89, 0.96, 0.99, 0.5, 0.6, 0.55, 0.52]
+    result = cd.embedding_precision(
+        path, threshold=0.85, threshold_source="links", link_similarities=sims
+    )
+    # weights 4/10, 2/10, 4/10 over precisions 0.5, 1.0, 0.0
+    assert result.weighted_precision == pytest.approx(0.4 * 0.5 + 0.2 * 1.0 + 0.4 * 0.0)
+    assert "Design-weighted precision: 0.400" in cd.describe_precision(result.as_dict())
+
+
+def test_the_weighted_precision_says_why_it_is_missing(tmp_path):
+    path = _write_sample(tmp_path, _sim_row("a1", "0.860000", True))
+    result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
+    assert result.weighted_precision is None
+    assert "no link similarities" in result.weighted_note
+    assert "Design-weighted precision not computed" in cd.describe_precision(result.as_dict())
+    with_none = cd.embedding_precision(
+        path, threshold=0.85, threshold_source="links", link_similarities=[0.9, None]
+    )
+    assert with_none.weighted_note == "a link has no similarity"
 
 
 def test_bands_have_intervals_and_an_empty_band_says_so(tmp_path):
@@ -1090,14 +1138,16 @@ def test_a_value_just_above_one_joins_the_last_band(tmp_path):
     assert result.bands[-1]["n"] == 1
 
 
-def test_a_sample_with_no_pair_at_the_threshold_has_no_precision(tmp_path):
+def test_a_sample_with_only_chain_links_still_has_a_headline(tmp_path):
     path = _write_sample(tmp_path, _sim_row("b", "0.700000", True))
     result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
-    assert result.status == "not_measured"
-    assert result.precision is None
-    assert result.reason == "no_pairs_at_threshold"
-    assert result.n_below == 1
-    assert "1 labelled pairs below 0.85" in cd.describe_precision(result.as_dict())
+    assert result.status == "measured"
+    assert result.precision == 1.0
+    assert result.direct["n"] == 0
+    assert result.chain["n"] == 1
+    assert "Direct links (similarity to the representative at or above 0.85): 0 pairs" in (
+        cd.describe_precision(result.as_dict())
+    )
 
 
 def test_a_labelled_pair_without_similarity_is_counted_and_provisional(tmp_path):
@@ -1106,6 +1156,7 @@ def test_a_labelled_pair_without_similarity_is_counted_and_provisional(tmp_path)
     )
     result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
     assert result.n_no_similarity == 1
+    assert result.n_labelled == 2
     assert result.status == "provisional"
     assert "sample_similarity_missing" in result.reasons
 
@@ -1149,5 +1200,8 @@ def test_the_report_block_uses_the_threshold_of_the_links(tmp_path):
     precision = block["precision"]
     assert precision["threshold"] == 0.9
     assert precision["threshold_source"] == "links"
-    assert precision["n_labelled"] == 4
+    assert precision["n_labelled"] == 9
+    assert precision["direct"]["n"] == 4
+    assert precision["chain"]["n"] == 5
+    assert precision["weighted_precision"] is None
     assert precision["n_stale"] == 0

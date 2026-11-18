@@ -702,7 +702,13 @@ def dedup_claims(
             else cd.run_threshold({})
         )
         precision = cd.embedding_precision(
-            sample_path, pairs=pairs, threshold=threshold, threshold_source=source
+            sample_path,
+            pairs=pairs,
+            threshold=threshold,
+            threshold_source=source,
+            link_similarities=(
+                cd.embedding_similarities(result.links) if pairs is not None else None
+            ),
         )
     except cd.ClaimSampleError as exc:
         console.print(f"[red]refused:[/] {escape(str(exc))}")
