@@ -35,9 +35,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import numpy as np
@@ -661,6 +662,8 @@ class ClaimUniverse:
     #: Deduplicated fact-check rows per extraction tier, including rows outside the
     #: frozen set, so a tier that only appears after freezing is still counted.
     tier_counts: dict[str, int] = field(default_factory=dict)
+    #: Paths the run read, as strings. The public report redacts each by its exact value.
+    read_paths: tuple[str, ...] = ()
     #: Evaluation claims per extraction tier. A row with no tier is counted under
     #: `unknown`, never dropped from the count.
     eval_tier_counts: dict[str, int] = field(default_factory=dict)
@@ -871,7 +874,7 @@ def load_claim_universe(
         settings, result, links, path
     )
     manifest_file = Path(manifest_path) if manifest_path else default_manifest_path()
-    return build_claim_universe(
+    universe = build_claim_universe(
         kept,
         result.collapsed,
         manifest=read_manifest(manifest_file),
@@ -881,6 +884,14 @@ def load_claim_universe(
         claim_dedup=block,
         title_predicate=tier4,
     )
+    sample_file = cd.resolve_sample_path(links, path)[0] if links else None
+    recorded = (links or {}).get("sample")
+    universe.read_paths = tuple(
+        str(item)
+        for item in (settings.data_dir, path, manifest_file, sample_file, recorded)
+        if item
+    )
+    return universe
 
 
 def freeze_manifest_from_data(
@@ -1769,7 +1780,11 @@ def evaluate(
         },
         "evaluation_set": {
             "frozen": universe.frozen,
-            "manifest": str(universe.manifest_path) if universe.manifest_path else None,
+            "manifest": (
+                display_path(universe.manifest_path, get_settings().data_dir)
+                if universe.manifest_path
+                else None
+            ),
             "manifest_rows": universe.manifest_rows,
             "n_evaluation_claims": len(universe.eval_ids),
             "claims_by_publisher": universe.claims_by_publisher,
@@ -2273,28 +2288,150 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Public paths: the report is published, so it prints no machine-local path.
+# ---------------------------------------------------------------------------
+#: An absolute POSIX path inside report text. The lookbehind skips URLs (``https://``),
+#: ratios (``1/2``) and a slash already inside a path. A colon before the path is allowed,
+#: so ``manifest: /home/...`` is caught, and a ``scheme://`` URL is not.
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./+~-])/(?:[\w.+-]+/)*[\w+-](?:[\w.+-]*[\w+-])?")
+#: A ``file:///`` URL and the path it names.
+_FILE_URL = re.compile(r"file://(/[\w.+%/-]*[\w+-])")
+#: A Windows drive path. It cannot be inside the repository on this host, so it prints
+#: its file name only.
+_WINDOWS_PATH = re.compile(r"(?<![\w])[A-Za-z]:\\(?:[^\\\s/:*?\"<>|]+\\)*[^\\\s/:*?\"<>|]+")
+#: A path under the home directory.
+_HOME_PATH = re.compile(r"(?<![\w./~+-])~/(?:[\w.+-]+/)*[\w+-](?:[\w.+-]*[\w+-])?")
+#: First segments that mark a path as machine-local. Any other absolute path is text
+#: (an API route, a health check) and is left as written.
+SYSTEM_ROOTS = frozenset({"home", "Users", "mnt", "tmp", "var", "root", "opt", "srv"})
+
+
+def display_path(path: str | Path, data_dir: str | Path | None = None) -> str:
+    """The form of ``path`` that the public report prints.
+
+    A path under the repository root prints relative to it, so a data file reads
+    ``data/factchecks/...`` and a config reads ``configs/...``. Otherwise a path under
+    ``data_dir`` prints relative to it. A path outside both prints its file name and
+    the words "outside the repository".
+    """
+    from modeling.config import REPO_ROOT
+
+    target = Path(path).resolve()
+    for base in (REPO_ROOT, data_dir):
+        if base is not None and target.is_relative_to(Path(base).resolve()):
+            return target.relative_to(Path(base).resolve()).as_posix()
+    return f"{target.name} (outside the repository)"
+
+
+def _known_path_pattern(known: Collection[str]) -> re.Pattern[str] | None:
+    """One alternation over the exact known paths, longest first, each with its tail."""
+    strings = sorted({str(path) for path in known if path}, key=len, reverse=True)
+    if not strings:
+        return None
+    return re.compile(
+        "|".join(
+            rf"{re.escape(text)}(?![\w+-]|\.\w)(?:/[^\s`'\"<>()]*[^\s`'\"<>().,;:])?"
+            for text in strings
+        )
+    )
+
+
+def _public_or_kept(path: str, data_dir: str | Path | None, kept: str) -> str:
+    """The public form of ``path`` when it is a data or repository path or starts at a
+    system root, and ``kept`` otherwise."""
+    from modeling.config import REPO_ROOT
+
+    target = Path(path).resolve()
+    for base in (REPO_ROOT, data_dir):
+        if base is not None and target.is_relative_to(Path(base).resolve()):
+            return display_path(path, data_dir)
+    parts = path.split("/")
+    if len(parts) > 1 and parts[1] in SYSTEM_ROOTS:
+        return display_path(path, data_dir)
+    return kept
+
+
+def _file_url(match: re.Match[str], data_dir: str | Path | None) -> str:
+    """A ``file:///`` URL with its path made public, or the URL as written."""
+    return _public_or_kept(match.group(1), data_dir, match.group(0))
+
+
+def redact_paths(
+    value: Any, data_dir: str | Path | None = None, known: Collection[str] = ()
+) -> Any:
+    """A copy of ``value`` with every absolute path in its strings made public.
+
+    ``known`` holds the exact paths the run read or wrote. They are replaced first,
+    so a path with a space in it is handled too. Keys and numbers pass through.
+    """
+    known_pattern = _known_path_pattern(known)
+
+    def text(item: str) -> str:
+        if known_pattern is not None:
+            item = known_pattern.sub(lambda match: display_path(match.group(0), data_dir), item)
+        item = _FILE_URL.sub(lambda match: _file_url(match, data_dir), item)
+        item = _WINDOWS_PATH.sub(
+            lambda match: f"{PureWindowsPath(match.group(0)).name} (outside the repository)",
+            item,
+        )
+        item = _HOME_PATH.sub(
+            lambda match: display_path(Path(match.group(0)).expanduser(), data_dir), item
+        )
+        return _ABSOLUTE_PATH.sub(
+            lambda match: _public_or_kept(match.group(0), data_dir, match.group(0)), item
+        )
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, str):
+            return text(item)
+        if isinstance(item, dict):
+            return {key: walk(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        if isinstance(item, tuple):
+            return tuple(walk(child) for child in item)
+        if isinstance(item, Path):
+            return display_path(item, data_dir)
+        return item
+
+    return walk(value)
+
+
 def write_factcheck_report(
-    result: dict[str, Any], *, label: str = "comparison", settings: Any = None
+    result: dict[str, Any],
+    *,
+    label: str = "comparison",
+    settings: Any = None,
+    data_dir: str | Path | None = None,
+    known_paths: Collection[str] = (),
 ) -> list[Path]:
-    """Write the JSON result and the Markdown report under ``artifacts/eval/factcheck/<label>/``."""
+    """Write the JSON result and the Markdown report under ``artifacts/eval/factcheck/<label>/``.
+
+    ``data_dir`` and ``known_paths`` tell the redaction which paths the run read, so
+    each prints in its public form.
+    """
     from datetime import datetime, timezone
 
-    from modeling.config import run_fingerprint
+    from modeling.config import get_settings, run_fingerprint
     from modeling.eval.report import eval_dir
 
+    settings = settings or get_settings()
+    data_dir = data_dir or settings.data_dir
     target = eval_dir(EVAL_MODULE, label, settings)
-    fingerprint = run_fingerprint(result["seed"])
+    public = redact_paths(result, data_dir, known_paths)
+    fingerprint = redact_paths(run_fingerprint(result["seed"]), data_dir, known_paths)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run": fingerprint,
-        **result,
+        **public,
     }
     json_path = target / JSON_NAME
     json_path.write_text(
         json.dumps(payload, indent=2, sort_keys=False, allow_nan=False) + "\n", encoding="utf-8"
     )
     markdown_path = target / MARKDOWN_NAME
-    markdown_path.write_text(render_markdown(result, fingerprint), encoding="utf-8")
+    markdown_path.write_text(render_markdown(public, fingerprint), encoding="utf-8")
     return [json_path, markdown_path]
 
 
@@ -2344,5 +2481,18 @@ def run_comparison(
         split_description=split_description,
         controls=controls,
     )
-    paths = write_factcheck_report(result, label=label, settings=settings) if write else []
+    known = [str(data_dir or settings.data_dir), *universe.read_paths]
+    known += [str(path) for path in (links_path, manifest_path, publishers_path) if path]
+    known += [str(score_dir)] + [str(m.path) for m in models.values() if m.path]
+    paths = (
+        write_factcheck_report(
+            result,
+            label=label,
+            settings=settings,
+            data_dir=data_dir or settings.data_dir,
+            known_paths=known,
+        )
+        if write
+        else []
+    )
     return result, paths

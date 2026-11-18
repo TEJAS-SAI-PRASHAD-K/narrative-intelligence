@@ -13,6 +13,10 @@ decision.
 
 ### Fixed
 
+- **The fact-check comparison report prints no machine-local path.** The Markdown and JSON
+  reports print paths relative to the repository root, such as `configs/...` and
+  `data/...`, or relative to the data directory. A path outside both prints its file name
+  and "outside the repository". `claim_links.json` keeps its absolute sample path.
 - **The claim dedup precision splits direct links from chain links.** The hand-check sample
   holds every embedding link. A row can join a cluster through a chain of pairs, so its
   similarity to the representative can be below `claim_dedup.min_similarity`. Such a pair is a

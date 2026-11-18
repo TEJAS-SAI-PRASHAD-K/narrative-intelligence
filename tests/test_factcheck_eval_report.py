@@ -442,3 +442,297 @@ def test_the_report_shows_used_below_and_band_counts(env):
     assert "| direct [0.85, 0.9) | 0 | 0 | no pairs in this band |" in text
     assert "| direct [0.9, 0.95) | 1 | 1 | 1.000 |" in text
     assert "| chain [0.0, 0.85) | 1 | 0 | 0.000 |" in text
+
+
+def test_the_public_report_prints_no_machine_local_path(env, tmp_path):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,,\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    _, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    for path in paths:
+        assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    markdown = paths[1].read_text(encoding="utf-8")
+    assert "half-filled" in markdown
+    assert "Sample `factchecks/claim_dedup_sample.csv`" in markdown
+    manifest = json.loads(paths[0].read_text())["evaluation_set"]["manifest"]
+    assert manifest == "manifest.csv (outside the repository)"
+
+
+def test_a_moved_sample_note_prints_no_machine_local_path(env, tmp_path):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,yes,yes\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=env["data"] / "gone" / "claim_dedup_sample.csv",
+    )
+    _, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    for path in paths:
+        assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    markdown = paths[1].read_text(encoding="utf-8")
+    assert "(gone/claim_dedup_sample.csv) does not exist" in markdown
+
+
+def test_display_path_prints_a_public_form_for_each_location(tmp_path):
+    from ingest.config import REPO_ROOT
+    from modeling.eval.factcheck_eval import display_path
+
+    manifest = REPO_ROOT / "configs" / "factcheck_eval_manifest.csv"
+    assert display_path(manifest) == "configs/factcheck_eval_manifest.csv"
+    repo_data = REPO_ROOT / "data" / "factchecks" / "factchecks.parquet"
+    assert display_path(repo_data, REPO_ROOT / "data") == "data/factchecks/factchecks.parquet"
+    data = tmp_path / "data"
+    assert display_path(data / "factchecks" / "claim_links.json", data) == (
+        "factchecks/claim_links.json"
+    )
+    outside = tmp_path / "elsewhere" / "manifest.csv"
+    assert display_path(outside, data) == "manifest.csv (outside the repository)"
+    assert display_path(outside) == "manifest.csv (outside the repository)"
+
+
+def test_redact_paths_rewrites_paths_in_nested_values_only(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    outside = tmp_path / "elsewhere" / "x.csv"
+    value = {
+        "sample": f"{data}/factchecks/s.csv",
+        "error": f"{data}/factchecks/s.csv line 2: bad label; see {outside}.",
+        "list": [f"{outside}", 1, None, 0.5],
+        "url": "https://example.org/a/b",
+        "ratio": "1/2 and 3 / 4",
+    }
+    assert redact_paths(value, data) == {
+        "sample": "factchecks/s.csv",
+        "error": "factchecks/s.csv line 2: bad label; see x.csv (outside the repository).",
+        "list": ["x.csv (outside the repository)", 1, None, 0.5],
+        "url": "https://example.org/a/b",
+        "ratio": "1/2 and 3 / 4",
+    }
+
+
+def test_known_paths_with_a_space_are_redacted_by_value(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    spaced = tmp_path / "with space"
+    data = spaced / "data"
+    manifest = spaced / "manifest file.csv"
+    text = f"Sample `{data}/factchecks/s.csv` and manifest {manifest}."
+    assert redact_paths(
+        {"text": text, "sample": f"{data}/factchecks/s.csv"},
+        data,
+        known=[str(data), str(manifest)],
+    ) == {
+        "text": (
+            "Sample `factchecks/s.csv` and manifest manifest file.csv (outside the repository)."
+        ),
+        "sample": "factchecks/s.csv",
+    }
+
+
+def test_a_moved_sample_with_a_space_in_its_path_prints_no_machine_local_path(env, tmp_path):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,yes,yes\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=tmp_path / "old place" / "claim dedup sample.csv",
+    )
+    _, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    for path in paths:
+        assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    markdown = paths[1].read_text(encoding="utf-8")
+    assert "claim dedup sample.csv (outside the repository)) does not exist" in markdown
+
+
+def test_redaction_catches_a_path_after_a_key_and_windows_and_file_urls(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    assert redact_paths("manifest: /home/ana/m.csv", data) == (
+        "manifest: m.csv (outside the repository)"
+    )
+    assert redact_paths(r"read C:\Users\ana\data\x.csv", data) == (
+        "read x.csv (outside the repository)"
+    )
+    assert redact_paths("file:///home/ana/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths(f"file://{data}/factchecks/s.csv", data) == "factchecks/s.csv"
+
+
+def test_redaction_leaves_a_url_scheme_and_a_route_as_written(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    text = "https://example.org/a/b and /api/v1/items and /health"
+    assert redact_paths(text, tmp_path / "data") == text
+
+
+def test_redaction_rewrites_only_data_repo_and_system_root_paths(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    inside = data / "factchecks" / "s.csv"
+    assert redact_paths(f"{inside}", data) == "factchecks/s.csv"
+    assert redact_paths("/home/ana/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths("/var/lib/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths("~/notes/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths("/etc/hosts and /usr/share/x", data) == "/etc/hosts and /usr/share/x"
+
+
+def test_redaction_walks_tuples_and_turns_a_path_object_into_text(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    value = {"pair": (f"{data}/a.csv", 2), "where": data / "b.csv", "none": None}
+    assert redact_paths(value, data) == {
+        "pair": ("a.csv", 2),
+        "where": "b.csv",
+        "none": None,
+    }
+
+
+def test_a_real_result_holds_no_path_object_after_redaction(env):
+    from pathlib import PurePath
+
+    from modeling.eval.factcheck_eval import redact_paths
+
+    result, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+
+    def path_objects(item):
+        if isinstance(item, PurePath):
+            yield item
+        elif isinstance(item, dict):
+            for child in item.values():
+                yield from path_objects(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                yield from path_objects(child)
+
+    public = redact_paths(result, env["data"])
+    assert not list(path_objects(public))
+
+
+def test_the_reproducibility_block_prints_no_machine_local_path(env, tmp_path, monkeypatch):
+    import modeling.config as config
+    from modeling.eval.factcheck_eval import write_factcheck_report
+
+    spaced = tmp_path / "with space" / "libs"
+
+    def fingerprint(seed=None):
+        return {
+            "seed": 2,
+            "device": "cpu",
+            "input_manifest_hash": "abc",
+            "languages": ["en"],
+            "module_languages": {},
+            "library_versions": {"pandas": "2.2.0", "wheel": str(spaced / "pandas")},
+        }
+
+    monkeypatch.setattr(config, "run_fingerprint", fingerprint)
+    result, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+    paths = write_factcheck_report(
+        result,
+        label="fp",
+        settings=get_settings(),
+        known_paths=[str(spaced / "pandas")],
+    )
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert str(tmp_path) not in text
+    assert json.loads(paths[0].read_text())["run"]["library_versions"]["wheel"] == (
+        "pandas (outside the repository)"
+    )
+
+
+def test_a_relative_manifest_path_prints_the_same_as_an_absolute_one(env, monkeypatch):
+    from pathlib import Path
+
+    freeze(env)
+    monkeypatch.chdir(env["manifest"].parent)
+    result, _ = run_comparison(
+        env["scores"],
+        manifest_path=Path("manifest.csv"),
+        n_bootstrap=50,
+        seed=2,
+        write=False,
+    )
+    relative = result["evaluation_set"]["manifest"]
+    absolute, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+    assert relative == absolute["evaluation_set"]["manifest"] == (
+        "manifest.csv (outside the repository)"
+    )
+
+
+def test_a_refusal_names_the_file_and_prints_no_machine_local_path(env, tmp_path):
+    (env["data"] / "factchecks" / "claim_links.json").write_text("[]", encoding="utf-8")
+    result = runner.invoke(
+        cli.app,
+        ["evaluate-factchecks", str(env["scores"]), "--manifest", str(env["manifest"])],
+    )
+    assert result.exit_code == 1, result.output
+    assert "factchecks/claim_links.json is not a JSON object" in result.output
+    assert str(tmp_path) not in result.output
+    assert not (env["artifacts"] / "eval" / "factcheck").exists()
+
+
+def test_redaction_changes_no_number_in_the_result(env):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    result, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+    path_fields = {"manifest", "sample", "sample_note"}
+
+    def without_paths(item):
+        if isinstance(item, dict):
+            return {
+                key: without_paths(child)
+                for key, child in item.items()
+                if key not in path_fields
+            }
+        if isinstance(item, list | tuple):
+            return [without_paths(child) for child in item]
+        return item
+
+    public = redact_paths(result, env["data"], [str(env["data"]), str(env["manifest"])])
+    assert without_paths(public) == without_paths(result)
