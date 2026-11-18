@@ -511,10 +511,14 @@ claim_dedup:
   # score below this threshold against its representative. Such a pair is a real collapse.
   # The headline precision of collapses counts every labelled link pair. The report splits
   # it into direct links (similarity to the representative at or above this threshold, with
-  # similarity bands) and chain links (below it), each with a Wilson interval. The sample is
-  # systematic over similarity, not uniform over collapses, so the headline is not a
-  # design-weighted precision. The report adds a design-weighted precision when the links
+  # similarity bands) and chain links (below it), each with a Wilson interval. The sample
+  # takes evenly spaced ranks of all links, so each link has about the same chance of
+  # selection. With the full sample labelled, the headline is close to an unbiased precision
+  # over all links. A partly labelled sample breaks this, because the selection of labelled
+  # rows is unknown. The chain band pools links of different similarity. The report adds a
+  # post-stratified cross-check, not a correction, when the sample is current and the links
   # file holds the similarity of every link. It weights each band by its share of all links.
+  # Band edges are rounded to six decimals, as the sample is.
   #
   # Columns of the sample that a labeller fills in:
   #   labeller_kind  human, model-reviewed or model-unreviewed (same list as tier 4).

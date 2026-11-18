@@ -20,10 +20,14 @@ decision.
   Below it, the report gives direct links (similarity at or above the threshold, with
   similarity bands) and chain links (below the threshold), each with a Wilson interval. The
   threshold is read from `claim_links.json`, and the config is the fallback. The report says
-  that the sample is systematic over similarity and not uniform over collapses, so the
-  headline is not a design-weighted precision. When the links file holds the similarity of
-  every link, the report also gives a design-weighted precision: the precision of each band
-  times the share of all links in that band. A pair below the threshold is in the links and is
+  that the sample takes evenly spaced ranks of all links, so each link has about the same
+  chance of selection. With the full sample labelled, the headline is close to an unbiased
+  precision over all links. A partly labelled sample breaks this, because the selection of the
+  labelled rows is unknown, and the report warns. The chain band pools links of different
+  similarity. When the links file holds the similarity of every link, a current sample also
+  gets a post-stratified cross-check, not a correction: the precision of each band times the
+  share of all links in that band. A missing cross-check gets the reason code
+  `weighted_not_computable` with a sub-reason. An unknown threshold gets `threshold_unknown`. A pair below the threshold is in the links and is
   not stale.
 
 ### Added
