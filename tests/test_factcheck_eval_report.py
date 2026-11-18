@@ -680,3 +680,24 @@ def test_the_reproducibility_block_prints_no_machine_local_path(env, tmp_path, m
     assert json.loads(paths[0].read_text())["run"]["library_versions"]["wheel"] == (
         "pandas (outside the repository)"
     )
+
+
+def test_a_relative_manifest_path_prints_the_same_as_an_absolute_one(env, monkeypatch):
+    from pathlib import Path
+
+    freeze(env)
+    monkeypatch.chdir(env["manifest"].parent)
+    result, _ = run_comparison(
+        env["scores"],
+        manifest_path=Path("manifest.csv"),
+        n_bootstrap=50,
+        seed=2,
+        write=False,
+    )
+    relative = result["evaluation_set"]["manifest"]
+    absolute, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+    assert relative == absolute["evaluation_set"]["manifest"] == (
+        "manifest.csv (outside the repository)"
+    )

@@ -1780,7 +1780,11 @@ def evaluate(
         },
         "evaluation_set": {
             "frozen": universe.frozen,
-            "manifest": str(universe.manifest_path) if universe.manifest_path else None,
+            "manifest": (
+                display_path(universe.manifest_path, get_settings().data_dir)
+                if universe.manifest_path
+                else None
+            ),
             "manifest_rows": universe.manifest_rows,
             "n_evaluation_claims": len(universe.eval_ids),
             "claims_by_publisher": universe.claims_by_publisher,
