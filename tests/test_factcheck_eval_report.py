@@ -186,7 +186,7 @@ def test_a_labelled_hand_check_records_embedding_precision(env):
     assert precision["status"] == "measured"
     assert precision["precision"] == pytest.approx(0.5)
     text = paths[1].read_text()
-    assert "embedding precision: 0.500" in text
+    assert "embedding precision of collapses: 0.500" in text
     assert "labeller: human" in text
     assert "PROVISIONAL" not in text
 
@@ -406,3 +406,39 @@ def test_empty_publisher_list_refuses(tmp_path):
     path.write_text("publishers: {}\n")
     with pytest.raises(EvalInputError, match="lists no publishers"):
         load_factcheck_publishers(path)
+
+
+def test_the_report_shows_used_below_and_band_counts(env):
+    from tests.test_claim_dedup_embedding import write_links
+
+    header = (
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+    )
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        header
+        + "c2,c1,0.91,f,x,f,y,human,ana,raj,yes,yes,yes\n"
+        + "c3,c1,0.70,f,x,f,y,human,ana,raj,no,no,no\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c1", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    result, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    precision = result["evaluation_set"]["claim_dedup"]["precision"]
+    assert (precision["n_labelled"], precision["chain"]["n"]) == (2, 1)
+    assert precision["n_stale"] == 0
+    text = paths[1].read_text()
+    assert "embedding precision of collapses: 0.500 (1 of 2 labelled link pairs" in text
+    assert "Direct links (similarity to the representative at or above 0.85): 1 of 1" in text
+    assert "Chain links (below 0.85, joined through other members): 0 of 1" in text
+    assert "| direct [0.85, 0.9) | 0 | 0 | no pairs in this band |" in text
+    assert "| direct [0.9, 0.95) | 1 | 1 | 1.000 |" in text
+    assert "| chain [0.0, 0.85) | 1 | 0 | 0.000 |" in text

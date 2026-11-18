@@ -11,6 +11,25 @@ Data layer only: the case, the sources and the language detection. The modeling
 layer still scores English only, which is now a documented gap rather than a
 decision.
 
+### Fixed
+
+- **The claim dedup precision splits direct links from chain links.** The hand-check sample
+  holds every embedding link. A row can join a cluster through a chain of pairs, so its
+  similarity to the representative can be below `claim_dedup.min_similarity`. Such a pair is a
+  real collapse, so the headline, "precision of collapses", counts every labelled link pair.
+  Below it, the report gives direct links (similarity at or above the threshold, with
+  similarity bands) and chain links (below the threshold), each with a Wilson interval. The
+  threshold is read from `claim_links.json`, and the config is the fallback. The report says
+  that the sample takes evenly spaced ranks of all links, so each link has about the same
+  chance of selection. With the full sample labelled, the headline is close to an unbiased
+  precision over all links. A partly labelled sample breaks this, because the selection of the
+  labelled rows is unknown, and the report warns. The chain band pools links of different
+  similarity. When the links file holds the similarity of every link, a current sample also
+  gets a post-stratified cross-check, not a correction: the precision of each band times the
+  share of all links in that band. A missing cross-check gets the reason code
+  `weighted_not_computable` with a sub-reason. An unknown threshold gets `threshold_unknown`. A pair below the threshold is in the links and is
+  not stale.
+
 ### Added
 
 - **The claim dedup hand-check sample records who labelled it.** The sample has the new

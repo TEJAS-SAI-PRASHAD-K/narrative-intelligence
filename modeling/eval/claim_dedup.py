@@ -164,8 +164,19 @@ class PrecisionReason(str, Enum):
     LABELLER_NAMES_MISSING = "labeller_names_missing"
     #: No pair has both ``label_1`` and ``label_2``, so there is no agreement figure.
     NO_DOUBLE_LABELLED_PAIR = "no_double_labelled_pair"
+    #: A labelled pair has no similarity, so it cannot be placed against the threshold.
+    SAMPLE_SIMILARITY_MISSING = "sample_similarity_missing"
+    #: The threshold is in neither the links file nor the config, so there is no split.
+    THRESHOLD_UNKNOWN = "threshold_unknown"
+    #: The design-weighted cross-check could not be computed. ``weighted_reason`` says why.
+    #: This code does not make the headline provisional.
+    WEIGHTED_NOT_COMPUTABLE = "weighted_not_computable"
     #: The sample cannot be read at all.
     SAMPLE_REFUSED = "sample_refused"
+
+
+#: Reason codes that are listed but do not make the headline provisional.
+NON_BLOCKING_REASONS = frozenset({PrecisionReason.WEIGHTED_NOT_COMPUTABLE.value})
 
 
 class PrecisionStatus(str, Enum):
@@ -889,8 +900,13 @@ class EmbeddingPrecision:
     """
 
     status: str
-    #: ``None`` means not measured, never a made-up zero.
+    #: The precision of collapses: same-claim pairs over all labelled link pairs. ``None``
+    #: means not measured, never a made-up zero. The sample takes evenly spaced ranks of all
+    #: links, so each link has about the same chance of selection. With the full sample
+    #: labelled, this is close to an unbiased precision over all links. A partly labelled
+    #: sample breaks that, because the selection of the labelled rows is unknown.
     precision: float | None
+    #: Labelled link pairs, and the same-claim pairs among them.
     n_labelled: int
     n_same: int
     sample: str
@@ -911,6 +927,31 @@ class EmbeddingPrecision:
     n_stale: int | None = None
     reasons: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    #: The similarity threshold of the run that made the links, and where it was read.
+    threshold: float | None = None
+    threshold_source: str | None = None
+    #: Direct links: the similarity to the representative is at or above ``threshold``. Each
+    #: of ``direct`` and ``chain`` is a band dict with ``n``, ``n_same``, ``precision`` and a
+    #: Wilson interval.
+    direct: dict[str, Any] | None = None
+    #: Chain links: the similarity to the representative is below ``threshold``. The row joined
+    #: its cluster through other members.
+    chain: dict[str, Any] | None = None
+    #: Same-claim pairs that are chain links, over all same-claim labelled pairs.
+    chain_share_of_same: float | None = None
+    #: Labelled pairs with no usable similarity when a threshold applies.
+    n_no_similarity: int = 0
+    #: Precision per similarity band inside the direct links, each with a Wilson interval.
+    bands: tuple[dict[str, Any], ...] = ()
+    #: A post-stratified cross-check: the precision of each band weighted by the share of all
+    #: links in that band. It is not a correction of the headline. ``None`` when not computed.
+    weighted_precision: float | None = None
+    #: How ``weighted_precision`` was computed, or the detail of why it was not.
+    weighted_note: str | None = None
+    #: The sub-reason code when ``weighted_precision`` is ``None`` and a split exists.
+    weighted_reason: str | None = None
+    #: Rows in the sample, labelled or not.
+    n_sample_rows: int = 0
     #: The message of a refused sample.
     error: str | None = None
     #: A note about which sample file was read.
@@ -930,6 +971,17 @@ class EmbeddingPrecision:
             "labeller_kind": self.labeller_kind,
             "kind_counts": dict(self.kind_counts),
             "n_stale": self.n_stale,
+            "threshold": self.threshold,
+            "threshold_source": self.threshold_source,
+            "direct": self.direct,
+            "chain": self.chain,
+            "chain_share_of_same": self.chain_share_of_same,
+            "weighted_precision": self.weighted_precision,
+            "weighted_note": self.weighted_note,
+            "weighted_reason": self.weighted_reason,
+            "n_sample_rows": int(self.n_sample_rows),
+            "n_no_similarity": int(self.n_no_similarity),
+            "bands": [dict(band) for band in self.bands],
             "sample": self.sample,
             "reason": self.reason,
             "reasons": list(self.reasons),
@@ -960,8 +1012,9 @@ def describe_precision(precision: dict[str, Any]) -> str:
     """
     status = precision.get("status")
     n_stale = precision.get("n_stale") or 0
+    n_all = precision.get("n_labelled") or 0
     stale = (
-        f" {n_stale} of {precision.get('n_labelled')} labelled pairs are not in the current "
+        f" {n_stale} of {n_all} labelled pairs are not in the current "
         f"embedding links (reason code {PrecisionReason.SAMPLE_PAIRS_STALE.value})."
         if n_stale
         else ""
@@ -973,12 +1026,49 @@ def describe_precision(precision: dict[str, Any]) -> str:
             f"{precision.get('error')}"
         )
     reasons = list(precision.get("reasons") or [])
+    threshold = precision.get("threshold")
+    split = ""
+    direct = precision.get("direct")
+    chain = precision.get("chain")
+    if threshold is not None and direct is not None and chain is not None:
+        split = (
+            f" Direct links (similarity to the representative at or above {threshold:g}): "
+            f"{_rate(direct)}. Chain links (below {threshold:g}, joined through other "
+            f"members): {_rate(chain)}."
+        )
+        if precision.get("chain_share_of_same") is not None:
+            split += (
+                f" {precision['chain_share_of_same']:.3f} of the same-claim pairs are chain "
+                "links."
+            )
+        if precision.get("n_no_similarity"):
+            split += f" {precision['n_no_similarity']} labelled pairs have no similarity."
+        if precision.get("threshold_source") == "config":
+            split += " The threshold is from the config, not from the links file."
+        split += (
+            " The chain band pools links of different similarity, so it is heterogeneous."
+            " The sample takes evenly spaced ranks of all links, so each link has about the"
+            " same chance of selection. With the full sample labelled, the headline is close"
+            " to an unbiased precision over all links."
+        )
+        if precision.get("weighted_precision") is not None:
+            split += (
+                f" Post-stratified cross-check, not a correction: "
+                f"{precision['weighted_precision']:.3f} ({precision.get('weighted_note')})."
+            )
+        elif precision.get("weighted_reason"):
+            split += (
+                f" Post-stratified cross-check not computed (reason code "
+                f"{PrecisionReason.WEIGHTED_NOT_COMPUTABLE.value}, "
+                f"{precision['weighted_reason']})."
+            )
     if precision.get("precision") is None:
         reason = precision.get("reason") or "not_measured"
-        return f"embedding precision: not measured (reason code {reason}).{stale}"
+        return f"embedding precision: not measured (reason code {reason}).{split}{stale}"
     text = (
-        f"embedding precision: {float(precision['precision']):.3f} "
-        f"({precision['n_same']} of {precision['n_labelled']} labelled pairs are the same claim)"
+        f"embedding precision of collapses: {float(precision['precision']):.3f} "
+        f"({precision['n_same']} of {precision['n_labelled']} labelled link pairs are the "
+        "same claim)"
     )
     if precision.get("ci_low") is not None:
         text += f", Wilson 95% interval [{precision['ci_low']:.3f}, {precision['ci_high']:.3f}]"
@@ -991,12 +1081,15 @@ def describe_precision(precision: dict[str, Any]) -> str:
         text += f", agreement {precision['agreement']:.3f}, kappa undefined"
     note = f"labeller: {_labeller_text(precision)}"
     if status == PrecisionStatus.MEASURED.value:
-        text = f"{text}. {note}.{stale}"
+        text = f"{text}. {note}.{split}{stale}"
     else:
-        codes = ", ".join(reasons or [str(precision.get("reason"))])
+        codes = ", ".join(
+            [code for code in reasons if code not in NON_BLOCKING_REASONS]
+            or [str(precision.get("reason"))]
+        )
         text = (
             f"{text}. PROVISIONAL, not a measured precision. {note}. "
-            f"Reason code {codes}.{stale}"
+            f"Reason code {codes}.{split}{stale}"
         )
     for warning in precision.get("warnings") or []:
         text += f" Warning: {warning}"
@@ -1015,8 +1108,10 @@ def write_hand_check_sample(
     Only the embedding pass is sampled: the simhash pass already has its radius
     and its distance returned. Pairs are ordered by similarity and taken at
     evenly spaced positions, so the sample covers the range rather than only the
-    most obvious duplicates. A blank ``is_same_claim`` is the signal that
-    nothing has been labelled yet. The labeller columns are blank too.
+    most obvious duplicates. The positions are evenly spaced ranks, so each link has about
+    the same chance of selection and the sample is self-weighting. A blank
+    ``is_same_claim`` is the signal that nothing has been labelled yet. The labeller columns
+    are blank too.
     """
     by_id: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -1134,8 +1229,151 @@ def _empty(path: Path, reason: PrecisionReason) -> EmbeddingPrecision:
     )
 
 
+def _weighted_precision(
+    link_similarities: list[float | None] | None,
+    edges: list[float],
+    cut: float,
+    bands: tuple[dict[str, Any], ...],
+    chain: dict[str, Any],
+    *,
+    n_stale: int | None,
+    n_no_similarity: int,
+) -> tuple[float | None, str | None, str | None]:
+    """A post-stratified cross-check: each band's precision times its share of all links.
+
+    Returns ``(value, note, reason)``. The bands are the direct bands and the chain band.
+    The weight of a band is the number of embedding links whose similarity falls in it,
+    over all embedding links. The chain band pools links of different similarity, so it is
+    heterogeneous. The figure is a cross-check on the headline, not a correction.
+
+    The value is ``None`` with a reason code when it cannot be trusted: a stale or unchecked
+    sample, a labelled pair with no similarity, no link similarities, a link with no
+    similarity, or a band that holds links but no labelled pair. The value has no interval.
+    """
+    if n_stale is None:
+        return None, "the stale check did not run", "stale_not_checked"
+    if n_stale:
+        return None, f"{n_stale} labelled pairs are not in the links", "sample_pairs_stale"
+    if n_no_similarity:
+        return (
+            None,
+            f"{n_no_similarity} labelled pairs have no similarity",
+            PrecisionReason.SAMPLE_SIMILARITY_MISSING.value,
+        )
+    if not link_similarities:
+        return None, "the links file holds no link similarities", "no_link_similarities"
+    if any(value is None for value in link_similarities):
+        return None, "a link has no similarity", "link_without_similarity"
+    counts = [0] * (len(edges) - 1)
+    n_chain_links = 0
+    for value in link_similarities:
+        rounded = round(float(value), 6)
+        if rounded < cut:
+            n_chain_links += 1
+            continue
+        index = _band_index(edges, rounded)
+        if index is not None:
+            counts[index] += 1
+    total = len(link_similarities)
+    strata = [(count, band) for count, band in zip(counts, bands, strict=True)]
+    strata.append((n_chain_links, chain))
+    estimate = 0.0
+    for count, band in strata:
+        if count and not band["n"]:
+            return (
+                None,
+                f"band {band['label']} holds links but no labelled pair",
+                "band_without_labelled_pair",
+            )
+        if count:
+            estimate += count / total * band["precision"]
+    return estimate, (
+        f"each band's precision times the share of all {total} links in that band; "
+        "no interval"
+    ), None
+
+
+#: Band edges above the threshold. The last band is closed at 1.0.
+_BAND_EDGES = (0.90, 0.95)
+
+
+def band_edges(threshold: float | None) -> list[float]:
+    """The similarity band edges from ``threshold`` (or 0) up to 1.0."""
+    start = 0.0 if threshold is None else round(threshold, 6)
+    return [start, *[edge for edge in _BAND_EDGES if edge > start], 1.0]
+
+
+def _band_index(edges: list[float], similarity: float) -> int | None:
+    """The band that holds ``similarity``. A value above 1.0 from rounding joins the last."""
+    if similarity < edges[0]:
+        return None
+    for index in range(len(edges) - 1):
+        if similarity < edges[index + 1]:
+            return index
+    return len(edges) - 2
+
+
+def _rate(band: dict[str, Any]) -> str:
+    """``n_same of n = precision [interval]`` for a band dict, or ``0 pairs``."""
+    if not band["n"]:
+        return "0 pairs"
+    return (
+        f"{band['n_same']} of {band['n']} = {band['precision']:.3f} "
+        f"[{band['ci_low']:.3f}, {band['ci_high']:.3f}]"
+    )
+
+
+def _edge(value: float) -> str:
+    """An edge as text with its exact value, such as ``0.85`` or ``1.0``."""
+    text = f"{value:g}"
+    return text if "." in text or "e" in text else f"{text}.0"
+
+
+def _band(low: float, high: float, n: int, n_same: int) -> dict[str, Any]:
+    closing = "]" if high >= 1.0 else ")"
+    out: dict[str, Any] = {
+        "label": f"[{_edge(low)}, {_edge(high)}{closing}",
+        "low": low,
+        "high": high,
+        "n": n,
+        "n_same": n_same,
+        "precision": None,
+        "ci_low": None,
+        "ci_high": None,
+    }
+    if n:
+        out["precision"] = n_same / n
+        out["ci_low"], out["ci_high"] = wilson(n_same / n, n)
+    return out
+
+
+def embedding_similarities(links: Iterable[Any]) -> list[float | None]:
+    """The similarity of every embedding link, ``None`` where a link has none."""
+    values: list[float | None] = []
+    for link in links:
+        item = link.as_dict() if hasattr(link, "as_dict") else link
+        if item.get("reason") == DedupPass.EMBEDDING.value:
+            raw = item.get("similarity")
+            values.append(None if raw is None else float(raw))
+    return values
+
+
+def _similarity(raw: Any) -> float | None:
+    """The sample's similarity as a float, or ``None`` when it is blank or not a number."""
+    try:
+        value = float(str(raw or "").strip())
+    except ValueError:
+        return None
+    return value if value == value else None
+
+
 def embedding_precision(
-    sample_path: Path, *, pairs: set[tuple[str, str]] | None = None
+    sample_path: Path,
+    *,
+    pairs: set[tuple[str, str]] | None = None,
+    threshold: float | None = None,
+    threshold_source: str | None = None,
+    link_similarities: list[float | None] | None = None,
 ) -> EmbeddingPrecision:
     """Precision on the labelled hand-check pairs, with the labeller kind.
 
@@ -1151,6 +1389,25 @@ def embedding_precision(
     different labeller names, at least one pair has both labels, and every labelled
     pair is in ``pairs``. ``pairs`` is the set of current embedding links, or ``None``
     when the check does not apply. Any other case is ``provisional`` with reason codes.
+
+    The sample holds every embedding link, and a link joins a row to the representative of
+    its cluster. A row can join through a chain, so its similarity to the representative is
+    below ``threshold``. Such a pair is a real collapse. It is in the links and is not stale.
+    The headline precision counts every labelled link pair. It is split in two: direct links
+    (similarity at or above ``threshold``, with bands) and chain links (below it). The
+    similarity in the sample has six decimals, so the threshold is rounded the same way. A
+    pair whose true similarity is less than half a unit of the sixth decimal below the
+    threshold prints as the threshold and counts as a direct link. The links file rounds the
+    same way, so the weights and the sample agree. With ``threshold`` set to ``None`` there
+    is no split, no bands and no band table.
+
+    The sample takes evenly spaced ranks of all links, so each link has about the same
+    chance of selection. With the full sample labelled, the headline is close to an unbiased
+    precision over all links. A partly labelled sample breaks this, because the selection of
+    the labelled rows is unknown. When ``link_similarities`` holds the similarity of every
+    embedding link, the function also gives a post-stratified cross-check, not a correction:
+    the precision of each band (the direct bands and the chain band) weighted by the share of
+    all links in that band. The chain band pools links of different similarity.
     """
     path = Path(sample_path)
     if not path.exists():
@@ -1165,12 +1422,21 @@ def embedding_precision(
         has_kind_column = "labeller_kind" in header
         n_labelled = 0
         n_same = 0
+        n_chain = 0
+        n_same_chain = 0
+        n_no_similarity = 0
         n_stale = 0
+        n_rows = 0
+        edges = band_edges(threshold)
+        band_n = [0] * (len(edges) - 1)
+        band_same = [0] * (len(edges) - 1)
+        cut = None if threshold is None else round(threshold, 6)
         kinds: dict[str, int] = {}
         names_missing = False
         pair_1: list[str] = []
         pair_2: list[str] = []
         for line, row in enumerate(reader, start=2):
+            n_rows += 1
             raw = str(row.get("is_same_claim") or "").strip().lower()
             answers = []
             for column in ("label_1", "label_2"):
@@ -1200,6 +1466,18 @@ def embedding_precision(
                 )
             n_labelled += 1
             n_same += int(verdict)
+            similarity = _similarity(row.get("similarity"))
+            if cut is not None:
+                if similarity is None:
+                    n_no_similarity += 1
+                elif similarity < cut:
+                    n_chain += 1
+                    n_same_chain += int(verdict)
+                else:
+                    index = _band_index(edges, similarity)
+                    if index is not None:
+                        band_n[index] += 1
+                        band_same[index] += int(verdict)
             kind = KIND_UNKNOWN
             if has_kind_column:
                 kind = str(row.get("labeller_kind") or "").strip()
@@ -1236,12 +1514,39 @@ def embedding_precision(
         kind = KIND_MIXED
     precision = n_same / n_labelled
     ci_low, ci_high = wilson(precision, n_labelled)
+    bands = ()
+    direct = chain = None
+    chain_share = None
+    weighted = None
+    weighted_note = None
+    weighted_reason = None
+    if cut is not None:
+        bands = tuple(
+            _band(edges[i], edges[i + 1], band_n[i], band_same[i]) for i in range(len(band_n))
+        )
+        direct = _band(cut, 1.0, sum(band_n), sum(band_same))
+        chain = _band(0.0, cut, n_chain, n_same_chain)
+        if n_same:
+            chain_share = n_same_chain / n_same
+        weighted, weighted_note, weighted_reason = _weighted_precision(
+            link_similarities,
+            edges,
+            cut,
+            bands,
+            chain,
+            n_stale=n_stale if pairs is not None else None,
+            n_no_similarity=n_no_similarity,
+        )
     agreement = None
     kappa = cohen_kappa(pair_1, pair_2) if pair_1 else None
     if pair_1:
         agreement = sum(a == b for a, b in zip(pair_1, pair_2, strict=True)) / len(pair_1)
 
     reasons: list[str] = []
+    if threshold_source == "unknown":
+        reasons.append(PrecisionReason.THRESHOLD_UNKNOWN.value)
+    if n_no_similarity:
+        reasons.append(PrecisionReason.SAMPLE_SIMILARITY_MISSING.value)
     if n_stale:
         reasons.append(PrecisionReason.SAMPLE_PAIRS_STALE.value)
     if kind == KIND_UNKNOWN:
@@ -1252,19 +1557,29 @@ def embedding_precision(
         reasons.append(PrecisionReason.LABELLER_NAMES_MISSING.value)
     if not pair_1:
         reasons.append(PrecisionReason.NO_DOUBLE_LABELLED_PAIR.value)
+    if weighted_reason is not None:
+        reasons.append(PrecisionReason.WEIGHTED_NOT_COMPUTABLE.value)
     warnings: list[str] = []
+    if n_labelled < n_rows:
+        warnings.append(
+            f"{n_labelled} of {n_rows} sample rows are labelled. The "
+            "selection of the labelled rows is unknown, so the headline is not close to an "
+            "unbiased precision over all links."
+        )
     if kappa is not None and kappa < KAPPA_WARN_BELOW:
         warnings.append(
             f"kappa {kappa:.3f} is below {KAPPA_WARN_BELOW}. The two labellers disagree "
             "often, so the labels are not reliable."
         )
+    blocking = [code for code in reasons if code not in NON_BLOCKING_REASONS]
+    status = PrecisionStatus.PROVISIONAL if blocking else PrecisionStatus.MEASURED
     return EmbeddingPrecision(
-        status=(PrecisionStatus.PROVISIONAL if reasons else PrecisionStatus.MEASURED).value,
+        status=status.value,
         precision=precision,
         n_labelled=n_labelled,
         n_same=n_same,
         sample=str(path),
-        reason=reasons[0] if reasons else None,
+        reason=blocking[0] if blocking else None,
         ci_low=ci_low,
         ci_high=ci_high,
         kappa=kappa,
@@ -1273,9 +1588,42 @@ def embedding_precision(
         labeller_kind=kind,
         kind_counts=kinds,
         n_stale=n_stale if pairs is not None else None,
+        threshold=threshold,
+        threshold_source=threshold_source,
+        direct=direct,
+        chain=chain,
+        chain_share_of_same=chain_share,
+        weighted_precision=weighted,
+        weighted_note=weighted_note,
+        weighted_reason=weighted_reason,
+        n_sample_rows=n_rows,
+        n_no_similarity=n_no_similarity,
+        bands=bands,
         reasons=tuple(reasons),
         warnings=tuple(warnings),
     )
+
+
+def run_threshold(embedding_outcome: dict[str, Any]) -> tuple[float | None, str | None]:
+    """The threshold of the run that made the links, and where it was read.
+
+    The links file records it. When it does not, the config value is the fallback. The
+    source says which one it was, so a report can show that the config may differ from the
+    run. When neither gives a threshold the result is ``(None, "unknown")``, a warning is
+    logged, and the precision carries the reason code ``threshold_unknown``.
+    """
+    recorded = embedding_outcome.get("threshold")
+    if recorded is not None:
+        return float(recorded), "links"
+    try:
+        configured = claim_dedup_config().min_similarity
+    except (ClaimDedupConfigError, OSError, ValueError) as exc:
+        log.warning("the dedup threshold is not in the links file and the config failed: %s", exc)
+        return None, "unknown"
+    if configured is None:
+        log.warning("the dedup threshold is not in the links file and the config has none")
+        return None, "unknown"
+    return float(configured), "config"
 
 
 def refused_precision(path: Path, exc: Exception) -> EmbeddingPrecision:
@@ -1349,10 +1697,19 @@ def embedding_report(
         # Stale pairs can be counted only when the embedding pass ran and wrote its links.
         pairs = None
         embedding = passes.get(DedupPass.EMBEDDING.value) or {}
+        threshold, source = run_threshold(embedding)
+        similarities = None
         if links is not None and embedding.get("collapsed") is not None:
             pairs = embedding_pairs(links.get("links") or [])
+            similarities = embedding_similarities(links.get("links") or [])
         try:
-            precision = embedding_precision(sample_path, pairs=pairs)
+            precision = embedding_precision(
+                sample_path,
+                pairs=pairs,
+                threshold=threshold,
+                threshold_source=source,
+                link_similarities=similarities,
+            )
         except ClaimSampleError as exc:
             log.warning("hand-check sample refused: %s", exc)
             precision = refused_precision(sample_path, exc)
