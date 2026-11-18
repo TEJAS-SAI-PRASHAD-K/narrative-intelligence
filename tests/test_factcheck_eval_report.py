@@ -439,6 +439,6 @@ def test_the_report_shows_used_below_and_band_counts(env):
     assert "embedding precision of collapses: 0.500 (1 of 2 labelled link pairs" in text
     assert "Direct links (similarity to the representative at or above 0.85): 1 of 1" in text
     assert "Chain links (below 0.85, joined through other members): 0 of 1" in text
-    assert "| direct [0.85, 0.90) | 0 | 0 | no pairs in this band |" in text
-    assert "| direct [0.90, 0.95) | 1 | 1 | 1.000 |" in text
-    assert "| chain [0.00, 0.85) | 1 | 0 | 0.000 |" in text
+    assert "| direct [0.85, 0.9) | 0 | 0 | no pairs in this band |" in text
+    assert "| direct [0.9, 0.95) | 1 | 1 | 1.000 |" in text
+    assert "| chain [0.0, 0.85) | 1 | 0 | 0.000 |" in text
