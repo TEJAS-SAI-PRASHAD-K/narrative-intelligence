@@ -132,21 +132,24 @@ gap is the conservative figure.
 
 ### Fact-check set and the unlabelled corpus
 
-The set has 4281 known-false claims, and the frozen manifest is
-`configs/factcheck_eval_manifest.csv`. This model scores the 100 English claims and
-skips the 4181 other claims with `unsupported_language`. The skipped claims are 4180
-Hindi claims and one claim in another language.
+The set has 4428 known-false claims (report of 2026-11-19), and the frozen manifest is
+`configs/factcheck_eval_manifest.csv`. This model scores the 93 English claims and
+skips the 4335 other claims with `unsupported_language`. The skipped claims are 4334
+Hindi claims and one claim in another language. The report left all eight fact-checker
+domains out of the corpus (265 rows). The earlier report, on 4281 claims and four domains
+left out, gave a recall of 0.520 [0.420, 0.610], a flag rate of 0.081 [0.067, 0.096] on
+1350 corpus titles and a lift of 6.382 [4.950, 8.297].
 
 | measure, English titles | `misinfo` v0.2.0 | TF-IDF + logreg |
 |---|---|---|
-| recall on known-false claims | 0.520 [0.420, 0.610] | 0.030 [0.000, 0.070] |
-| flag rate on 1350 corpus titles | 0.081 [0.067, 0.096] | 0.004 [0.001, 0.008] |
-| lift | 6.382 [4.950, 8.297] | 6.750 [0.000, 31.556] |
+| recall on known-false claims | 0.516 [0.419, 0.613] | 0.032 [0.000, 0.075] |
+| flag rate on 2205 scored corpus titles | 0.063 [0.053, 0.074] | 0.004 [0.002, 0.007] |
+| lift | 8.188 [6.231, 10.538] | 7.903 [0.000, 28.452] |
 
 A TF-IDF lift has no useful meaning here, because the model flags almost no corpus
 title. The fact-check set holds only claims that publishers chose to debunk. Lift is
-not accuracy on the corpus, and the corpus has no labels. These 1350 titles come from
-one source type in a short collection window.
+not accuracy on the corpus, and the corpus has no labels. These 2205 titles are the
+English corpus rows that have a title (5706 English rows).
 
 The operating threshold is a value of the comparison report. The scored tables hold
 the calibrated probability, and `configs/models.yaml` does not store this threshold.

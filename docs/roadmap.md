@@ -131,12 +131,14 @@ These are reported because a module that fails quietly is worse than one that
 fails loudly. None of them is a blocker for the pipeline running end to end.
 
 **The Hindi gate passes with clear limits.** The Laya multilingual fine-tune has a
-Hindi title lift of 1.760 [1.286, 2.630] over 4180 claims. Recall is 0.122, and the
-corpus has 431 Hindi titles. With 1016 claims the lift was 1.834 [1.116, 3.981], so the
-lower limit moved further from 1 and the interval is much narrower. 99.8 percent of the
-Hindi claims come from one publisher. On Hindi full text, the lift is 0.476
-[0.401, 0.573], and the upper limit is below 1. See
-`artifacts/model_cards/laya.md`.
+Hindi title lift of 1.735 [1.331, 2.368] over 4334 claims. Recall is 0.119 [0.109, 0.128].
+The flag rate is 0.068 [0.050, 0.086] on 717 scored Hindi corpus titles (721 rows, 4 without
+a title). The result is from the report of 2026-11-19, which leaves all eight fact-checker
+domains out of the corpus. Earlier results were 1.760 [1.286, 2.630] over 4180 claims
+(4 fact-checker domains left out, 431 Hindi titles) and 1.834 [1.116, 3.981] over 1016
+claims. Vishvas News gives 87.4 percent of the Hindi claims, BOOM gives 12.1 percent and
+Fact Crescendo gives 0.5 percent. On Hindi full text, the lift is 0.503 [0.432, 0.590], and
+the upper limit is below 1. See `artifacts/model_cards/laya.md`.
 
 **The bot classifier does not generalize to unseen botnets.** Trained on
 Cresci-2017: pooled out-of-fold macro-F1 0.705, but the mean across folds is
@@ -192,7 +194,10 @@ the change.
 
 ## Comparison result
 
-The three-way comparison ran on 2026-11-09 on a GPU host. The full report is
+The three-way comparison ran on 2026-11-09 on a GPU host. The run of 2026-11-19 used the
+same score files and the seed 20260813 again, on 4428 claims, and left all eight
+fact-checker domains out of the corpus. The macro F1 values and the ship decisions below
+are the same in both runs. The full report is
 [results/factcheck-comparison.md](results/factcheck-comparison.md), and the runbook is
 [laya-finetune.md](laya-finetune.md).
 
@@ -208,7 +213,8 @@ At the default threshold of 0.5, the gap between roberta and TF-IDF is 0.033. ro
 ### How to report the fact-check evaluation
 
 `data/factchecks/factchecks.parquet` is an **evaluation set, never a training set**. Published
-fact-checks are single-class: the measured split is 4310 false and 1 true, because
+fact-checks are single-class: the measured split is 4428 evaluation claims with the label false and 1 claim without it (report of
+2026-11-19, after claim dedup; the first load had 4310 false and 1 true), because
 debunking a viral falsehood is news and confirming a true claim is not. Nothing
 can be trained on one class.
 
@@ -224,10 +230,11 @@ lift = recall on known-false claims / flag rate on the whole corpus
 85 percent flag rate is a model that learned to say "false", and the recall
 figure alone cannot distinguish them.
 
-Report English and Hindi separately. Of the 4311 verdicts, 4210 claims are Hindi, 100 are
-English and one is in another language. The frozen evaluation set has 4281 claims,
-and 4180 of them are Hindi. The freeze collapsed 29 duplicate false verdicts and left
-out the one true verdict. The Hindi estimate rests on those 4180 claims, so show the
+Report English and Hindi separately. The frozen evaluation set has 4428 claims (report of
+2026-11-19). 4334 are Hindi, 93 are English and one is in another language. The report read
+4879 rows. The claim dedup collapsed 29 rows with simhash and 421 rows with the embedding
+pass, and the freeze left out the one true verdict. The earlier freeze had 4281 claims, and
+4180 of them were Hindi. The Hindi estimate rests on the 4334 claims, so show the
 interval and not the point estimate alone. The roberta fine-tune and TF-IDF cannot
 score the Hindi subset at all. That asymmetry is the result, and "no score" is
 the honest entry in that cell, not a zero.
@@ -247,7 +254,7 @@ the honest entry in that cell, not a zero.
   option `--recheck-dropped` fetches them again. Rows for 404 pages and robots.txt
   disallows expire after 30 days. Sitemaps that hold no new URL do not use the sitemap
   budget. The evaluation manifest `configs/factcheck_eval_manifest.csv` was refrozen at
-  4281 claims, and the comparison and the Hindi gate result include them. The archive before
+  4428 claims, and the comparison and the Hindi gate result include them. The archive before
   2022-01-01 is outside the window and stays unread. One page is unread because robots.txt
   disallows it. Each run reads at most
   300 URLs (`backfill.max_urls_per_publisher`). The command
@@ -255,16 +262,17 @@ the honest entry in that cell, not a zero.
   archive URL through the tier 1 ClaimReview path. The operator runs it on the data host.
   The budget is separate from `fetch.max_articles`. The Vishvas entry sets
   `claim_languages: [hi]`, so the backfill writes no English or Marathi row. The Hindi set
-  therefore comes almost all from one publisher (99.8 percent) in that freeze. A Hindi
+  therefore came almost all from one publisher (99.8 percent) in the freeze of 4281 claims. A Hindi
   result reflects the claims that Vishvas News chose to check, not Hindi misinformation
   in general. The BOOM Hindi archive is now configured through its paginated
   `/fact-check` listing, because its sitemaps hold only the newest day, and Fact
   Crescendo opts into the ClaimReview path under its `rss_tag` tier. Both blocks are in
   `configs/factcheck.yaml`, and the listing path and the tier opt-in are covered by tests.
-  The next backfill run on the data host adds their claims, and
-  `modeling.cli freeze-factchecks` prints the Hindi share per publisher; the comparison
-  report records the same shares. Refreezing the manifest and rerunning the Hindi gate
-  remain a data host task.
+  **Done (issue 42):** the backfill added their claims, the manifest was refrozen at
+  4428 claims, and the Hindi gate was rerun on it. The Hindi share per publisher in the
+  report of 2026-11-19 is Vishvas News 3789 of 4334 (87.4 percent), BOOM 524 (12.1 percent)
+  and Fact Crescendo 21 (0.5 percent). The Hindi set now has claims from three publishers.
+  Vishvas News still gives most of them.
 - **Fact-check extraction tier 4, and a tier 3 run on the data host.** Tier 3 reads
   the Newschecker result and claim blocks with selectors from `configs/factcheck.yaml`.
   Tier 4 reads the verdict from the Alt News and Factly headline. Both are implemented.
