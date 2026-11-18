@@ -66,6 +66,9 @@ class StageContext:
     #: ``"cluster"``. The embedder comparison reads noise ids from it, because the
     #: membership table holds clustered records only.
     capture: dict[str, Any] | None = None
+    #: Set by ``modeling.cli score --misinfo-version``. The misinfo stage then scores with
+    #: that candidate checkpoint instead of the configured one.
+    candidate: Any = None
 
     def note(self, message: str) -> str:
         return f"[demo] {message}" if self.demo else message
@@ -309,14 +312,17 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
     from modeling.text.misinfo_clf import MisinfoClassifier
 
     version = str(module_config("misinfo").get("version"))
-    candidate = candidate_module.requested_version()
+    options = ctx.candidate
+    candidate = options.version if options is not None else None
     candidate_note = ""
     if candidate is not None:
         # The candidate replaces the configured checkpoint for this run only. Its rows carry
         # `<candidate>+<sha8>` and overwrite the `misinfo_prob` of rows that another version
         # scored, so a candidate run needs its own DATA_DIR.
         try:
-            checkpoint = candidate_module.resolve_candidate("misinfo", candidate)
+            checkpoint = candidate_module.resolve_candidate(
+                "misinfo", candidate, unverified_ok=options.unverified
+            )
         except candidate_module.CandidateRefused as exc:
             return [
                 {
@@ -386,7 +392,7 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 candidate,
                 other,
             )
-            if not candidate_module.replace_other_version():
+            if not options.replace_other:
                 reason = candidate_module.CandidateReason.REPLACE_REQUIRED
                 return [
                     {
@@ -446,8 +452,8 @@ def _rows_with_other_misinfo_stamp(existing: pd.DataFrame, ids: set[str], stamp:
     ):
         if str(record_id) not in ids or pd.isna(value):
             continue
-        held = _as_version_dict(versions).get("misinfo")
-        if held is not None and held != stamp:
+        # A value with no misinfo stamp at all is also another version's value.
+        if _as_version_dict(versions).get("misinfo") != stamp:
             count += 1
     return count
 
@@ -1713,8 +1719,12 @@ def run_stages(
     embed_model: str | None = None,
     min_cluster_size: int | None = None,
     capture: dict[str, Any] | None = None,
+    candidate: Any = None,
 ) -> list[dict[str, Any]]:
     """Run the named stages over the corpus and return a per-stage summary.
+
+    ``candidate`` is a ``modeling.candidate.CandidateOptions``. The misinfo stage then scores
+    with that candidate checkpoint.
 
     ``store``, ``embed_model`` and ``min_cluster_size`` exist for the embedder
     comparison, which runs the cluster stage with another model, and another
@@ -1758,6 +1768,7 @@ def run_stages(
         authors=authors,
         demo=demo,
         dry_run=dry_run,
+        candidate=candidate,
         known_record_ids=set(records["id"].astype(str)) if "id" in records else set(),
         # "Exists in Phase 1" means "appears in the corpus", which is the union
         # of the author roll-up and the author_ids on the records themselves.

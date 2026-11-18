@@ -225,6 +225,8 @@ _CANDIDATE_CHECKPOINTS: dict[tuple[str, bool], Any] = {}
 
 #: The reason code of a refused overwrite of a score file that another version wrote.
 SCORE_FILE_OTHER_VERSION = "score_file_other_version"
+#: The reason code of a refused overwrite of a score file that has no provenance sidecar.
+SCORE_FILE_NO_SIDECAR = "score_file_no_provenance"
 CANDIDATE_PREFIX = "misinfo@"
 
 
@@ -1409,6 +1411,17 @@ def make_misinfo_scorer(ctx: Context, model: str = "misinfo") -> tuple[Scorer, s
     from modeling.text.misinfo_clf import MisinfoClassifier
 
     directory = ctx.misinfo_dir(model)
+    if model.startswith(CANDIDATE_PREFIX):
+        from modeling.scoring import checkpoint_stamp
+
+        # The same `<version>+<sha8>` stamp that the batch scorer writes into model_versions.
+        version = checkpoint_stamp(
+            "misinfo", model.removeprefix(CANDIDATE_PREFIX), ctx.candidate_checkpoint(model)
+        )
+    else:
+        version = str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    # Before the weights load, so a refusal costs no GPU time.
+    refuse_other_version(ctx, model, version)
     classifier = MisinfoClassifier(get_settings())
     if getattr(ctx.args, "batch_size", None) is not None:
         classifier.batch_size = ctx.args.batch_size
@@ -1444,14 +1457,7 @@ def make_misinfo_scorer(ctx: Context, model: str = "misinfo") -> tuple[Scorer, s
                 outcome.values[record_id] = float(value)
         return outcome
 
-    if model.startswith(CANDIDATE_PREFIX):
-        from modeling.scoring import checkpoint_stamp
-
-        # The same `<version>+<sha8>` stamp that the batch scorer writes into model_versions.
-        return score, checkpoint_stamp(
-            "misinfo", model.removeprefix(CANDIDATE_PREFIX), ctx.candidate_checkpoint(model)
-        )
-    return score, str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    return score, version
 
 
 def make_scorer(name: str, ctx: Context) -> tuple[Scorer, str]:
@@ -1642,6 +1648,8 @@ def stage_score(ctx: Context) -> None:
         )
 
     for name in todo:
+        refuse_other_version(ctx, name)  # a file with no sidecar, before any model loads
+    for name in todo:
         if is_misinfo(name):
             misinfo_backbone(ctx, name)  # refuses a fallback backbone before the GPU is read
 
@@ -1664,10 +1672,22 @@ def stage_score(ctx: Context) -> None:
     write_json(summary_path, merged)
 
 
-def refuse_other_version(ctx: Context, model: str, version: str) -> None:
-    """Refuse to overwrite a score file that another model version wrote, unless ``--force``."""
+def refuse_other_version(ctx: Context, model: str, version: str | None = None) -> None:
+    """Refuse to overwrite a score file that this run cannot tie to its version.
+
+    A score file with no provenance sidecar is refused. A sidecar with another model version
+    is refused when ``version`` is given. ``--force`` allows both. Each has a reason code.
+    """
+    if ctx.force or not score_file(ctx, model).exists():
+        return
     sidecar = provenance_file(ctx, model)
-    if ctx.force or not score_file(ctx, model).exists() or not sidecar.exists():
+    if not sidecar.exists():
+        raise StageError(
+            EXIT_FAILED,
+            f"[score] {SCORE_FILE_NO_SIDECAR}: {score_file(ctx, model)} has no provenance "
+            f"file, so nothing says which version wrote it. Pass --force to replace it.",
+        )
+    if version is None:
         return
     try:
         recorded = read_json(sidecar).get("model_version")

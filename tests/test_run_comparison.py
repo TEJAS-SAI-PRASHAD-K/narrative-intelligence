@@ -1267,12 +1267,17 @@ def test_score_scores_again_when_the_split_changed(scored, fake_laya):
     assert all(after[m] != inodes[m] for m in inodes)
 
 
-def test_score_does_not_reuse_a_file_that_has_no_provenance(scored, fake_laya):
+def test_score_does_not_reuse_or_replace_a_file_that_has_no_provenance(
+    scored, fake_laya, capsys
+):
     (scored / "scores" / "tfidf.provenance.json").unlink()
     inode = (scored / "scores" / "tfidf.parquet").stat().st_ino
-    deps, _, _, out = make_deps()
-    assert run(score_argv(scored), deps) == 0
-    assert "no provenance file" in out.getvalue()
+    deps, *_ = make_deps()
+    assert run(score_argv(scored), deps) == rc.EXIT_FAILED
+    assert rc.SCORE_FILE_NO_SIDECAR in capsys.readouterr().err
+    assert (scored / "scores" / "tfidf.parquet").stat().st_ino == inode
+    deps, *_ = make_deps()
+    assert run([*score_argv(scored), "--force"], deps) == 0
     assert (scored / "scores" / "tfidf.provenance.json").exists()
     assert (scored / "scores" / "tfidf.parquet").stat().st_ino != inode
 
