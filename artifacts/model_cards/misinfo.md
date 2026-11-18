@@ -167,18 +167,19 @@ this card does not quote any rate from it. The next section replaces it.
 ## Transfer to the corpus (#30)
 
 Status: provisional, needs person labels. Every label in this section is from models, and no
-person reviewed it. Each number from the label sheets carries the note "labeller: model, unreviewed by a person".
-The label sheet and the corpus text are not in git.
+person reviewed it. Each number from the label sheets carries the note "labeller: model,
+unreviewed by a person". The label sheet and the corpus text are not in git.
 
 What the sample measures. The sample has 150 English rows. It comes from
-`modeling.cli sample-for-labelling misinfo --lang en --n 150` with the seed 20260813 and the
-record embeddings of the claim dedup model. The strata are the pool of YouTube records (S4,
-pool 54) and the remaining records (S6, pool 5652). The claim-match stratum is empty. No
-English record matches a false claim at cosine 0.85 or by simhash. The Reddit, Mastodon and
-Telegram strata are empty too, because the corpus has no such records. Fact-checker domains
-are not in the sample. Two independent model labellers labelled every row. They did not see
-the scores or each other's labels. The command was `relabel-eval --allow-model-labels
---n-bootstrap 2000`, run on 2026-11-18 (UTC) with `misinfo` v0.2.0 at its threshold of 0.5.
+`modeling.cli sample-for-labelling misinfo --lang en --n 150`. The seed is 20260813, and the
+record embeddings come from the claim dedup model. The strata are the pool of YouTube records
+(S4, pool 54) and the remaining records (S6, pool 5652). The claim-match stratum is empty.
+No English record matches a false claim at cosine 0.85 or by simhash. The Reddit, Mastodon
+and Telegram strata are empty too, because the corpus has no such records. Fact-checker
+domains are not in the sample. Two independent model labellers labelled every row. They did
+not see the scores or each other's labels. The command was `relabel-eval
+--allow-model-labels --n-bootstrap 2000`. It ran on 2026-11-18 (UTC) with `misinfo` v0.2.0 at
+its threshold of 0.5.
 
 Agreement before adjudication (labeller: model, unreviewed by a person):
 
@@ -187,7 +188,7 @@ Agreement before adjudication (labeller: model, unreviewed by a person):
 | label | 150 | 1.000 | undefined (both labellers used one class) | 0 |
 | reports_on_false_claim | 150 | 0.993 | 0.938 [0.759, 1.000] | 1 |
 
-The orchestrator adjudicated the one disagreement on `reports_on_false_claim` to 0.
+One disagreement on `reports_on_false_claim` was settled, and the label was set to 0.
 
 The positive rate is 0 of 150, 0.000 [0.000, 0.025] (Wilson 95%). Both labellers gave every
 row the label 0, so the sample holds one class. ROC-AUC, precision and recall need both
@@ -210,11 +211,11 @@ against these labels (labeller: model, unreviewed by a person).
 
 The unweighted rate is high because the sample over-represents YouTube, where the model
 flags 39 of 54 rows. The reweighted rate gives each stratum the weight of its pool. Read the
-reweighted rate as the estimate for the corpus, and read the per-stratum rates as the cause
-of the gap between the two. The reweighted interval is wide, because S4 has only 54 rows in
-its pool. The calibration error with one class equals the mean predicted probability: 0.373
-[0.320, 0.422], and 0.211 [0.171, 0.253] reweighted (n_eff 97.8). With n below 200 the ECE is
-noisy, so read the interval and not the point.
+reweighted rate as the estimate for the corpus. Read the per-stratum rates as the cause of
+the gap between the two. The reweighted interval is wide, because the pool of S4 has only 54
+rows. With one class, the calibration error equals the mean predicted probability. It is
+0.373 [0.320, 0.422], and 0.211 [0.171, 0.253] reweighted (n_eff 97.8). With n below 200 the
+ECE is noisy, so read the interval and not the point.
 
 ## Calibration
 
@@ -408,13 +409,14 @@ person reviewed it (labeller: model, unreviewed by a person). The comparison run
 candidate is dated 2026-11-18. It is not the published results report.
 
 The problem. The model flags articles that report on a false claim. On the 150-row English
-sample, 8 rows have the label 0 and report on a false claim. Of these, `misinfo` v0.2.0 flags
-7 (0.875). The other rows have a flag rate of 0.271.
+sample, 8 rows have the label 0 and report on a false claim. The model `misinfo` v0.2.0 flags
+7 of them (0.875). The other rows have a flag rate of 0.271.
 
 The candidate. `v0.3.0-rn` trains `misinfo` with 93 reporting negatives from 6 fact-checker
 domains, after the leak guards. The guards dropped 107 articles, because each has a claim row.
-The extra rows split by publisher: 46 rows in train, 29 in the report-only validation part and
-18 held out from 2 publishers. The benchmark split is the same as for v0.2.0.
+The extra rows split by publisher. There are 46 rows in train and 29 in the report-only
+validation part. There are 18 rows held out from 2 publishers. The benchmark split is the
+same as for v0.2.0.
 
 Flag rate on the sample at threshold 0.5 (labeller: model, unreviewed by a person):
 
@@ -423,7 +425,7 @@ Flag rate on the sample at threshold 0.5 (labeller: model, unreviewed by a perso
 | reporting rows (8) | 7 of 8, 0.875, Wilson [0.529, 0.978] | 0 of 8, 0.000, Wilson [0.000, 0.324] |
 | other rows (133) | 36 of 133, 0.271, Wilson [0.202, 0.352] | 35 of 133, 0.263, Wilson [0.196, 0.344] |
 | difference, reporting minus other | 0.604 [0.318, 0.788] (bootstrap) | -0.263 [-0.339, -0.192] (bootstrap) |
-| all 150 rows, unweighted, including the 9 rows left out above | 47 of 150, 0.313 [0.245, 0.391] | 38 of 150, 0.253 [0.191, 0.329] |
+| all 150 rows, unweighted, including the 9 rows left out above | 47 of 150, 0.313 [0.245, 0.391] | 38 of 150, 0.253 [0.190, 0.328] |
 | all 150 rows, reweighted to the corpus | 0.089 [0.038, 0.151] | 0.088 [0.037, 0.143] |
 | S4 (YouTube) | 39 of 54 | 30 of 54 |
 | S6 | 8 of 96 | 8 of 96 |
@@ -432,22 +434,22 @@ Both columns use the same rows. The reporting rows and the other rows leave out 
 with the reason `unchecked_claim`, as `relabel-eval` does. The bootstrap uses the seed
 20260813 and 2000 resamples on the stored scores, run on 2026-11-18 (UTC). With 8 reporting
 rows, the interval of the reporting rate is wide.
-The candidate lowers the flag rate on these 8 rows from 7 to 0. It does not change the rate on
-the other rows in a way that the intervals show (0.271 and 0.263).
+The candidate lowers the flag rate on these 8 rows from 7 to 0. The rate on the other rows
+does not change in a way that the intervals show (0.271 and 0.263).
 
-Held-out fact-checker articles. The same 18 held-out rows come from 2 publishers. This table
-has the flag counts of the two checkpoints on them.
+Held-out fact-checker articles. The same 18 held-out rows come from 2 publishers. Neither
+publisher is in training. This table has the flag counts of the two checkpoints on them.
 
 | threshold | v0.2.0 | candidate `v0.3.0-rn` |
 |---|---|---|
 | 0.5 | 17 of 18, row-level Wilson [0.742, 0.990] | 2 of 18, row-level Wilson [0.031, 0.328] |
-| 0.7143 (precision 0.85 on the candidate validation rows) | 15 of 18, row-level Wilson [0.608, 0.942] | 0 of 18, row-level Wilson [0.000, 0.176] |
+| 0.7143 (precision 0.85 on the candidate validation rows; the same threshold for both columns) | 15 of 18, row-level Wilson [0.608, 0.942] | 0 of 18, row-level Wilson [0.000, 0.176] |
 
 The publisher interval is not meaningful with 2 publishers, so the table gives no publisher
 bootstrap interval. The row-level Wilson interval is too narrow, because rows of one
-publisher are not independent. Live scoring already skips fact-checker domains. This test
-shows that the model learned the negatives that it saw. It does not show the effect on other
-outlets. Only the 8 sample rows show that effect.
+publisher are not independent. Live scoring already skips fact-checker domains. The test
+shows transfer to fact-checker publishers that were not in training. It does not show the
+effect on other outlets. Only the 8 sample rows show that effect.
 
 The shipping bar. The bar is recall on the English fact-check claims at precision 0.85. It
 comes from the comparison run with the candidate, 2026-11-18, on the same score files and
@@ -462,14 +464,14 @@ the same seed.
 | lift | 8.188 [6.231, 10.538] | 14.738 [10.900, 19.901] |
 | shared test macro-F1 at its own threshold | 0.753 [0.741, 0.764] | 0.739 [0.727, 0.751] |
 | difference to TF-IDF | 0.150 [0.135, 0.164] | 0.136 [0.121, 0.150] |
-| ship decision against TF-IDF | ship | ship |
+| ship decision against TF-IDF (macro-F1) | ship | ship |
 
 The recall of the candidate is inside the interval of v0.2.0, so the bar is kept. The
 benchmark macro-F1 at the default threshold of 0.5 is 0.7967 [0.7862, 0.8078] for v0.2.0 and
 0.804 [0.794, 0.813] for the candidate. The candidate PR-AUC is 0.789 [0.772, 0.804].
 
-Fix (a), the stance down-weight. No sampled row has a deny stance, because stance exists only
-for narrative members. The sample has 0 deny rows, so the fix has no effect on it. It is not
+Fix (a), the stance down-weight. Stance exists only for narrative members. The fix could not
+be tested on this sample, because no sampled row has a stance (150 rows have none). It is not
 shipped.
 
 Decision. The candidate meets the shipping bar. It is not shipped yet: the checkpoint

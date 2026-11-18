@@ -72,16 +72,16 @@ out four. It gave a lift of 1.760 [1.286, 2.630] on 431 Hindi titles.
 Status: provisional, needs person labels. Every label here is from models, and no person
 reviewed it. Each number carries the note "labeller: model, unreviewed by a person".
 
-The sample has 150 Hindi rows, drawn with `modeling.cli sample-for-labelling misinfo --lang hi
---n 150` and the seed 20260813, from outlets that are not fact-checkers. The record
+The sample has 150 Hindi rows. They come from `modeling.cli sample-for-labelling misinfo
+--lang hi --n 150` with the seed 20260813, from outlets that are not fact-checkers. The record
 embeddings come from the claim dedup model. In the claim-match stratum, 2 records match a
 false claim. The Reddit, Mastodon and Telegram strata are empty, because the corpus has no
 such records. Laya scores the title, so the labels apply to the title. Two independent model
 labellers labelled each row. They did not see the scores or each other. They agree on every
-row: raw agreement 1.000 for the label and for `reports_on_false_claim`, with 0
+row. The raw agreement is 1.000 for the label and for `reports_on_false_claim`, with 0
 disagreements. Cohen kappa of the label is undefined, because both used one class. The run
-used `relabel-eval --allow-model-labels --n-bootstrap 2000` on 2026-11-18 (UTC) with the
-model v0.2.1.
+used `relabel-eval --allow-model-labels --n-bootstrap 2000` on 2026-11-18 (UTC). The model
+version is v0.2.1.
 
 | measure on the 150 Hindi titles | value |
 |---|---|
@@ -95,11 +95,11 @@ model v0.2.1.
 
 All 150 labels are 0, so the sample holds one class. With one class, the ECE equals the mean
 predicted probability. With n below 200 the ECE is noisy, so read the interval and not the
-point. The mean calibrated value of 0.446 is far above the observed positive rate, whose
-upper limit is 0.025. By this sample, the calibration on Hindi corpus titles is poor. The
+point. The mean calibrated value of 0.446 is far above the observed positive rate. Its upper
+limit is 0.025. By this sample, the calibration on Hindi corpus titles is poor. The
 calibrator saw only English labels, and this result is the first measurement on Hindi. Issue
-#76 tracks a refit on Hindi labels. The result is provisional until a person labels a
-sample that has positives.
+#76 tracks a refit on Hindi labels. The result is provisional until a person labels a sample
+that has positives.
 
 ## Real run of the stage
 

@@ -62,8 +62,8 @@ decision.
   from models and no person reviewed them. Calibration on Hindi corpus titles is poor by this
   sample. Issue #76 tracks the refit.
 - **Reporting negatives candidate `v0.3.0-rn` for #32, provisional and not shipped.** The
-  candidate flags 0 of 8 reporting rows in the sample, against 7 of 8 for v0.2.0, and it
-  meets the shipping bar. `configs/models.yaml` does not change, because the checkpoint
+  candidate flags 0 of 8 reporting rows in the sample, against 7 of 8 for v0.2.0 (labeller:
+  model, unreviewed by a person), and it meets the shipping bar. `configs/models.yaml` does not change, because the checkpoint
   registry does not hold the candidate yet.
 - **The claim dedup hand-check sample records who labelled it.** The sample has the new
   columns `labeller_kind`, `labeller_1`, `labeller_2`, `label_1` and `label_2`.
@@ -294,12 +294,9 @@ decision.
   a hand check of the sample; the report records the precision once the sample has
   labels and `not_measured` until then. A missing `sentence-transformers` install is
   `sentence_transformers_not_installed` on the embedding pass, never a silent no-op.
-- **Labels for the English corpus sample, with a one-class result.** An AI model labelled
-  the 100-record sample from `modeling.cli sample-for-labelling misinfo --n 100`. A person
-  did not check the labels (`labeller=llm-unreviewed`). Every label is 0. `misinfo` v0.2.0
-  flags 42 of 100 rows at threshold 0.5, and all 42 are false positives. It flags all 20
-  debunk articles. The transfer gap stays unmeasured, and `evaluate misinfo` refuses
-  transfer metrics on one class.
+- **Labels for an English corpus sample.** An AI model labelled a 100-record sample from
+  `modeling.cli sample-for-labelling misinfo --n 100`, and a person did not check the labels.
+  The 150-row sample of #30 supersedes this sample. This entry quotes no number from it.
 - **BOOM Hindi and Fact Crescendo archive backfill.** BOOM Hindi lists only its newest
   day in its sitemaps, so the backfill reads the paginated `/fact-check` listing
   (`backfill.listing`) and walks about 600 articles. Fact Crescendo keeps its `rss_tag`
@@ -329,8 +326,8 @@ decision.
   and `DomainOut.sharing_author_bot_ratio` now declare their 0 to 1 range the same way.
 
 - **Fact-check articles had a misinformation score, and fusion counted it.** A debunk
-  quotes the false claim, and `misinfo` v0.2.0 flagged all 20 debunks in the English
-  sample. The `misinfo` and `laya` stages now give records from a fact-checker no value
+  quotes the false claim, and `misinfo` v0.2.0 flagged the debunks in an earlier English
+  sample (superseded by the 150-row sample of #30). The `misinfo` and `laya` stages now give records from a fact-checker no value
   and the reason `fact_check_publisher`. The `misinfo` stage also clears a value it wrote
   on an earlier run when it now skips the record, and retracts its stamp.
 - **The fact-check comparison left only four fact-checkers out of the flag rate.** It

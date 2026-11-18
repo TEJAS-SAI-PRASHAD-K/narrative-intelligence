@@ -333,14 +333,14 @@ the honest entry in that cell, not a zero.
     150 titles, and 0.432 [0.388, 0.474] reweighted. The ECE equals the mean with one class.
     There is no flag rate, because `laya.decision_threshold` is null. The claim-match stratum
     has 2 records. Calibration on Hindi corpus titles is poor by this sample.
-  - **#32, reporting articles.** The candidate `v0.3.0-rn` (93 reporting negatives from 6
-    fact-checker domains) flags 0 of the 8 reporting rows, against 7 of 8 for v0.2.0. On the
+  - **#32, reporting articles.** The candidate `v0.3.0-rn` trains with 93 reporting negatives
+    from 6 fact-checker domains. It flags 0 of the 8 reporting rows, against 7 of 8 for v0.2.0. On the
     held-out fact-checker articles it flags 2 of 18, against 17 of 18 (2 publishers, so the
     publisher interval is not meaningful). Recall on English claims at precision 0.85 is 0.495
     [0.398, 0.591] against 0.516 [0.419, 0.613], so the shipping bar is kept. The candidate is
     not shipped yet: the checkpoint registry must hold it before `configs/models.yaml` can
-    name it, and the upload is waiting for the owner. The stance fix has no effect, because
-    no sampled row has a deny stance.
+    name it, and the upload is waiting for the owner. The stance fix could not be tested on
+    this sample, because no sampled row has a stance (150 rows have none). It is not shipped.
   - **Open.** A person must label a sample that holds positives and likely positives. Until
     then, read these results as provisional. The label sheet and the corpus text are not in
     git. The `misinfo` and `laya` scoring stages give records from a fact-checker no score
@@ -348,13 +348,14 @@ the honest entry in that cell, not a zero.
     `configs/factcheck.yaml`.
 - **#80 chain collapses. Status: open.** The embedding pass of claim dedup joins a claim to a
   cluster when it is similar to any member. Its similarity to the representative can then be
-  below `claim_dedup.min_similarity`. In the model-labelled hand check of 200 links, chain links
-  are the same claim in 8 of 76 (0.105 [0.054, 0.194]), and direct links in 70 of 124 (0.565
-  [0.477, 0.649]). The work is a linking rule that a chain cannot break, chosen from person
+  below `claim_dedup.min_similarity`. A model-labelled hand check covers 200 links. Chain links are
+  the same claim in 8 of 76 (0.105 [0.054, 0.194]). Direct links are the same claim in 70 of 124
+  (0.565 [0.477, 0.649]). The work is a linking rule that a chain cannot break, chosen from person
   labels (#43).
 - **#76 Hindi calibration. Status: open.** The served Laya calibrator was fitted on English
   benchmark labels only. The Hindi sample of #31 has a mean calibrated probability of 0.446
-  [0.401, 0.491] and no positive row. The work is to refit the calibrator on Hindi corpus
+  [0.401, 0.491] and no positive row
+  (labeller: model, unreviewed by a person). The work is to refit the calibrator on Hindi corpus
   labels from a person, and to bump the `laya` version in `configs/models.yaml` then.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
