@@ -79,6 +79,31 @@ def test_committed_openapi_matches_the_code():
     assert build_schema() == committed, "openapi.json has drifted; run `make openapi`"
 
 
+def test_every_risk_score_declares_its_0_to_100_range():
+    """Most scores are 0 to 1 and risk_score is 0 to 100.
+
+    A client can only tell the two scales apart from the declared bounds, and a
+    missing bound once rendered 33.2 as 3320 percent in the dashboard.
+    """
+    from app.openapi_export import build_schema
+
+    schemas = build_schema()["components"]["schemas"]
+    found = []
+    for name, schema in schemas.items():
+        field = schema.get("properties", {}).get("risk_score")
+        if field is None:
+            continue
+        found.append(name)
+        variants = field.get("anyOf", [field])
+        numeric = [v for v in variants if v.get("type") == "number"]
+        assert numeric, f"{name}.risk_score is not numeric"
+        for v in numeric:
+            assert (v.get("minimum"), v.get("maximum")) == (0.0, 100.0), (
+                f"{name}.risk_score declares no 0 to 100 range"
+            )
+    assert {"HighRiskPost", "AuthorScoreExplanation"} <= set(found)
+
+
 def test_every_documented_route_is_reachable(demo_client):
     """No route is documented but unroutable.
 

@@ -45,6 +45,13 @@ decision.
 
 ### Fixed
 
+- **Two `risk_score` fields declared no range.** `HighRiskPost.risk_score` and
+  `AuthorScoreExplanation.risk_score` now carry `minimum: 0` and `maximum: 100` in
+  `openapi.json`, like `AuthorOut.risk_score`. A client could only learn the 0 to 100
+  scale from a sample response, and a dashboard once read 33.2 as 3320 percent. A
+  contract test fails if any `risk_score` field loses its bounds. `GraphNode.bot_score`
+  and `DomainOut.sharing_author_bot_ratio` now declare their 0 to 1 range the same way.
+
 - **Fact-check articles had a misinformation score, and fusion counted it.** A debunk
   quotes the false claim, and `misinfo` v0.2.0 flagged all 20 debunks in the English
   sample. The `misinfo` and `laya` stages now give records from a fact-checker no value
