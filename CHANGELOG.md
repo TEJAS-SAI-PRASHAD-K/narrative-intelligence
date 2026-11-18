@@ -13,6 +13,15 @@ decision.
 
 ### Added
 
+- **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
+  visible result block and the claim from the `Claim` block, in English and Hindi, with
+  the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
+  selector matches nothing is counted as `dom_block_not_found`, so a reskin shows up as a
+  count. Other new reason codes: `dom_block_bad_config`, `html_parser_unavailable`. The
+  rating map gains `Altered Photo/Video` and `Altered Media` (both `false`). The
+  evaluation report now lists fact-check rows per extraction tier, including a tier that
+  only appears after the evaluation set was frozen. Markup fixtures are in
+  `fixtures/newschecker/`.
 - **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
   `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
   subtitle text, so a video carries thousands of characters instead of a few hundred.

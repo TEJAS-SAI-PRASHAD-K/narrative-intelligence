@@ -16,7 +16,7 @@ the module being quietly described as present.
 | source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube (yt-dlp, with subtitles), Telegram |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
-| fact-check verdicts | partial | 4311 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News archive read inside the 2022 window |
+| fact-check verdicts | partial | 4311 verdicts, tiers 1 and 2 run (tier 3 implemented, not yet run on the data host), 4 of 8 publishers, Vishvas News archive read inside the 2022 window |
 | embeddings and clustering | done | MiniLM, HDBSCAN, narrative identity across runs |
 | misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
 | stance classifier | fine-tuned | macro-F1 0.797 on the FNC-1 competition test set, see the model card |
@@ -178,12 +178,13 @@ the honest entry in that cell, not a zero.
   on only some pages. The BOOM Hindi site lists only the newest articles in its sitemaps.
   To add a publisher, add a `backfill` block to `configs/factcheck.yaml`. No code change
   is necessary.
-- **Fact-check extraction tiers 3 and 4.** Newschecker publishes no JSON-LD but
-  renders a visible `Claim` block in the article body. Alt News and Factly
-  publish neither, and their verdict lives in the headline predicate. Tier 3
-  needs a per-publisher CSS selector that will break on a reskin; tier 4 is
-  inference rather than extraction and needs its own measured error rate before
-  it sits next to structured data. Both would roughly double the evaluation set.
+- **Fact-check extraction tier 4, and a tier 3 run on the data host.** Tier 3 reads
+  the Newschecker result and claim blocks with selectors from `configs/factcheck.yaml`.
+  Run `python -m ingest.cli factchecks` on the data host to add its rows to
+  `factchecks.parquet`, then refreeze the evaluation manifest on purpose. Alt News and
+  Factly publish neither JSON-LD nor a verdict block, and their verdict lives in the
+  headline predicate. Tier 4 is inference rather than extraction and needs its own
+  measured error rate before it sits next to structured data.
 - **Telegram adapter.** Free official API, widely used for political forwards in
   the target domain, and the cheapest large source still missing.
 - **Cross-publisher claim deduplication over longer windows.** A 96-claim

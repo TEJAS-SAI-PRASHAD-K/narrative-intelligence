@@ -495,6 +495,10 @@ def verify_manifest(
         )
 
 
+#: Tier label for a fact-check row whose `tier` column is empty.
+TIER_UNKNOWN = "unknown"
+
+
 @dataclass
 class ClaimUniverse:
     """Which claim ids count towards recall, and why the others do not."""
@@ -508,6 +512,12 @@ class ClaimUniverse:
     manifest_rows: int = 0
     #: Counts from the deduplicating reader, for the report.
     dedup_counts: dict[str, int] = field(default_factory=dict)
+    #: Deduplicated fact-check rows per extraction tier, including rows outside the
+    #: frozen set, so a tier that only appears after freezing is still counted.
+    tier_counts: dict[str, int] = field(default_factory=dict)
+    #: Evaluation claims per extraction tier. A row with no tier is counted under
+    #: `unknown`, never dropped from the count.
+    eval_tier_counts: dict[str, int] = field(default_factory=dict)
 
     def reason_for_exclusion(self, claim_id: str) -> str | None:
         """The reason code if ``claim_id`` is not an evaluation claim, else ``None``."""
@@ -537,16 +547,21 @@ def build_claim_universe(
 
     eval_ids: set[str] = set()
     excluded: dict[str, str] = {}
+    tier_counts: dict[str, int] = {}
+    eval_tier_counts: dict[str, int] = {}
     for record_id, _, _ in collapsed:
         excluded[record_id] = CLAIM_COLLAPSED_DUPLICATE
     for item in kept_rows:
         record_id = str(item["record_id"])
+        tier = str(item.get("tier") or "").strip() or TIER_UNKNOWN
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
         if not _is_false(item):
             excluded[record_id] = CLAIM_NOT_KNOWN_FALSE
         elif frozen_ids is not None and record_id not in frozen_ids:
             excluded[record_id] = CLAIM_NOT_IN_FROZEN_SET
         else:
             eval_ids.add(record_id)
+            eval_tier_counts[tier] = eval_tier_counts.get(tier, 0) + 1
     return ClaimUniverse(
         eval_ids=frozenset(eval_ids),
         excluded=excluded,
@@ -554,6 +569,8 @@ def build_claim_universe(
         manifest_path=manifest_path,
         manifest_rows=len(manifest) if manifest is not None else 0,
         dedup_counts=dict(dedup_counts or {}),
+        tier_counts=dict(sorted(tier_counts.items())),
+        eval_tier_counts=dict(sorted(eval_tier_counts.items())),
     )
 
 
@@ -1356,6 +1373,8 @@ def evaluate(
             "manifest_rows": universe.manifest_rows,
             "n_evaluation_claims": len(universe.eval_ids),
             "dedup_counts": universe.dedup_counts,
+            "rows_per_tier": universe.tier_counts,
+            "claims_per_tier": universe.eval_tier_counts,
             "statement": EVALUATION_SET_STATEMENT,
             "corpus_text_notice": CORPUS_TEXT_NOTICE,
         },
@@ -1426,6 +1445,20 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
         ),
         "",
     ]
+    rows_per_tier = evaluation_set.get("rows_per_tier") or {}
+    if rows_per_tier:
+        lines += [
+            "- Fact-check rows per extraction tier: "
+            + ", ".join(f"`{tier}` {count}" for tier, count in rows_per_tier.items()),
+            "",
+        ]
+    claims_per_tier = evaluation_set.get("claims_per_tier") or {}
+    if claims_per_tier and claims_per_tier != rows_per_tier:
+        lines += [
+            "- Evaluation claims per extraction tier: "
+            + ", ".join(f"`{tier}` {count}" for tier, count in claims_per_tier.items()),
+            "",
+        ]
 
     notices = [n for n in result["notices"] if n != NOT_FROZEN_NOTICE]
     if notices:
