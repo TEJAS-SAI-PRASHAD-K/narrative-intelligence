@@ -701,3 +701,38 @@ def test_a_relative_manifest_path_prints_the_same_as_an_absolute_one(env, monkey
     assert relative == absolute["evaluation_set"]["manifest"] == (
         "manifest.csv (outside the repository)"
     )
+
+
+def test_a_refusal_names_the_file_and_prints_no_machine_local_path(env, tmp_path):
+    (env["data"] / "factchecks" / "claim_links.json").write_text("[]", encoding="utf-8")
+    result = runner.invoke(
+        cli.app,
+        ["evaluate-factchecks", str(env["scores"]), "--manifest", str(env["manifest"])],
+    )
+    assert result.exit_code == 1, result.output
+    assert "factchecks/claim_links.json is not a JSON object" in result.output
+    assert str(tmp_path) not in result.output
+    assert not (env["artifacts"] / "eval" / "factcheck").exists()
+
+
+def test_redaction_changes_no_number_in_the_result(env):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    result, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+    path_fields = {"manifest", "sample", "sample_note"}
+
+    def without_paths(item):
+        if isinstance(item, dict):
+            return {
+                key: without_paths(child)
+                for key, child in item.items()
+                if key not in path_fields
+            }
+        if isinstance(item, list | tuple):
+            return [without_paths(child) for child in item]
+        return item
+
+    public = redact_paths(result, env["data"], [str(env["data"]), str(env["manifest"])])
+    assert without_paths(public) == without_paths(result)

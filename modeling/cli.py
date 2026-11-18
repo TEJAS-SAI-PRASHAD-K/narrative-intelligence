@@ -813,7 +813,10 @@ def evaluate_factchecks(
             label=label,
         )
     except EvalInputError as exc:
-        console.print(f"[red]refused:[/] {exc}")
+        from modeling.eval.factcheck_eval import redact_paths
+
+        data_dir = get_settings().data_dir
+        console.print(f"[red]refused:[/] {redact_paths(str(exc), data_dir, [str(data_dir)])}")
         raise typer.Exit(code=1) from exc
 
     if not result["evaluation_set"]["frozen"]:
