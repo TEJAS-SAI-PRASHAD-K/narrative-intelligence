@@ -40,6 +40,7 @@ def _row(source, author, n, when, urls, parent=None):
         "id": f"{source}:{author}-{n}",
         "author_id": f"{source}:{author}",
         "source": source,
+        "raw": "{}",
         "text": f"post {n} by {author}",
         "timestamp": when,
         "parent_id": parent,
@@ -278,3 +279,13 @@ def test_report_files_are_written(settings, tmp_path):
     text = paths[0].read_text()
     assert "| telegram | 12 |" in text
     assert "| mastodon | 4 |" in text and "too_few_authors" in text
+
+
+def test_telegram_rows_without_raw_are_excluded_with_a_reason(settings):
+    rows = planted_source("telegram")
+    det = detector(settings, shuffles=2)
+    det.eligible_sources = {"telegram"}
+    work, excluded = det.eligible_records(pd.DataFrame(rows).drop(columns="raw", errors="ignore"))
+
+    assert excluded == {"telegram_no_raw": len(rows)}
+    assert work.empty

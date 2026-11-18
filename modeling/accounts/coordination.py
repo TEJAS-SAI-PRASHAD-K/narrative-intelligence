@@ -198,7 +198,10 @@ class CoordinationDetector:
         if "source" in work.columns:
             is_telegram = work["source"].astype(str) == "telegram"
             if is_telegram.any() and "raw" not in work.columns:
-                log.warning("telegram records have no raw column; forwards cannot be dropped")
+                # Without raw the forwards are not visible, so no telegram row is safe to use.
+                log.warning("telegram records have no raw column, so they are excluded")
+                excluded["telegram_no_raw"] = int(is_telegram.sum())
+                work = work.loc[~is_telegram]
             elif is_telegram.any():
                 forwarded = is_telegram & work["raw"].map(_is_forward)
                 if forwarded.any():
