@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import math
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,11 @@ class ExtraNegativesReason:
     MANIFEST_MISSING = "frozen_manifest_missing"
     NO_SOURCE_DETAIL = "records_have_no_source_detail"
     FROZEN_CLAIM_UNAVAILABLE = "frozen_claim_text_unavailable"
+    #: A frozen claim has no row in factchecks.parquet, so its text and article are unknown.
+    FROZEN_CLAIM_MISSING = "frozen_claim_missing_from_factchecks"
+    #: The article text is within the configured simhash radius of a frozen claim.
+    FROZEN_CLAIM_SIMHASH = "reporting_text_near_frozen_claim_simhash"
+    HELDOUT_META_MISSING = "heldout_metadata_missing"
 
 
 class ExtraNegativesRefused(ValueError):
@@ -132,13 +138,19 @@ def file_sha256(path: Path) -> str:
 
 
 def normalise_text(values: pd.Series) -> pd.Series:
-    """The key for text equality: the same one that ``build_training_frame`` uses."""
-    return values.astype(str).str.strip().str.lower()
+    """The key for text equality: ``build_training_frame``'s key with white space squashed."""
+    return values.astype(str).str.lower().str.split().str.join(" ")
 
 
 def _squash(text: str) -> str:
-    """Lower case with runs of white space made into one space. For substring tests."""
-    return " ".join(str(text).lower().split())
+    """Text for the claim substring test.
+
+    NFKC, lower case, every punctuation character (quote and dash variants included) turned
+    into a space, and runs of white space made into one space.
+    """
+    folded = unicodedata.normalize("NFKC", str(text)).lower()
+    spaced = "".join(" " if unicodedata.category(c).startswith("P") else c for c in folded)
+    return " ".join(spaced.split())
 
 
 def text_sha256(values: pd.Series) -> list[str]:
@@ -241,20 +253,25 @@ def drop_overlaps(extra: ExtraNegatives, benchmark: pd.DataFrame) -> ExtraNegati
     dropped[ExtraNegativesReason.DUPLICATE] = int(repeat.sum())
     kept = frame.loc[~(conflict | same | repeat)].reset_index(drop=True)
 
-    bench_unique = benchmark.loc[~bench_key.duplicated(keep="first").to_numpy(), "text"]
-    union = pd.DataFrame(
-        {
-            "text": [*bench_unique.astype(str), *kept["text"]],
-            "simhash": [simhash(t) for t in [*bench_unique.astype(str), *kept["text"]]],
-            "extra_pos": [-1] * len(bench_unique) + list(range(len(kept))),
-        }
+    from modeling.eval.labelling import simhash_matches
+
+    # An extra row is compared with every benchmark row, so a benchmark row that is itself a
+    # near duplicate of an earlier one still counts. Extra rows are then compared with each
+    # other, and the first of a pair stays.
+    bench_hashes = [simhash(t) for t in benchmark["text"].astype(str)]
+    extra_hashes = [simhash(t) for t in kept["text"]]
+    ids = [str(i) for i in range(len(kept))]
+    near_bench = set(simhash_matches(ids, extra_hashes, bench_hashes, 3))
+    keep_mask = np.array([i not in near_bench for i in ids], dtype=bool)
+    rest = kept.loc[keep_mask].reset_index(drop=True)
+    rest["simhash"] = [h for h, k in zip(extra_hashes, keep_mask, strict=True) if k]
+    rest, inner = dedupe_near_duplicates(
+        rest, text_col="text", simhash_col="simhash", hamming_threshold=3
     )
-    survivors, _ = dedupe_near_duplicates(
-        union, text_col="text", simhash_col="simhash", hamming_threshold=3
+    dropped[ExtraNegativesReason.NEAR_DUPLICATE] = int((~keep_mask).sum()) + int(
+        inner.get("near_duplicate_simhash", 0)
     )
-    keep_pos = set(survivors["extra_pos"].tolist()) - {-1}
-    dropped[ExtraNegativesReason.NEAR_DUPLICATE] = len(kept) - len(keep_pos)
-    kept = kept.iloc[sorted(keep_pos)].reset_index(drop=True)
+    kept = rest.drop(columns="simhash").reset_index(drop=True)
     _log_drops(dropped)
     return ExtraNegatives(
         frame=kept,
@@ -358,17 +375,54 @@ def precision_threshold(
     return None
 
 
+#: A publisher bootstrap needs at least this many publishers to mean anything.
+MIN_PUBLISHERS_FOR_INTERVAL = 5
+
+
+def publisher_interval(
+    scores: np.ndarray, groups: np.ndarray, threshold: float
+) -> tuple[float, float] | None:
+    """The publisher bootstrap interval, or ``None`` with fewer than 5 publishers."""
+    if len(set(np.asarray(groups).astype(str))) < MIN_PUBLISHERS_FOR_INTERVAL:
+        return None
+    return group_bootstrap_rate(scores, groups, threshold)
+
+
+def leave_one_publisher_out(
+    scores: np.ndarray, groups: np.ndarray, threshold: float
+) -> dict[str, float]:
+    """Flag rate of the held-out rows with one publisher left out, for each publisher."""
+    scores = np.asarray(scores, dtype=float)
+    groups = np.asarray(groups).astype(str)
+    out: dict[str, float] = {}
+    for name in sorted(set(groups)):
+        rest = scores[groups != name]
+        if len(rest):
+            out[name] = float((rest >= threshold).mean())
+    return out
+
+
 def _rate_line(name: str, scores: np.ndarray, groups: np.ndarray, threshold: float) -> str:
     n = len(scores)
     flagged = int((scores >= threshold).sum())
     wilson = wilson_interval(flagged, n)
-    boot = group_bootstrap_rate(scores, groups, threshold)
-    return (
+    n_groups = len(set(np.asarray(groups).astype(str)))
+    boot = publisher_interval(scores, groups, threshold)
+    text = (
         f"- {name} (threshold {threshold:.4g}): {flagged}/{n} flagged, rate {flagged / n:.3f}; "
         f"row-level Wilson interval {wilson[0]:.3f} to {wilson[1]:.3f} "
-        "(too narrow, because rows of one publisher are not independent); "
-        f"publisher bootstrap interval {boot[0]:.3f} to {boot[1]:.3f}"
+        "(row-level only, too narrow, because rows of one publisher are not independent); "
     )
+    if boot is None:
+        text += f"publisher interval not meaningful ({n_groups} publishers)"
+    else:
+        text += f"publisher bootstrap interval {boot[0]:.3f} to {boot[1]:.3f}"
+    loo = leave_one_publisher_out(scores, groups, threshold)
+    if len(loo) > 1:
+        text += "\n  - flag rate without one publisher: " + ", ".join(
+            f"{k} {v:.3f}" for k, v in loo.items()
+        )
+    return text
 
 
 def heldout_report(
@@ -427,6 +481,9 @@ def heldout_report(
     if len(held):
         lines.append(_rate_line("held-out", held, heldout_groups, threshold))
         record["flag_rate_threshold"] = float((held >= threshold).mean())
+        record["without_one_publisher"] = leave_one_publisher_out(
+            held, heldout_groups, threshold
+        )
         if p85 is not None:
             lines.append(_rate_line("held-out", held, heldout_groups, p85))
             record["flag_rate_precision_085"] = float((held >= p85).mean())
@@ -497,13 +554,18 @@ def select_heldout(extra_path: Path, ids_path: Path) -> pd.DataFrame:
     ids_path = Path(ids_path)
     ids = pd.read_parquet(ids_path)
     meta_file = ids_path.with_name("reporting_heldout.json")
-    if meta_file.exists():
-        recorded = json.loads(meta_file.read_text(encoding="utf-8"))["extra_negatives_sha256"]
-        if recorded != file_sha256(extra_path):
-            raise ExtraNegativesRefused(
-                ExtraNegativesReason.HELDOUT_MISMATCH,
-                f"{extra_path.name} has another sha256 than the file that made {ids_path.name}",
-            )
+    if not meta_file.exists():
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.HELDOUT_META_MISSING,
+            f"{meta_file} is missing, so nothing says which extra-negatives file made "
+            f"{ids_path.name}",
+        )
+    recorded = json.loads(meta_file.read_text(encoding="utf-8"))["extra_negatives_sha256"]
+    if recorded != file_sha256(extra_path):
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.HELDOUT_MISMATCH,
+            f"{extra_path.name} has another sha256 than the file that made {ids_path.name}",
+        )
     extra = load_extra_negatives(extra_path).frame
     wanted = set(ids["text_sha256"])
     rows = extra.loc[extra["text_sha256"].isin(wanted)].drop_duplicates("text_sha256")
@@ -518,13 +580,24 @@ def select_heldout(extra_path: Path, ids_path: Path) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # the builder
 # ---------------------------------------------------------------------------
+@dataclass
+class LeakGuards:
+    """What the builder must exclude so no article is both a negative and an evaluated claim."""
+
+    record_ids: set[str]
+    claim_texts: list[str]
+    claim_simhashes: list[int]
+    simhash_radius: int
+    #: Manifest claims with no row in ``factchecks.parquet``, by claim sha256.
+    missing_claims: list[str] = field(default_factory=list)
+
+
 def select_reporting_rows(
     records: pd.DataFrame,
     domains: frozenset[str],
     *,
     lang: str = "en",
-    claim_record_ids: frozenset[str] | set[str] = frozenset(),
-    frozen_claim_texts: list[str] | None = None,
+    guards: LeakGuards | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Pick the fact-check articles of the corpus and shape them as extra negatives.
 
@@ -535,17 +608,24 @@ def select_reporting_rows(
 
     The fact-check evaluation scores the claim of an article as a positive, keyed by the
     record id. Training on the same article as a negative would leak the answer. So the
-    builder drops every record with a claim row (``claim_record_ids``, every label) and every
-    record whose normalised text contains a normalised frozen claim text.
-    """
-    from modeling.config import normalise_domain
+    builder drops, each under its own reason code:
 
+    * every record in ``guards.record_ids`` (a claim row of any label, or a manifest entry),
+    * every record whose normalised text contains a normalised frozen claim text,
+    * every record whose simhash is within ``guards.simhash_radius`` bits of a frozen claim.
+    """
+    from ingest.normalize import simhash
+    from modeling.config import normalise_domain
+    from modeling.eval.labelling import simhash_matches
+
+    guards = guards or LeakGuards(set(), [], [], 3)
     reasons = ExtraNegativesReason
     dropped = {
         reasons.LANGUAGE_MISMATCH: 0,
         reasons.ROW_EMPTY_TEXT: 0,
         reasons.CLAIM_RECORD: 0,
         reasons.FROZEN_CLAIM_TEXT: 0,
+        reasons.FROZEN_CLAIM_SIMHASH: 0,
     }
     if "source_detail" not in records.columns:
         raise ExtraNegativesRefused(
@@ -561,16 +641,34 @@ def select_reporting_rows(
     keep = is_fact_check & lang_ok & has_text
 
     ids = records["id"].astype(str)
-    has_claim = ids.isin(set(claim_record_ids))
+    has_claim = ids.isin(guards.record_ids)
     dropped[reasons.CLAIM_RECORD] = int((keep & has_claim).sum())
     keep &= ~has_claim
 
-    claims = [c for c in (_squash(t) for t in (frozen_claim_texts or [])) if c]
+    claims = [c for c in (_squash(t) for t in guards.claim_texts) if c]
     if claims:
         squashed = records["text"].astype(str).map(_squash)
         contains = squashed.map(lambda text: any(c in text for c in claims))
         dropped[reasons.FROZEN_CLAIM_TEXT] = int((keep & contains).sum())
         keep &= ~contains
+
+    if guards.claim_simhashes:
+        candidates = records.loc[keep]
+        if "simhash" in candidates.columns:
+            hashes = [
+                int(h) if h is not None and not pd.isna(h) else simhash(str(t))
+                for h, t in zip(candidates["simhash"], candidates["text"], strict=True)
+            ]
+        else:
+            hashes = [simhash(str(t)) for t in candidates["text"]]
+        near = set(
+            simhash_matches(
+                list(ids[candidates.index]), hashes, guards.claim_simhashes, guards.simhash_radius
+            )
+        )
+        is_near = ids.isin(near)
+        dropped[reasons.FROZEN_CLAIM_SIMHASH] = int((keep & is_near).sum())
+        keep &= ~is_near
 
     frame = pd.DataFrame(
         {
@@ -584,17 +682,25 @@ def select_reporting_rows(
 
 
 def leak_guards(
-    manifest_path: Path | None = None, *, ingest_settings: Any = None
-) -> tuple[set[str], list[str]]:
-    """The claim record ids and the frozen claim texts that the builder must exclude.
+    manifest_path: Path | None = None,
+    *,
+    ingest_settings: Any = None,
+    allow_missing: bool = False,
+    simhash_radius: int | None = None,
+) -> LeakGuards:
+    """The ids, claim texts and claim simhashes that the builder must exclude.
 
-    Reads every row of ``factchecks.parquet`` (all labels, kept and collapsed), and
-    ``configs/factcheck_eval_manifest.csv``. A frozen claim is a manifest entry. Its text is
-    the claim of the fact-check row with the same sha256. Refuses when the manifest is absent,
-    because the frozen claims cannot be excluded then.
+    The ids are every ``record_id`` of ``factchecks.parquet`` (all labels, kept and collapsed)
+    and every ``record_id`` of ``configs/factcheck_eval_manifest.csv``. A frozen claim is a
+    manifest entry. Its text and simhash come from the claim row with the same sha256. A
+    frozen claim with no such row is counted. The call refuses when any exist, unless
+    ``allow_missing`` is true, because the article of that claim is then excluded by id only.
+    It refuses when the manifest is absent. ``simhash_radius`` defaults to
+    ``claim_match.simhash_hamming`` of ``configs/labelling.yaml``.
     """
     import ingest.factcheck as factcheck
     from modeling.eval.factcheck_eval import claim_hash, default_manifest_path, read_manifest
+    from modeling.eval.labelling import load_sampling_config
 
     path = Path(manifest_path) if manifest_path else default_manifest_path()
     manifest = read_manifest(path)
@@ -604,23 +710,38 @@ def leak_guards(
             f"{path} does not exist, so the frozen claim texts cannot be excluded",
         )
     rows = factcheck.read_factcheck_rows(ingest_settings)
-    ids = {str(r["record_id"]) for r in rows}
+    ids = {str(r["record_id"]) for r in rows} | {str(r["record_id"]) for r in manifest}
     wanted = {r["claim_sha256"] for r in manifest}
-    texts = {
-        str(r["claim"]): None
-        for r in rows
-        if r.get("claim") and claim_hash(str(r["claim"])) in wanted
-    }
-    found = {claim_hash(t) for t in texts}
-    missing = len(wanted - found)
+    texts: dict[str, int] = {}
+    for row in rows:
+        claim = row.get("claim")
+        if claim and claim_hash(str(claim)) in wanted:
+            texts[str(claim)] = int(row.get("claim_simhash") or 0)
+    missing = sorted(wanted - {claim_hash(t) for t in texts})
     if missing:
         log.warning(
-            "reporting-negatives: %d frozen claim(s) have no claim text in factchecks.parquet, "
-            "reason=%s. Their articles are still excluded by record id when a row exists.",
-            missing,
-            ExtraNegativesReason.FROZEN_CLAIM_UNAVAILABLE,
+            "reporting-negatives: %d frozen claim(s) have no row in factchecks.parquet, "
+            "reason=%s",
+            len(missing),
+            ExtraNegativesReason.FROZEN_CLAIM_MISSING,
         )
-    return ids, list(texts)
+        if not allow_missing:
+            raise ExtraNegativesRefused(
+                ExtraNegativesReason.FROZEN_CLAIM_MISSING,
+                f"{len(missing)} frozen claim(s) of {path.name} have no row in "
+                "factchecks.parquet, so their text cannot be matched. Their articles are "
+                "excluded by record id only. Pass --allow-missing-frozen-claims to accept.",
+            )
+    radius = simhash_radius
+    if radius is None:
+        radius = load_sampling_config().simhash_hamming
+    return LeakGuards(
+        record_ids=ids,
+        claim_texts=list(texts),
+        claim_simhashes=[h for h in texts.values() if h],
+        simhash_radius=radius,
+        missing_claims=missing,
+    )
 
 
 def heldout_rates(
@@ -632,7 +753,7 @@ def heldout_rates(
         n = len(scores)
         flagged = int((np.asarray(scores) >= threshold).sum())
         wilson = wilson_interval(flagged, n)
-        boot = group_bootstrap_rate(scores, groups, threshold)
+        boot = publisher_interval(scores, groups, threshold)
         out.append(
             {
                 "threshold": threshold,
@@ -640,7 +761,9 @@ def heldout_rates(
                 "flagged": flagged,
                 "rate": flagged / n if n else math.nan,
                 "wilson_row_level": list(wilson),
-                "bootstrap_by_publisher": list(boot),
+                "bootstrap_by_publisher": None if boot is None else list(boot),
+                "publishers": len(set(np.asarray(groups).astype(str))),
+                "without_one_publisher": leave_one_publisher_out(scores, groups, threshold),
             }
         )
     return out

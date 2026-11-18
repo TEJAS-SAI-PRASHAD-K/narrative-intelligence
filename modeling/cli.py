@@ -290,20 +290,25 @@ def score(
             f"[yellow]stage(s) {unknown} are not in configs/scoring.yaml; running anyway[/]"
         )
 
-    with candidate_module.scoped_request(
-        misinfo_version,
-        unverified=allow_unverified_candidate,
-        replace_other=replace_other_version,
-    ):
-        summary = run_stages(
-            stages,
-            demo=demo,
-            sources=[s.strip() for s in sources.split(",")] if sources else None,
-            start=start,
-            end=end,
-            limit=limit,
-            dry_run=dry_run,
+    options = (
+        candidate_module.CandidateOptions(
+            misinfo_version,
+            unverified=allow_unverified_candidate,
+            replace_other=replace_other_version,
         )
+        if misinfo_version
+        else None
+    )
+    summary = run_stages(
+        stages,
+        demo=demo,
+        sources=[s.strip() for s in sources.split(",")] if sources else None,
+        start=start,
+        end=end,
+        limit=limit,
+        dry_run=dry_run,
+        candidate=options,
+    )
 
     table = Table(title="scoring run" + (" [DEMO -- not a result]" if demo else ""))
     for column in ("stage", "table", "written", "updated", "unchanged", "note"):
@@ -391,6 +396,12 @@ def reporting_negatives(
     manifest: Path | None = typer.Option(
         None, help="Frozen evaluation set CSV. Default configs/factcheck_eval_manifest.csv."
     ),
+    allow_missing_frozen_claims: bool = typer.Option(
+        False,
+        "--allow-missing-frozen-claims",
+        help="Go on when a frozen claim has no row in factchecks.parquet. Its article is "
+        "then excluded by record id only. Without the flag the command refuses.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Write the fact-check articles of the corpus as extra negatives for `train misinfo`.
@@ -416,7 +427,7 @@ def reporting_negatives(
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=1) from exc
     records = CorpusReader(get_settings()).records(
-        columns=["id", "source", "source_detail", "text", "lang"]
+        columns=["id", "source", "source_detail", "text", "lang", "simhash"]
     )
     if not len(records):
         console.print("[red]no_corpus_on_disk[/]: run `make data` first")
@@ -425,10 +436,10 @@ def reporting_negatives(
         from ingest.config import Settings as IngestSettings
 
         ingest_settings = IngestSettings(data_dir=get_settings().data_dir, _env_file=None)
-        claim_ids, claim_texts = leak_guards(manifest, ingest_settings=ingest_settings)
-        frame, dropped = select_reporting_rows(
-            records, domains, lang=lang, claim_record_ids=claim_ids, frozen_claim_texts=claim_texts
+        guards = leak_guards(
+            manifest, ingest_settings=ingest_settings, allow_missing=allow_missing_frozen_claims
         )
+        frame, dropped = select_reporting_rows(records, domains, lang=lang, guards=guards)
     except ExtraNegativesRefused as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=1) from exc
@@ -513,10 +524,15 @@ def score_reporting_heldout(
     rates = X.heldout_rates(scores, rows["group_id"].to_numpy(), thresholds)
     stamp = f"{checkpoint.version}+{(checkpoint.sha256 or '')[:8]}"
     for item in rates:
+        boot = item["bootstrap_by_publisher"]
+        interval = (
+            f"publisher bootstrap {boot[0]:.3f} to {boot[1]:.3f}"
+            if boot
+            else f"publisher interval not meaningful ({item['publishers']} publishers)"
+        )
         console.print(
             f"{stamp} threshold {item['threshold']:g}: {item['flagged']}/{item['n']} flagged "
-            f"({item['rate']:.3f}), publisher bootstrap "
-            f"{item['bootstrap_by_publisher'][0]:.3f} to {item['bootstrap_by_publisher'][1]:.3f}"
+            f"({item['rate']:.3f}), {interval}"
         )
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)

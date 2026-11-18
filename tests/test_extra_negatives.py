@@ -105,6 +105,34 @@ def test_overlaps_with_the_benchmark_are_dropped_and_counted(tmp_path):
     assert kept.rows_in_file == 12
 
 
+def test_white_space_inside_a_text_does_not_hide_a_duplicate(tmp_path):
+    path = reporting_file(tmp_path, rows=12, groups=4)
+    frame = pd.read_parquet(path)
+    frame.loc[0, "text"] = "A  report\ton  the claim"
+    frame.loc[1, "text"] = "a report on the claim"
+    frame.to_parquet(path, index=False)
+    kept = X.drop_overlaps(X.load_extra_negatives(path), pd.DataFrame({"text": [], "label": []}))
+    assert kept.dropped[X.ExtraNegativesReason.DUPLICATE] == 1
+
+
+def test_a_near_duplicate_of_a_benchmark_row_that_is_itself_a_near_duplicate_is_dropped(
+    tmp_path,
+):
+    base = "the minister said the bridge in the city collapsed after heavy rain last night"
+    # Benchmark rows 1 and 2 are near duplicates of each other. The union pass used to keep
+    # only the first, and the extra row can sit near the second only.
+    benchmark = pd.DataFrame(
+        {"text": [base + " today", base + " today!", base + " today!!"], "label": [1, 1, 1]}
+    )
+    path = reporting_file(tmp_path, rows=12, groups=4)
+    frame = pd.read_parquet(path)
+    frame.loc[0, "text"] = base + " today!!!"
+    frame.to_parquet(path, index=False)
+    kept = X.drop_overlaps(X.load_extra_negatives(path), benchmark)
+    assert kept.dropped[X.ExtraNegativesReason.NEAR_DUPLICATE] >= 1
+    assert base + " today!!!" not in set(kept.frame["text"])
+
+
 def test_duplicates_inside_the_file_are_counted_under_their_own_reason(tmp_path):
     path = reporting_file(tmp_path, rows=30, groups=6)
     frame = pd.read_parquet(path)
@@ -164,6 +192,42 @@ def test_precision_threshold_is_read_from_the_labelled_rows():
     assert X.precision_threshold(scores, np.zeros(6, dtype=int), 0.85) is None
 
 
+def heldout_args(groups):
+    scores = np.linspace(0.05, 0.95, len(groups))
+    return dict(
+        heldout_scores=scores,
+        heldout_groups=np.array(groups),
+        val_scores=np.array([]),
+        bench_val_scores=np.array([0.1, 0.9, 0.8, 0.2]),
+        bench_val_labels=np.array([0, 1, 1, 0]),
+        threshold=0.5,
+        summary={"file": "f.parquet", "sha256": "ab", "rows": 8, "groups": 2, "rows_used": 8,
+                 "groups_used": 2},
+    )
+
+
+def test_few_publishers_give_no_publisher_interval_and_a_leave_one_out_table():
+    text, record = X.heldout_report(**heldout_args(["a"] * 4 + ["b"] * 4))
+    assert "publisher interval not meaningful (2 publishers)" in text
+    assert "publisher bootstrap interval" not in text
+    assert "row-level only" in text and "Wilson" in text
+    assert "without one publisher" in text and "a 0." in text and "b 0." in text
+    assert set(record["without_one_publisher"]) == {"a", "b"}
+
+
+def test_five_publishers_give_the_bootstrap_interval():
+    groups = [f"p{i}" for i in range(5) for _ in range(4)]
+    text, _ = X.heldout_report(**heldout_args(groups))
+    assert "publisher bootstrap interval" in text
+    assert "not meaningful" not in text
+
+
+def test_the_heldout_rates_leave_the_bootstrap_out_below_five_publishers():
+    rates = X.heldout_rates(np.array([0.9, 0.1, 0.8, 0.2]), np.array(list("aabb")), [0.5])
+    assert rates[0]["bootstrap_by_publisher"] is None and rates[0]["publishers"] == 2
+    assert rates[0]["without_one_publisher"] == {"a": 0.5, "b": 0.5}
+
+
 def test_wilson_interval_brackets_the_rate():
     low, high = X.wilson_interval(7, 8)
     assert low < 7 / 8 < high <= 1.0
@@ -210,13 +274,19 @@ class FakeDataset:
         return SimpleNamespace(frame=self.frame, summary=lambda: {"rows": len(self.frame)})
 
 
+LONG_BENCHMARK = (
+    "benchmark the minister said the bridge in the city collapsed after heavy rain last night"
+)
+
+
 def benchmark_frame() -> pd.DataFrame:
     rows = 400
     return pd.DataFrame(
         {
-            "text": [f"benchmark statement number {i} about policy" for i in range(rows)],
-            "label": [(i // 8) % 2 for i in range(rows)],
-            "speaker": [f"speaker{i // 8}" for i in range(rows)],
+            "text": [f"benchmark statement number {i} about policy" for i in range(rows)]
+            + [LONG_BENCHMARK],
+            "label": [(i // 8) % 2 for i in range(rows)] + [1],
+            "speaker": [f"speaker{i // 8}" for i in range(rows)] + ["speaker-long"],
         }
     )
 
@@ -279,6 +349,27 @@ def test_the_benchmark_split_does_not_change_with_extra_negatives(trainer_env):
         if not is_benchmark(t)
     ]
     assert extra_labels and set(extra_labels) == {0}
+
+
+def test_a_near_duplicate_of_a_benchmark_row_does_not_move_the_benchmark_split(trainer_env):
+    train(trainer_env)
+    base = FakeClassifier.instances[-1]
+    path = reporting_file(trainer_env.tmp, rows=120, groups=8)
+    frame = pd.read_parquet(path)
+    frame.loc[0, "text"] = LONG_BENCHMARK + "!!"
+    frame.to_parquet(path, index=False)
+
+    result = train(trainer_env, extra_negatives=path, output_version="cand-1")
+    assert not result.skipped, result.notes
+    cand = FakeClassifier.instances[-1]
+    plain_fit, cand_fit = base.fit_calls[0], cand.fit_calls[0]
+    assert [t for t in cand_fit["train"] if not t.startswith("report ")] == plain_fit["train"]
+    assert cand_fit["val"] == plain_fit["val"]
+    assert cand.predict_calls[0] == base.predict_calls[0]
+    assert not any(t.endswith("!!") for t in cand_fit["train"])
+    metrics = trainer_env.settings.artifacts_dir / "eval" / "misinfo" / "cand-1" / "metrics.json"
+    dropped = json.loads(metrics.read_text())["dataset"]["extra_negatives"]["dropped"]
+    assert dropped[X.ExtraNegativesReason.NEAR_DUPLICATE] >= 1
 
 
 def test_the_benchmark_split_equals_the_splitter_on_the_benchmark_alone(trainer_env):
@@ -359,7 +450,8 @@ def test_the_held_out_ids_are_saved_without_text_and_the_report_has_the_caveats(
     assert meta["rows"] == len(ids) and meta["extra_negatives_sha256"] == X.file_sha256(path)
     report = (directory / "report.md").read_text()
     assert "fact_check_publisher" in report and "not measure other outlets" in report
-    assert "publisher bootstrap interval" in report and "row-level Wilson" in report
+    assert "row-level Wilson" in report
+    assert "publisher interval not meaningful" in report or "publisher bootstrap" in report
     assert "publishers" in report
     recorded = json.loads((directory / "metrics.json").read_text())["dataset"]["extra_negatives"]
     assert set(recorded["sides"]) == {"train", "val", "heldout"}
@@ -392,6 +484,16 @@ def test_any_checkpoint_scores_the_same_held_out_rows(trainer_env, tmp_path, mon
     assert recorded["rows"] == len(held)
     assert set(pd.read_parquet(scores)["text_sha256"]) == set(held["text_sha256"])
     assert recorded["checkpoint"].startswith("cand-1+")
+
+
+def test_a_missing_heldout_metadata_file_is_refused(trainer_env):
+    path = reporting_file(trainer_env.tmp, rows=120, groups=8)
+    train(trainer_env, extra_negatives=path, output_version="cand-1")
+    directory = trainer_env.settings.artifacts_dir / "eval" / "misinfo" / "cand-1"
+    (directory / "reporting_heldout.json").unlink()
+    with pytest.raises(X.ExtraNegativesRefused) as raised:
+        X.select_heldout(path, directory / "reporting_heldout_ids.parquet")
+    assert raised.value.reason == X.ExtraNegativesReason.HELDOUT_META_MISSING
 
 
 def test_a_changed_extra_file_is_refused_for_the_held_out_list(trainer_env):
@@ -490,9 +592,8 @@ def test_select_reporting_rows_matches_the_scorer_domain_test():
 def test_the_builder_drops_records_that_have_a_claim_row_of_any_label():
     from modeling.config import fact_check_domains
 
-    frame, dropped = X.select_reporting_rows(
-        corpus_records(), fact_check_domains(), claim_record_ids={"a", "d", "zzz"}
-    )
+    guards = X.LeakGuards({"a", "d", "zzz"}, [], [], 3)
+    frame, dropped = X.select_reporting_rows(corpus_records(), fact_check_domains(), guards=guards)
     assert list(frame["record_id"]) == ["b"]
     assert dropped[X.ExtraNegativesReason.CLAIM_RECORD] == 2
 
@@ -502,33 +603,56 @@ def test_the_builder_drops_text_that_contains_a_frozen_claim_after_normalising()
 
     records = corpus_records()
     records.loc[1, "text"] = "Intro.  The Bridge   COLLAPSED in the flood, says viral post. End."
-    frame, dropped = X.select_reporting_rows(
-        records, fact_check_domains(), frozen_claim_texts=["the bridge collapsed in the flood"]
-    )
+    guards = X.LeakGuards(set(), ["the bridge collapsed in the flood"], [], 3)
+    frame, dropped = X.select_reporting_rows(records, fact_check_domains(), guards=guards)
     assert "b" not in set(frame["record_id"])
     assert dropped[X.ExtraNegativesReason.FROZEN_CLAIM_TEXT] == 1
     assert dropped[X.ExtraNegativesReason.CLAIM_RECORD] == 0
 
 
-def test_leak_guards_read_every_claim_row_and_the_manifest_claim_texts(tmp_path, monkeypatch):
-    import ingest.factcheck as factcheck
+def manifest_file(tmp_path, entries):
     from modeling.eval.factcheck_eval import MANIFEST_COLUMNS, claim_hash
 
-    rows = [
-        {"record_id": "news:x/1", "claim": "claim one is false", "label": "false"},
-        {"record_id": "news:x/2", "claim": "claim two is true", "label": "true"},
-        {"record_id": "news:x/3", "claim": "claim three is false", "label": "false"},
-    ]
+    path = tmp_path / "manifest.csv"
+    lines = [",".join(MANIFEST_COLUMNS)]
+    lines += [f"{rid},u,{claim_hash(claim)},false" for rid, claim in entries]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def fake_claim_rows(monkeypatch, rows):
+    import ingest.factcheck as factcheck
+
     monkeypatch.setattr(factcheck, "read_factcheck_rows", lambda settings=None: rows)
-    manifest = tmp_path / "manifest.csv"
-    manifest.write_text(
-        ",".join(MANIFEST_COLUMNS) + "\n"
-        f"news:x/1,u,{claim_hash('claim one is false')},false\n",
-        encoding="utf-8",
-    )
-    ids, texts = X.leak_guards(manifest)
-    assert ids == {"news:x/1", "news:x/2", "news:x/3"}
-    assert texts == ["claim one is false"]
+
+
+def test_leak_guards_read_every_claim_row_and_every_manifest_id(tmp_path, monkeypatch):
+    from ingest.normalize import simhash
+
+    rows = [
+        {"record_id": "news:x/1", "claim": "claim one is false", "label": "false",
+         "claim_simhash": simhash("claim one is false")},
+        {"record_id": "news:x/2", "claim": "claim two is true", "label": "true"},
+    ]
+    fake_claim_rows(monkeypatch, rows)
+    manifest = manifest_file(tmp_path, [("news:x/1", "claim one is false")])
+    guards = X.leak_guards(manifest)
+    assert guards.record_ids == {"news:x/1", "news:x/2"}
+    assert guards.claim_texts == ["claim one is false"]
+    assert guards.claim_simhashes == [simhash("claim one is false")]
+    assert guards.simhash_radius == 3 and guards.missing_claims == []
+
+
+def test_a_manifest_record_id_is_excluded_even_without_a_claim_row(tmp_path, monkeypatch):
+    fake_claim_rows(monkeypatch, [])
+    manifest = manifest_file(tmp_path, [("news:only-in-manifest/1", "a frozen claim")])
+    with pytest.raises(X.ExtraNegativesRefused) as raised:
+        X.leak_guards(manifest)
+    assert raised.value.reason == X.ExtraNegativesReason.FROZEN_CLAIM_MISSING
+    assert "1 frozen claim" in str(raised.value)
+    guards = X.leak_guards(manifest, allow_missing=True)
+    assert guards.record_ids == {"news:only-in-manifest/1"}
+    assert len(guards.missing_claims) == 1
 
 
 def test_leak_guards_refuse_without_the_manifest(tmp_path):
@@ -537,8 +661,44 @@ def test_leak_guards_refuse_without_the_manifest(tmp_path):
     assert raised.value.reason == X.ExtraNegativesReason.MANIFEST_MISSING
 
 
+def test_the_text_guard_folds_unicode_punctuation_quotes_and_dashes():
+    assert X._squash("The \u201cBridge\u201d\u2014collapsed,  today!") == (
+        X._squash("the bridge collapsed today")
+    )
+    assert X._squash("\uff34\uff28\uff25 claim") == "the claim"
+    assert X._squash("it\u2019s a hoax") == X._squash("it's a hoax")
+
+
+def test_the_builder_matches_a_claim_across_quote_and_dash_variants():
+    from modeling.config import fact_check_domains
+
+    records = corpus_records()
+    records.loc[1, "text"] = "He said \u201cthe bridge\u2014collapsed in the flood\u201d, a lie."
+    guards = X.LeakGuards(set(), ["The bridge - collapsed in the flood"], [], 3)
+    frame, dropped = X.select_reporting_rows(records, fact_check_domains(), guards=guards)
+    assert "b" not in set(frame["record_id"])
+    assert dropped[X.ExtraNegativesReason.FROZEN_CLAIM_TEXT] == 1
+
+
+def test_the_builder_drops_an_article_whose_simhash_is_near_a_frozen_claim():
+    from ingest.normalize import simhash
+    from modeling.config import fact_check_domains
+
+    claim = "a viral video shows the minister of the state accepting a bag of cash at a rally"
+    records = corpus_records()
+    records.loc[0, "text"] = claim + " in the capital"
+    guards = X.LeakGuards(set(), [], [simhash(claim + " in the capital")], 3)
+    frame, dropped = X.select_reporting_rows(records, fact_check_domains(), guards=guards)
+    assert "a" not in set(frame["record_id"])
+    assert dropped[X.ExtraNegativesReason.FROZEN_CLAIM_SIMHASH] == 1
+    assert dropped[X.ExtraNegativesReason.FROZEN_CLAIM_TEXT] == 0
+
+
 def patch_guards(monkeypatch, ids=frozenset(), texts=()):
-    monkeypatch.setattr(X, "leak_guards", lambda manifest=None, **kw: (set(ids), list(texts)))
+    monkeypatch.setattr(
+        X, "leak_guards",
+        lambda manifest=None, **kw: X.LeakGuards(set(ids), list(texts), [], 3),
+    )
 
 
 def test_the_command_writes_the_file_and_prints_counts_per_domain(tmp_path, monkeypatch):
@@ -568,6 +728,22 @@ def test_the_command_refuses_without_the_manifest(tmp_path, monkeypatch):
     )
     assert result.exit_code == 1 and not out.exists()
     assert X.ExtraNegativesReason.MANIFEST_MISSING in ANSI.sub("", result.output)
+
+
+def test_the_command_refuses_a_missing_frozen_claim_unless_allowed(tmp_path, monkeypatch):
+    import modeling.io as io
+
+    monkeypatch.setattr(io.CorpusReader, "records", lambda self, **kw: corpus_records())
+    fake_claim_rows(monkeypatch, [])
+    manifest = manifest_file(tmp_path, [("news:gone/1", "a frozen claim")])
+    out = tmp_path / "reporting.parquet"
+    args = ["reporting-negatives", "--out", str(out), "--manifest", str(manifest)]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1 and not out.exists()
+    assert X.ExtraNegativesReason.FROZEN_CLAIM_MISSING in ANSI.sub("", result.output)
+    result = runner.invoke(app, [*args, "--allow-missing-frozen-claims"])
+    assert result.exit_code == 0, ANSI.sub("", result.output)
+    assert out.exists()
 
 
 def test_the_command_writes_nothing_when_no_row_matches(tmp_path, monkeypatch):
