@@ -27,8 +27,11 @@ The `text` column is context. Do not change a label because of a fact that only 
 text gives.
 
 Do not search the web for the truth. Judge the record on what it says and on what you
-know. If a claim needs a search to check, put `0` in `label_a` or `label_b` and write
-"unchecked" in `notes`. Do not guess.
+know. Label `1` only when the record itself shows that the claim is false. The record can show
+this with a fact-checker rating or with its own text. If the claim needs a search to check,
+put `0` in the label cell and write "unchecked" in `notes`. Do not guess. The evaluation
+counts such a row under the reason `unchecked_claim` and leaves it out of the
+false-positive rate.
 
 The sheet has no data about the sample draw. The rows are in random order. Do not try to guess
 how the sample was drawn.
@@ -95,7 +98,7 @@ The two columns are independent. A record can have `label` `0` and `reports_on_f
 | Question: "Is X true?" with no answer | `0` | `0` |
 | Clearly marked satire | `0` | `0` |
 | Old true news shown as new, with the date missing | `1` | `0` |
-| Claim that you cannot check | `0` and note "unchecked" | `0` |
+| Claim that you cannot check without a web search | `0` and note "unchecked" | `0` |
 | Video record with only a title and a short description | Label what the record says | `0` or `1` |
 | Link or hashtag only, with no claim | `0` | `0` |
 | Text in another language than the sheet | Leave blank, note "language" | blank |
