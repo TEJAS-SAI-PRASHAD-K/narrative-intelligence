@@ -161,7 +161,7 @@ class HighRiskPost(Camel):
     """A row of the overview's high-risk posts panel."""
 
     post: PostOut
-    risk_score: float
+    risk_score: float = Field(ge=0.0, le=100.0)
     reasons: list[str] = Field(
         description=(
             "Why this post is here, e.g. ['misinfo_likelihood=0.91', 'author bot_prob=0.88']."

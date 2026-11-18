@@ -507,131 +507,438 @@ def youtube(settings, store):
 
 
 @pytest.fixture
-def youtube_payloads(fixtures_dir):
-    return load_fixture(fixtures_dir, "youtube_items.json")
+def ytdlp_recorded(fixtures_dir):
+    """Two real yt-dlp info dicts and the caption bodies their tracks point at."""
+    return load_fixture(fixtures_dir, "youtube_ytdlp_info.json")
+
+
+class FakeYDL:
+    """Stands in for yt_dlp.YoutubeDL: answers from recorded data, never the network."""
+
+    def __init__(self, searches=None, infos=None, captions=None, fail=()):
+        self.searches = searches or {}
+        self.infos = infos or {}
+        self.captions = captions or {}
+        self.fail = set(fail)
+        self.requests: list[str] = []
+
+    def extract_info(self, url, download=False):
+        self.requests.append(url)
+        if url in self.fail:
+            raise RuntimeError("Sign in to confirm you are not a bot")
+        if url.startswith(("ytsearch", "ytsearchdate")):
+            return {"entries": [{"id": vid} for vid in self.searches.get(url, [])]}
+        return self.infos[url.rsplit("=", 1)[1]]
+
+    def urlopen(self, url):
+        body = self.captions[url]
+        if isinstance(body, Exception):
+            raise body
+
+        class _Response:
+            def read(self_inner):
+                return body.encode("utf-8")
+
+        return _Response()
+
+
+def _recorded(ytdlp_recorded, index):
+    return ytdlp_recorded[index]["info"], ytdlp_recorded[index]["captions"]
+
+
+def _payload(youtube, ytdlp_recorded, index):
+    info, captions = _recorded(ytdlp_recorded, index)
+    return youtube._payload(FakeYDL(captions=captions), info, {})
+
+
+class TestYouTubeSubtitleSelection:
+    def _info(self, ytdlp_recorded, **changes):
+        info, _ = _recorded(ytdlp_recorded, 0)
+        return {**info, **changes}
+
+    def test_manual_track_in_the_video_language_wins_over_auto(self, ytdlp_recorded):
+        from ingest.sources.youtube import select_subtitle_track
+
+        lang, kind, fmt = select_subtitle_track(self._info(ytdlp_recorded))
+        assert (lang, kind) == ("en", "manual")
+        assert fmt["ext"] == "json3"  # structured format preferred over vtt
+
+    def test_auto_original_is_used_when_there_is_no_manual_track(self, ytdlp_recorded):
+        from ingest.sources.youtube import select_subtitle_track
+
+        lang, kind, _ = select_subtitle_track(self._info(ytdlp_recorded, subtitles={}))
+        assert (lang, kind) == ("en-orig", "auto")
+
+    def test_auto_translation_into_another_language_is_never_used(self, ytdlp_recorded):
+        from ingest.sources.youtube import select_subtitle_track
+
+        info = self._info(ytdlp_recorded, subtitles={}, language="fr")
+        assert select_subtitle_track(info) is None
+
+    def test_regional_language_code_matches_its_base_track(self, ytdlp_recorded):
+        from ingest.sources.youtube import select_subtitle_track
+
+        info = self._info(ytdlp_recorded, language="en-US")
+        assert select_subtitle_track(info)[0] == "en"
+
+    def test_unknown_language_with_many_orig_tracks_is_not_guessed(self, ytdlp_recorded):
+        from ingest.sources.youtube import select_subtitle_track
+
+        info = self._info(ytdlp_recorded, subtitles={}, language=None)
+        assert select_subtitle_track(info) is None
+
+    def test_unknown_language_with_a_single_manual_track_uses_it(self, ytdlp_recorded):
+        from ingest.sources.youtube import select_subtitle_track
+
+        info = self._info(ytdlp_recorded, language=None)
+        assert select_subtitle_track(info)[:2] == ("en", "manual")
+
+    def test_no_tracks_at_all(self):
+        from ingest.sources.youtube import select_subtitle_track
+
+        assert select_subtitle_track({"language": "en"}) is None
+
+
+class TestYouTubeSubtitleParsing:
+    def test_rolling_auto_captions_are_deduplicated(self, ytdlp_recorded):
+        from ingest.sources.youtube import parse_vtt
+
+        _, captions = _recorded(ytdlp_recorded, 0)
+        text = parse_vtt(captions["https://caption.invalid/NPyRRJodYw4/auto/en-orig.vtt"])
+        lines = text.splitlines()
+        assert lines[0] == "Subscribe to Factly now so you don't"
+        assert len(lines) == len(set(lines))
+        assert "<" not in text and "00:00" not in text
+
+    def test_vtt_entities_and_nbsp_are_cleaned(self, ytdlp_recorded):
+        from ingest.sources.youtube import parse_vtt
+
+        _, captions = _recorded(ytdlp_recorded, 0)
+        text = parse_vtt(captions["https://caption.invalid/NPyRRJodYw4/manual/en.vtt"])
+        assert "&nbsp;" not in text and "\xa0" not in text
+        assert text.startswith("On 1 November 2026, the INDIA bloc organised a")
+
+    def test_json3_and_vtt_agree_on_a_manual_track(self, ytdlp_recorded):
+        from ingest.sources.youtube import parse_json3, parse_vtt
+
+        _, captions = _recorded(ytdlp_recorded, 0)
+        from_json = parse_json3(captions["https://caption.invalid/NPyRRJodYw4/manual/en.json3"])
+        from_vtt = parse_vtt(captions["https://caption.invalid/NPyRRJodYw4/manual/en.vtt"])
+        assert from_json.splitlines()[0] == from_vtt.splitlines()[0]
+
+    def test_hindi_text_survives(self, ytdlp_recorded):
+        from ingest.sources.youtube import parse_vtt
+
+        _, captions = _recorded(ytdlp_recorded, 0)
+        text = parse_vtt(captions["https://caption.invalid/NPyRRJodYw4/auto/hi-orig.vtt"])
+        assert "सब्सक्राइब" in text
+
+    def test_json3_with_no_segments_is_empty(self):
+        from ingest.sources.youtube import parse_json3
+
+        assert parse_json3('{"events": [{"tStartMs": 0}]}') == ""
 
 
 class TestYouTubeMapping:
-    def test_video_record(self, youtube, youtube_payloads):
-        record = youtube.to_record(youtube_payloads[0])
+    def test_video_record_text_carries_title_description_and_transcript(
+        self, youtube, ytdlp_recorded
+    ):
+        record = youtube.to_record(_payload(youtube, ytdlp_recorded, 0))
         assert record.content_type == "video"
-        assert record.source_detail == "UCabc123def456ghi789jkl"
-        assert record.author_handle == "Verify Desk"
-        assert record.text.startswith("Fact check:")
+        assert record.source_detail == "UCpi2S8wW4xLlUCVryhyBtsA"
+        assert record.author_handle == "Factly"
+        assert record.text.startswith("FACT CHECK:")
+        assert "INDIA bloc organised a" in record.text  # transcript
+        assert record.lang == "en"
 
-    def test_statistics_mapping_including_views(self, youtube, youtube_payloads):
-        engagement = youtube.to_record(youtube_payloads[0]).engagement
-        assert engagement.views == 184203
-        assert engagement.likes == 9421
-        assert engagement.replies == 1203
+    def test_manual_subtitle_provenance_is_recorded_in_raw(self, youtube, ytdlp_recorded):
+        raw = youtube.to_record(_payload(youtube, ytdlp_recorded, 0)).raw
+        assert raw["subtitle_kind"] == "manual"
+        assert raw["subtitle_lang"] == "en"
+
+    def test_auto_subtitle_provenance_is_recorded_in_raw(self, youtube, ytdlp_recorded):
+        record = youtube.to_record(_payload(youtube, ytdlp_recorded, 1))
+        assert record.raw["subtitle_kind"] == "auto"
+        assert record.raw["subtitle_lang"] == "en-orig"
+        assert "sorry guys" in record.text
+
+    def test_video_without_subtitles_is_kept_and_counted(self, youtube, ytdlp_recorded):
+        info, _ = _recorded(ytdlp_recorded, 1)
+        info = {**info, "automatic_captions": {}, "subtitles": {}}
+        record = youtube.to_record(youtube._payload(FakeYDL(), info, {}))
+        assert record is not None
+        assert record.raw["subtitle_kind"] == "none"
+        assert record.raw["subtitle_lang"] is None
+        assert youtube.flags["no_subtitles"] == 1
+        assert youtube.flags["with_subtitles"] == 0
+
+    def test_records_with_subtitles_are_counted_by_kind(self, youtube, ytdlp_recorded):
+        youtube.to_record(_payload(youtube, ytdlp_recorded, 0))
+        youtube.to_record(_payload(youtube, ytdlp_recorded, 1))
+        assert youtube.flags["with_subtitles"] == 2
+        assert youtube.flags["subtitles_manual"] == 1
+        assert youtube.flags["subtitles_auto"] == 1
+
+    def test_caption_download_failure_is_counted_not_fatal(self, youtube, ytdlp_recorded):
+        info, captions = _recorded(ytdlp_recorded, 0)
+        broken = {url: OSError("timeout") for url in captions}
+        payload = youtube._payload(FakeYDL(captions=broken), info, {})
+        record = youtube.to_record(payload)
+        assert record.raw["subtitle_kind"] == "none"
+        assert youtube.flags["subtitle_fetch_failed"] == 1
+        assert youtube.flags["no_subtitles"] == 1
+
+    def test_engagement_mapping_including_views(self, youtube, ytdlp_recorded):
+        engagement = youtube.to_record(_payload(youtube, ytdlp_recorded, 0)).engagement
+        assert engagement.views == 59155
+        assert engagement.likes == 308
+        assert engagement.replies == 96
         assert engagement.shares is None  # YouTube exposes no share count
 
-    def test_hidden_statistics_are_null_not_zero(self, youtube, youtube_payloads):
-        engagement = youtube.to_record(youtube_payloads[1]).engagement
+    def test_none_statistics_stay_none_not_zero(self, youtube, ytdlp_recorded):
+        info, _ = _recorded(ytdlp_recorded, 0)
+        info = {**info, "like_count": None, "comment_count": None, "view_count": 5120}
+        engagement = youtube.to_record(youtube._payload(FakeYDL(), info, {})).engagement
         assert engagement.views == 5120
         assert engagement.likes is None and engagement.replies is None
 
-    def test_media_url_is_the_watchable_video(self, youtube, youtube_payloads):
-        # A fetchable watch page, not a thumbnail.
-        assert youtube.to_record(youtube_payloads[0]).media_urls == [
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        ]
+    def test_measured_zero_stays_zero(self, youtube, ytdlp_recorded):
+        info, _ = _recorded(ytdlp_recorded, 0)
+        info = {**info, "like_count": 0, "comment_count": 0, "view_count": 0}
+        engagement = youtube.to_record(youtube._payload(FakeYDL(), info, {})).engagement
+        assert (engagement.views, engagement.likes, engagement.replies) == (0, 0, 0)
 
-    def test_video_is_its_own_conversation_root(self, youtube, youtube_payloads):
-        record = youtube.to_record(youtube_payloads[0])
+    def test_media_url_is_the_watchable_video(self, youtube, ytdlp_recorded):
+        record = youtube.to_record(_payload(youtube, ytdlp_recorded, 0))
+        assert record.media_urls == ["https://www.youtube.com/watch?v=NPyRRJodYw4"]
+
+    def test_video_is_its_own_conversation_root(self, youtube, ytdlp_recorded):
+        record = youtube.to_record(_payload(youtube, ytdlp_recorded, 0))
         assert record.parent_id is None
-        assert record.conversation_id == "youtube:dQw4w9WgXcQ"
+        assert record.conversation_id == "youtube:NPyRRJodYw4"
 
-    def test_description_urls_and_tags(self, youtube, youtube_payloads):
-        record = youtube.to_record(youtube_payloads[0])
-        assert record.domains == ["example-news.com"]
-        assert set(record.hashtags) >= {"election", "factcheck"}
+    def test_timestamp_is_utc_from_epoch(self, youtube, ytdlp_recorded):
+        record = youtube.to_record(_payload(youtube, ytdlp_recorded, 0))
+        assert record.timestamp.utcoffset().total_seconds() == 0
+        assert record.timestamp.year == 2026
 
-    def test_language_from_audio_track(self, youtube, youtube_payloads):
-        assert youtube.to_record(youtube_payloads[0]).lang == "en"
+    def test_upload_date_is_the_fallback_timestamp(self, youtube, ytdlp_recorded):
+        info, _ = _recorded(ytdlp_recorded, 0)
+        payload = youtube._payload(FakeYDL(), {**info, "timestamp": None}, {})
+        assert youtube.to_record(payload).timestamp.strftime("%Y-%m-%d") == "2026-11-03"
 
-    def test_top_level_comment_parents_to_the_video(self, youtube, youtube_payloads):
-        record = youtube.to_record(youtube_payloads[2])
-        assert record.content_type == "video_comment"
-        assert record.parent_id == "youtube:dQw4w9WgXcQ"
-        assert record.conversation_id == "youtube:dQw4w9WgXcQ"
-        assert record.author_id == "youtube:UCcommenter00000000001"
+    def test_missing_timestamp_is_dropped_with_a_reason(self, youtube, ytdlp_recorded):
+        info, _ = _recorded(ytdlp_recorded, 0)
+        payload = youtube._payload(FakeYDL(), {**info, "timestamp": None, "upload_date": None}, {})
+        assert youtube.to_record(payload) is None
+        assert youtube.dropped[DropReason.MISSING_TIMESTAMP.value] == 1
 
-    def test_reply_parents_to_the_comment(self, youtube, youtube_payloads):
-        record = youtube.to_record(youtube_payloads[3])
-        assert record.parent_id == "youtube:UgxKREWxIgDrw71rN4B4AaABAg"
-        assert '"source"' in record.text  # textOriginal preferred over escaped display
-
-    def test_comment_like_zero_is_measured_zero(self, youtube, youtube_payloads):
-        assert youtube.to_record(youtube_payloads[3]).engagement.likes == 0
-
-    def test_empty_comment_dropped(self, youtube, youtube_payloads):
-        assert youtube.to_record(youtube_payloads[4]) is None
+    def test_empty_video_is_dropped_with_a_reason(self, youtube):
+        payload = {"_kind": "video", "id": "x", "timestamp": 1700000000, "title": ""}
+        assert youtube.to_record(payload) is None
         assert youtube.dropped[DropReason.EMPTY_TEXT.value] == 1
 
-    def test_quota_ledger_wired_to_settings(self, youtube):
-        assert youtube.ledger.daily_limit == 10000
-        assert youtube.ledger.remaining == 10000
+    def test_top_level_comment_parents_to_the_video(self, youtube, ytdlp_recorded):
+        info, _ = _recorded(ytdlp_recorded, 0)
+        payload = next(youtube._comment_payloads({"id": info["id"], "channel_id": "UCx"}, info, 5))
+        record = youtube.to_record(payload)
+        assert record.content_type == "video_comment"
+        assert record.parent_id == "youtube:NPyRRJodYw4"
+        assert record.conversation_id == "youtube:NPyRRJodYw4"
+        assert record.engagement.views is None and record.engagement.replies is None
 
-    def test_missing_api_key_skips_cleanly(self, youtube):
-        from ingest.sources.base import SourceUnavailable
+    def test_reply_parents_to_the_comment(self, youtube):
+        payload = {
+            "_kind": "video_comment",
+            "_video_id": "vid",
+            "id": "c2",
+            "parent": "c1",
+            "text": "agreed",
+            "author_id": "UCa",
+            "like_count": 0,
+            "timestamp": 1700000000,
+        }
+        record = youtube.to_record(payload)
+        assert record.parent_id == "youtube:c1"
+        assert record.engagement.likes == 0
 
-        with pytest.raises(SourceUnavailable, match="YOUTUBE_API_KEY"):
-            youtube._client()
+    def test_comment_like_none_stays_none(self, youtube):
+        payload = {
+            "_kind": "video_comment",
+            "_video_id": "vid",
+            "id": "c3",
+            "parent": "root",
+            "text": "hello",
+            "timestamp": 1700000000,
+            "like_count": None,
+        }
+        assert youtube.to_record(payload).engagement.likes is None
+
+    def test_empty_comment_dropped(self, youtube):
+        payload = {"_kind": "video_comment", "id": "c4", "text": " ", "timestamp": 1700000000}
+        assert youtube.to_record(payload) is None
+        assert youtube.dropped[DropReason.EMPTY_TEXT.value] == 1
+
+    def test_comments_disabled_is_counted(self, youtube):
+        assert list(youtube._comment_payloads({"id": "v"}, {"comments": None}, 10)) == []
+        assert youtube.flags["comments_unavailable"] == 1
+
+    def test_author_rollup(self, youtube, ytdlp_recorded):
+        payload = _payload(youtube, ytdlp_recorded, 0)
+        author = youtube.to_author(payload, youtube.to_record(payload))
+        assert author.handle == "Factly"
+        assert author.raw["channel_id"] == "UCpi2S8wW4xLlUCVryhyBtsA"
 
 
-class TestYouTubeDiscoveryScoping:
-    """What search.list is actually asked for. 100 units a call, so it matters."""
+class TestYouTubeDiscoveryAndFetch:
+    """Search and fetch against a fake yt-dlp. No network, no key."""
 
-    class _FakeSearch:
-        def __init__(self):
-            self.calls: list[dict] = []
+    def _run(self, youtube, monkeypatch, ytdlp_recorded, config, *, fail=(), searches=None):
+        infos = {e["info"]["id"]: e["info"] for e in ytdlp_recorded}
+        captions = {}
+        for e in ytdlp_recorded:
+            captions.update(e["captions"])
+        fake = FakeYDL(
+            searches=searches or {"ytsearch5:q one": ["NPyRRJodYw4", "sPzKg_dPcg8", "gone0000000"]},
+            infos=infos,
+            captions=captions,
+            fail=fail,
+        )
+        monkeypatch.setattr(youtube, "_client", lambda *a, **k: fake)
+        monkeypatch.setattr("ingest.sources.youtube.sources_config", lambda: {"youtube": config})
+        youtube.options = {"queries": ["q one"]}
+        return fake, list(youtube.fetch())
 
-        def list(self, **params):
-            self.calls.append(params)
-            return self
+    def _config(self, **discovery):
+        base = {"results_per_search": 5, "published_within_days": 100000}
+        return {"discovery": {**base, **discovery}, "comments": {"enabled": False}}
 
-        def execute(self):
-            return {"items": [{"id": {"videoId": "vid1"}}]}
+    def test_fetch_yields_videos_with_subtitles(self, youtube, monkeypatch, ytdlp_recorded):
+        _, payloads = self._run(youtube, monkeypatch, ytdlp_recorded, self._config())
+        assert [p["id"] for p in payloads] == ["NPyRRJodYw4", "sPzKg_dPcg8"]
+        assert payloads[0]["_subtitle"]["kind"] == "manual"
+        assert payloads[1]["_subtitle"]["kind"] == "auto"
 
-    class _FakeClient:
-        def __init__(self, search):
-            self._search = search
+    def test_failed_extraction_is_counted_and_skipped(self, youtube, monkeypatch, ytdlp_recorded):
+        fail = {"https://www.youtube.com/watch?v=sPzKg_dPcg8"}
+        _, payloads = self._run(youtube, monkeypatch, ytdlp_recorded, self._config(), fail=fail)
+        assert [p["id"] for p in payloads] == ["NPyRRJodYw4"]
+        # gone0000000 is not in the fake's infos either, which raises KeyError
+        assert youtube.flags["extract_failed"] == 2
 
-        def search(self):
-            return self._search
+    def test_old_videos_are_counted_as_outside_the_window(
+        self, youtube, monkeypatch, ytdlp_recorded
+    ):
+        # The second recorded video was published in 2022.
+        _, payloads = self._run(
+            youtube, monkeypatch, ytdlp_recorded, self._config(published_within_days=30)
+        )
+        assert youtube.flags["outside_published_window"] >= 1
+        assert "sPzKg_dPcg8" not in [p["id"] for p in payloads]
 
-    def _discover(self, youtube, config):
-        search = self._FakeSearch()
-        youtube.options = {"queries": ["वोट चोरी दावा फैक्ट चेक"]}
-        youtube._discover(self._FakeClient(search), config)
-        assert len(search.calls) == 1
-        return search.calls[0]
+    def test_failed_search_is_counted(self, youtube, monkeypatch, ytdlp_recorded):
+        fake = FakeYDL(fail={"ytsearch5:q one"})
+        monkeypatch.setattr(youtube, "_client", lambda *a, **k: fake)
+        monkeypatch.setattr(
+            "ingest.sources.youtube.sources_config", lambda: {"youtube": self._config()}
+        )
+        youtube.options = {"queries": ["q one"]}
+        assert list(youtube.fetch()) == []
+        assert youtube.flags["search_failed"] == 1
 
-    def test_region_code_is_sent_when_configured(self, youtube):
-        params = self._discover(youtube, {"region_code": "IN"})
-        assert params["regionCode"] == "IN"
-        # Unset relevanceLanguage must be ABSENT, not None: the API client
-        # serializes an explicit None into the query string.
-        assert "relevanceLanguage" not in params
+    def test_date_order_uses_the_date_sorted_search(self, youtube, monkeypatch, ytdlp_recorded):
+        fake, _ = self._run(
+            youtube,
+            monkeypatch,
+            ytdlp_recorded,
+            self._config(order="date"),
+            searches={"ytsearchdate5:q one": []},
+        )
+        assert fake.requests == ["ytsearchdate5:q one"]
 
-    def test_absent_region_code_leaves_the_search_global(self, youtube):
-        params = self._discover(youtube, {})
-        assert "regionCode" not in params
+    def test_the_devanagari_query_reaches_search_unmangled(
+        self, youtube, monkeypatch, ytdlp_recorded
+    ):
+        query = "वोट चोरी दावा फैक्ट चेक"
+        fake = FakeYDL(searches={f"ytsearch5:{query}": []})
+        monkeypatch.setattr(youtube, "_client", lambda *a, **k: fake)
+        monkeypatch.setattr(
+            "ingest.sources.youtube.sources_config", lambda: {"youtube": self._config()}
+        )
+        youtube.options = {"queries": [query]}
+        list(youtube.fetch())
+        assert fake.requests == [f"ytsearch5:{query}"]
+
+    def test_duplicate_ids_across_queries_are_extracted_once(
+        self, youtube, monkeypatch, ytdlp_recorded
+    ):
+        searches = {"ytsearch5:a": ["NPyRRJodYw4"], "ytsearch5:b": ["NPyRRJodYw4"]}
+        infos = {e["info"]["id"]: e["info"] for e in ytdlp_recorded}
+        captions = {}
+        for e in ytdlp_recorded:
+            captions.update(e["captions"])
+        fake = FakeYDL(searches=searches, infos=infos, captions=captions)
+        monkeypatch.setattr(youtube, "_client", lambda *a, **k: fake)
+        monkeypatch.setattr(
+            "ingest.sources.youtube.sources_config", lambda: {"youtube": self._config()}
+        )
+        youtube.options = {"queries": ["a", "b"]}
+        assert len(list(youtube.fetch())) == 1
+
+    def test_run_counts_subtitled_records_in_the_result(
+        self, youtube, monkeypatch, ytdlp_recorded
+    ):
+        self._patch_for_run(youtube, monkeypatch, ytdlp_recorded)
+        result = youtube.run()
+        assert result.ok and result.written == 2
+        assert result.flags["with_subtitles"] == 2
+        assert result.flags["subtitles_manual"] == 1
+
+    def _patch_for_run(self, youtube, monkeypatch, ytdlp_recorded):
+        infos = {e["info"]["id"]: e["info"] for e in ytdlp_recorded}
+        captions = {}
+        for e in ytdlp_recorded:
+            captions.update(e["captions"])
+        fake = FakeYDL(
+            searches={"ytsearch5:q one": ["NPyRRJodYw4", "sPzKg_dPcg8"]},
+            infos=infos,
+            captions=captions,
+        )
+        monkeypatch.setattr(youtube, "_client", lambda *a, **k: fake)
+        monkeypatch.setattr(
+            "ingest.sources.youtube.sources_config", lambda: {"youtube": self._config()}
+        )
+        youtube.options = {"queries": ["q one"]}
+
+
+class TestYouTubeClientOptions:
+    """What is handed to yt-dlp. Region and relevance live in configs/sources.yaml."""
+
+    def _opts(self, youtube, discovery, **kwargs):
+        flat = kwargs.pop("flat", True)
+        return youtube._ydl_options({"discovery": discovery}, flat=flat, **kwargs)
+
+    def test_region_becomes_geo_bypass_country(self, youtube):
+        assert self._opts(youtube, {"region_code": "in"})["geo_bypass_country"] == "IN"
+
+    def test_absent_region_leaves_the_option_out(self, youtube):
+        assert "geo_bypass_country" not in self._opts(youtube, {})
 
     def test_relevance_language_is_sent_only_when_set(self, youtube):
-        params = self._discover(youtube, {"region_code": "IN", "relevance_language": "hi"})
-        assert params["relevanceLanguage"] == "hi"
+        opts = self._opts(youtube, {"relevance_language": "hi"})
+        assert opts["extractor_args"]["youtube"]["lang"] == ["hi"]
+        assert "extractor_args" not in self._opts(youtube, {"relevance_language": None})
 
-    def test_an_empty_relevance_language_is_treated_as_unset(self, youtube):
-        """`relevance_language:` with no value parses as None, which is the default."""
-        params = self._discover(youtube, {"region_code": "IN", "relevance_language": None})
-        assert "relevanceLanguage" not in params
+    def test_comment_cap_is_a_split_extractor_argument(self, youtube):
+        opts = self._opts(youtube, {}, flat=False, comments=40)
+        assert opts["getcomments"] is True
+        assert opts["extractor_args"]["youtube"]["max_comments"][0] == "40"
 
-    def test_the_query_itself_still_reaches_the_api_unmangled(self, youtube):
-        """Devanagari must survive to the wire; a mangled query returns nothing."""
-        params = self._discover(youtube, {"region_code": "IN"})
-        assert params["q"] == "वोट चोरी दावा फैक्ट चेक"
+    def test_no_media_is_ever_downloaded(self, youtube):
+        assert self._opts(youtube, {})["skip_download"] is True
+
+    def test_source_runs_without_any_credential(self, youtube):
+        assert youtube.settings.has_credentials("youtube") is True
 
 
 # --- reddit / kaggle ------------------------------------------------------

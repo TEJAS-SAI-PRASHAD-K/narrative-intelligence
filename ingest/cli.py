@@ -341,6 +341,8 @@ def factchecks(
                 f"empty loc {stat.empty_loc}, duplicate loc {stat.duplicate_loc}, "
                 f"sitemaps left unread {stat.sitemaps_unread}, "
                 f"sitemaps with no new URL {stat.sitemaps_exhausted}, "
+                f"listing pages read {stat.listing_pages_read}, "
+                f"listing links found {stat.listing_links_found}, "
                 f"stale ledger rows {stat.ledger_stale}"
             )
             if stat.language_excluded:
@@ -458,7 +460,7 @@ def show_config() -> None:
     table.add_row("http rate limit", f"{settings.http_rate_limit_per_sec}/s")
     for key, present in (
         ("MASTODON_ACCESS_TOKEN", bool(settings.mastodon_access_token)),
-        ("YOUTUBE_API_KEY", bool(settings.youtube_api_key)),
+        ("TELEGRAM credentials", settings.has_credentials("telegram")),
         ("NEWSAPI_KEY", bool(settings.newsapi_key)),
         ("KAGGLE credentials", settings.has_credentials("reddit_kaggle")),
     ):

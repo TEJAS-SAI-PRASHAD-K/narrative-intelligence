@@ -767,7 +767,13 @@ async def authors_breakdown(session: AsyncSession, spec: FilterSpec):
     from app.models.actors import Author, AuthorCohort, AuthorGroupMember, Cohort
     from app.models.corpus import Post
     from app.schemas.overview import AuthorsBreakdown, HierarchyNode
+    from app.scoring.fusion import load_config
 
+    # The same threshold the fusion signal query applies, so this ratio is
+    # computed with the rule behind the narrative scorecard value.
+    coordination_threshold = float(
+        load_config().get("thresholds", {}).get("coordination_score_threshold", 0.5)
+    )
     project_id = await resolve_project_id(session, spec.project_id)
     ids = _filtered_post_ids(spec, project_id).subquery()
     author_ids = select(Post.author_id).where(Post.id.in_(select(ids.c.id))).distinct().subquery()
@@ -779,10 +785,14 @@ async def authors_breakdown(session: AsyncSession, spec: FilterSpec):
                 func.count(Author.author_id),
                 func.count(Author.author_id).filter(Author.bot_score > 0.6),
                 func.count(Author.bot_score),
+                func.count(Author.coordination_score).filter(
+                    Author.coordination_score > coordination_threshold
+                ),
+                func.count(Author.coordination_score),
             ).where(Author.project_id == project_id, scoped)
         )
     ).one()
-    total, bot_like, scorable = row
+    total, bot_like, scorable, coordinated, coordination_scored = row
 
     watchlisted = (
         await session.execute(
@@ -823,6 +833,16 @@ async def authors_breakdown(session: AsyncSession, spec: FilterSpec):
             ),
             nullable_fields=["bot_score"],
             sample_size=scorable,
+        ),
+        coordinated_author_ratio=Metric(
+            value=(
+                round(coordinated / coordination_scored, 4) if coordination_scored else None
+            ),
+            label="Coordinated authors",
+            definition=DEFINITIONS["coordinated_author_ratio"],
+            unit="ratio",
+            nullable_fields=["coordination_score"],
+            sample_size=coordination_scored,
         ),
         author_groups=Metric(
             value=watchlisted,

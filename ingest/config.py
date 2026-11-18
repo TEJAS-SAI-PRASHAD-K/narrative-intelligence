@@ -35,10 +35,12 @@ class Settings(BaseSettings):
     mastodon_api_base_url: str = "https://mastodon.social"
     mastodon_access_token: str | None = None
 
-    # --- YouTube ---
-    youtube_api_key: str | None = None
-    youtube_max_searches_per_day: int = 20
-    youtube_daily_quota_units: int = 10_000
+    # --- Telegram (MTProto via Telethon) ---
+    # Credentials from my.telegram.org plus a pre-generated StringSession, so no
+    # interactive login is needed at fetch time. All three are required together.
+    telegram_api_id: str | None = None
+    telegram_api_hash: str | None = None
+    telegram_session: str | None = None
 
     # --- News ---
     newsapi_key: str | None = None
@@ -59,7 +61,9 @@ class Settings(BaseSettings):
 
     @field_validator(
         "mastodon_access_token",
-        "youtube_api_key",
+        "telegram_api_id",
+        "telegram_api_hash",
+        "telegram_session",
         "newsapi_key",
         "kaggle_username",
         "kaggle_key",
@@ -117,7 +121,10 @@ class Settings(BaseSettings):
             "mastodon": bool(self.mastodon_access_token),
             "gdelt": True,  # open data
             "news_rss": True,  # RSS needs nothing; NewsAPI is an optional bonus
-            "youtube": bool(self.youtube_api_key),
+            "youtube": True,  # yt-dlp reads public pages; no key
+            "telegram": bool(
+                self.telegram_api_id and self.telegram_api_hash and self.telegram_session
+            ),
         }.get(source, True)
 
 

@@ -633,6 +633,46 @@ def test_the_report_says_do_not_ship_and_fail_control_for_the_control():
     assert "laya_multi_base (control)" in text
 
 
+def test_the_report_shows_fact_check_rows_and_evaluation_claims_per_tier():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    result = control_result()
+    result["evaluation_set"]["rows_per_tier"] = {"claimreview": 7, "dom_block": 3}
+    result["evaluation_set"]["claims_per_tier"] = {"claimreview": 7}
+    text = render_markdown(result)
+    assert "Fact-check rows per extraction tier: `claimreview` 7, `dom_block` 3" in text
+    assert "Evaluation claims per extraction tier: `claimreview` 7" in text
+    assert result["evaluation_set"]["rows_per_tier"] == {"claimreview": 7, "dom_block": 3}
+    assert result["evaluation_set"]["claims_per_tier"] == {"claimreview": 7}
+
+
+def test_the_report_hides_the_claim_line_when_it_matches_the_rows():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    result = control_result()
+    result["evaluation_set"]["rows_per_tier"] = {"dom_block": 3}
+    result["evaluation_set"]["claims_per_tier"] = {"dom_block": 3}
+    text = render_markdown(result)
+    assert "Fact-check rows per extraction tier: `dom_block` 3" in text
+    assert "Evaluation claims per extraction tier" not in text
+
+
+def test_the_result_carries_the_per_tier_counts_of_the_universe():
+    claims, titles, texts = hindi_rows(HINDI_MIN_CLAIMS)
+    ids = [c["id"] for c in claims]
+    rows = PERFECT_VAL + claims + titles + texts
+    models = {
+        "tfidf": model("tfidf", rows + labelled_set(40, False)),
+        "m": model("m", rows + labelled_set(40, True)),
+    }
+    base = universe(ids)
+    base.tier_counts = {"dom_block": len(ids)}
+    base.eval_tier_counts = {"dom_block": len(ids)}
+    result = run(models, universe=base)
+    assert result["evaluation_set"]["rows_per_tier"] == {"dom_block": len(ids)}
+    assert result["evaluation_set"]["claims_per_tier"] == {"dom_block": len(ids)}
+
+
 def test_a_model_that_is_not_a_control_still_ships_on_the_same_numbers():
     result = control_result(name="laya_multi")
     assert result["comparisons"]["laya_multi"]["ship"] is True

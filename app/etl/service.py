@@ -31,7 +31,7 @@ from app.etl.parquet_loader import (
 
 log = logging.getLogger(__name__)
 
-SOURCES = ("reddit", "mastodon", "news", "gdelt", "youtube")
+SOURCES = ("reddit", "mastodon", "news", "gdelt", "youtube", "telegram")
 
 
 @dataclass
