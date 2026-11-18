@@ -189,8 +189,6 @@ the honest entry in that cell, not a zero.
   Factly publish neither JSON-LD nor a verdict block, and their verdict lives in the
   headline predicate. Tier 4 is inference rather than extraction and needs its own
   measured error rate before it sits next to structured data.
-- **Telegram adapter.** Free official API, widely used for political forwards in
-  the target domain, and the cheapest large source still missing.
 - **A person must label the claim dedup sample before the threshold is a measured
   choice.** `python -m modeling.cli dedup-claims` links claims by simhash and by the
   cosine similarity of multilingual claim embeddings, and writes
