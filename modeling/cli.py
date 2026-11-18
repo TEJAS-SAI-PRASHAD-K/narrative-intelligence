@@ -112,6 +112,28 @@ def registry() -> None:
     console.print(table)
 
 
+@app.command(name="checkpoint-hash")
+def checkpoint_hash(
+    module: str = typer.Argument(..., help="misinfo | stance | laya"),
+    version: str | None = typer.Option(
+        None, "--version", help="Checkpoint folder name. Default: the version in models.yaml."
+    ),
+) -> None:
+    """Print the sha256 of a local checkpoint directory, to put in configs/models.yaml.
+
+    Reads the directory under MODELS_DIR. It never pulls from the Hub.
+    """
+    _bootstrap()
+    from modeling.registry import directory_sha256
+
+    path, digest = directory_sha256(module, version)
+    if digest is None:
+        console.print(f"[red]no checkpoint files in {path}[/]")
+        raise typer.Exit(1)
+    typer.echo(digest)
+    typer.echo(f"{module}/{path.name}  {path}", err=True)
+
+
 @app.command(name="show-config")
 def show_config() -> None:
     """Seeds, device, paths and library versions -- the reproducibility block."""

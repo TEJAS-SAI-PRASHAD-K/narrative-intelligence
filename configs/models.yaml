@@ -1,3 +1,12 @@
+# Optional `sha256` per fine-tuned module: a map from checkpoint folder name to the hex
+# digest that `python -m modeling.cli checkpoint-hash <module> [--version <folder>]`
+# prints. `modeling.registry.resolve` checks it on every resolve, local or pulled, and
+# refuses a mismatch with `checkpoint_sha256_mismatch`. A module with no `sha256` key
+# resolves with the reason `checkpoint_unverified`. Laya uses one entry per folder, for
+# example `multi-v0.2.1` and `en-v0.2.1`. The hash covers every file in the folder
+# except `checkpoint_latest/`, `registry.json`, `*.tmp` and the tokenizer config that
+# the Laya loader rewrites. It covers the Laya calibrator files.
+#
 # Per-module model choices, versions and thresholds.
 #
 # The `version` field of each module is what lands in every scored row's

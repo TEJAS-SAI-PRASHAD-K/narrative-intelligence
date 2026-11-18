@@ -15,6 +15,12 @@ Resolution order, first hit wins:
 If none hit, :class:`CheckpointNotFound` is raised with the exact command that
 would produce it. A missing checkpoint must never silently degrade into an
 untrained model producing confident garbage.
+
+Every origin is verified against the optional ``sha256`` in ``configs/models.yaml``.
+A mismatch raises :class:`CheckpointIntegrityError` with reason code
+``checkpoint_sha256_mismatch``, and a copy that came from the Hub or Drive is deleted.
+A checkpoint with no configured hash resolves with ``verified=False`` and counts
+``checkpoint_unverified``. Every reason code is counted in :data:`REASON_COUNTS`.
 """
 
 from __future__ import annotations
@@ -23,17 +29,61 @@ import hashlib
 import json
 import logging
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from modeling.checkpoint_identity import CHECKPOINT_LOADER_REWRITTEN
 from modeling.config import get_settings, module_config
 
 log = logging.getLogger(__name__)
 
 
+class CheckpointReason:
+    """Counted reason codes of the checkpoint registry."""
+
+    #: The directory hash differs from the ``sha256`` in ``configs/models.yaml``.
+    SHA256_MISMATCH = "checkpoint_sha256_mismatch"
+    #: No ``sha256`` is configured, so the weights are used without a check.
+    UNVERIFIED = "checkpoint_unverified"
+    #: ``HF_REPO`` is set and ``HF_TOKEN`` is not. A private repo refuses the pull.
+    HUB_TOKEN_MISSING = "hub_token_missing"
+    #: ``HF_REPO`` is set and ``huggingface_hub`` is not installed.
+    HUB_NOT_INSTALLED = "hub_not_installed"
+    #: The Hub call raised. Typical causes are a wrong repo id, a bad token and no network.
+    HUB_PULL_FAILED = "hub_pull_failed"
+    #: The Hub call worked and the repo has no ``<module>/<version>/`` folder.
+    HUB_PATH_ABSENT = "hub_path_absent"
+
+
+#: Reason code to count since the process started. Read by tests and by the log summary.
+REASON_COUNTS: Counter[str] = Counter()
+
+#: Training resume state. Inference does not read it, so it is neither pulled nor hashed.
+RESUME_DIR = "checkpoint_latest"
+#: Written by ``register`` after the hash is taken, so it cannot be inside the hash.
+REGISTRY_FILE = "registry.json"
+#: Hub patterns for a pull. ``*`` matches across ``/``, so sub-folders such as
+#: ``tokenizer/`` and the Laya calibrator files come with the weights.
+HUB_IGNORE_PATTERNS = [f"*/{RESUME_DIR}/*", f"{RESUME_DIR}/*", "*.tmp"]
+
+
+def _count(reason: str, detail: str = "") -> None:
+    REASON_COUNTS[reason] += 1
+    log.warning("registry reason=%s %s", reason, detail)
+
+
 class CheckpointNotFound(FileNotFoundError):
     """No local, Hub or Drive copy of a requested checkpoint."""
+
+
+class CheckpointIntegrityError(RuntimeError):
+    """A checkpoint exists and its hash differs from the configured one."""
+
+    def __init__(self, message: str, reason: str = CheckpointReason.SHA256_MISMATCH) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -45,6 +95,8 @@ class Checkpoint:
     path: Path
     origin: str  # "local" | "hf" | "gdrive" | "fresh"
     sha256: str | None = None
+    #: True when ``sha256`` matched the value configured in ``configs/models.yaml``.
+    verified: bool = False
 
     @property
     def uri(self) -> str:
@@ -63,6 +115,7 @@ class Checkpoint:
             "uri": self.uri,
             "origin": self.origin,
             "sha256": self.sha256,
+            "verified": self.verified,
         }
 
 
@@ -70,17 +123,40 @@ def local_dir(module: str, version: str) -> Path:
     return get_settings().models_dir / module / version
 
 
+def _hashed_files(path: Path) -> list[Path]:
+    """The files that make up a checkpoint's hash, sorted by relative path.
+
+    Excluded: the ``checkpoint_latest/`` resume folder, ``registry.json`` (written after
+    the hash is taken), ``*.tmp`` files, and the tokenizer config that the Laya loader
+    rewrites in place on first load. Everything else counts, including the Laya
+    calibrator files and the tokenizer folder.
+    """
+    skipped = CHECKPOINT_LOADER_REWRITTEN | {REGISTRY_FILE}
+    out = []
+    for file in path.rglob("*"):
+        if not file.is_file() or file.name.endswith(".tmp"):
+            continue
+        relative = file.relative_to(path)
+        if relative.parts[0] == RESUME_DIR or relative.as_posix() in skipped:
+            continue
+        out.append(file)
+    return sorted(out, key=lambda f: f.relative_to(path).as_posix())
+
+
 def _dir_sha256(path: Path) -> str | None:
-    """Checksum a checkpoint directory, the same way Phase 1 checksums an
-    artifact tree: sha256 over (relative path, file digest) pairs."""
+    """Checksum a checkpoint directory: sha256 over (relative path, file digest) pairs.
+
+    The relative path is POSIX style. The file digest is the sha256 of the file bytes.
+    :func:`_hashed_files` lists which files count.
+    """
     if not path.exists():
         return None
-    digest = hashlib.sha256()
-    files = sorted(p for p in path.rglob("*") if p.is_file())
+    files = _hashed_files(path)
     if not files:
         return None
+    digest = hashlib.sha256()
     for file in files:
-        digest.update(str(file.relative_to(path)).encode("utf-8"))
+        digest.update(file.relative_to(path).as_posix().encode("utf-8"))
         file_digest = hashlib.sha256()
         with file.open("rb") as fh:
             for block in iter(lambda: fh.read(1 << 20), b""):
@@ -89,32 +165,80 @@ def _dir_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+def directory_sha256(module: str, version: str | None = None) -> tuple[Path, str | None]:
+    """The local directory of a checkpoint and its hash. Never pulls. Backs ``checkpoint-hash``."""
+    resolved_version = version or str(module_config(module).get("version", "v0.0.0-unset"))
+    path = local_dir(module, resolved_version)
+    return path, _dir_sha256(path)
+
+
+def expected_sha256(module: str, version: str) -> str | None:
+    """The ``sha256`` configured for ``module`` at ``version``, or ``None``.
+
+    ``sha256`` in ``configs/models.yaml`` is a map from version to hex digest. A plain
+    string is accepted and applies to the version configured for the module.
+    """
+    config = module_config(module)
+    value = config.get("sha256")
+    if isinstance(value, dict):
+        value = value.get(version)
+    elif value is not None and version != str(config.get("version")):
+        value = None
+    return str(value).strip().lower() if value else None
+
+
+def _verify(module: str, version: str, target: Path, *, discard_on_fail: bool) -> Checkpoint:
+    """Hash ``target`` and compare to the configured value. Raises on a mismatch."""
+    digest = _dir_sha256(target)
+    expected = expected_sha256(module, version)
+    if expected is None:
+        _count(CheckpointReason.UNVERIFIED, f"{module}/{version} has no sha256 in models.yaml")
+        return Checkpoint(module, version, target, "local", digest, verified=False)
+    if digest != expected:
+        message = (
+            f"{CheckpointReason.SHA256_MISMATCH}: {module}/{version} at {target} hashes to "
+            f"{digest}, configs/models.yaml expects {expected}."
+        )
+        if discard_on_fail:
+            shutil.rmtree(target, ignore_errors=True)
+            message += " The pulled copy is deleted."
+        _count(CheckpointReason.SHA256_MISMATCH, message)
+        raise CheckpointIntegrityError(message)
+    return Checkpoint(module, version, target, "local", digest, verified=True)
+
+
 def _try_hub(module: str, version: str, target: Path) -> bool:
     settings = get_settings()
     if not settings.hf_repo:
         return False
+    if not settings.hf_token:
+        _count(CheckpointReason.HUB_TOKEN_MISSING, "HF_REPO is set and HF_TOKEN is not")
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
-        log.warning("HF_REPO is set but huggingface_hub is not installed; skipping Hub lookup")
+        _count(CheckpointReason.HUB_NOT_INSTALLED, "install huggingface_hub")
         return False
     try:
         snapshot_download(
             repo_id=settings.hf_repo,
             allow_patterns=[f"{module}/{version}/*"],
+            ignore_patterns=HUB_IGNORE_PATTERNS,
             local_dir=str(settings.models_dir / ".hub"),
             token=settings.hf_token,
         )
     except Exception as exc:
-        log.warning("Hub lookup for %s/%s failed: %s", module, version, exc)
+        _count(CheckpointReason.HUB_PULL_FAILED, f"{module}/{version}: {exc}")
         return False
     staged = settings.models_dir / ".hub" / module / version
     if not staged.exists():
+        _count(CheckpointReason.HUB_PATH_ABSENT, f"{module}/{version} is not in the Hub repo")
         return False
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.rmtree(target)
-    shutil.copytree(staged, target)
+    shutil.copytree(staged, target, ignore=shutil.ignore_patterns(RESUME_DIR))
+    # The staging copy is deleted so a failed check leaves nothing to reuse.
+    shutil.rmtree(staged, ignore_errors=True)
     return True
 
 
@@ -143,12 +267,16 @@ def resolve(module: str, version: str | None = None, *, required: bool = True) -
     target = local_dir(module, resolved_version)
 
     if target.exists() and any(target.iterdir()):
-        return Checkpoint(module, resolved_version, target, "local", _dir_sha256(target))
+        # A local copy is never deleted on a mismatch. It may be the only copy.
+        return _verify(module, resolved_version, target, discard_on_fail=False)
 
     for origin, fetch in (("hf", _try_hub), ("gdrive", _try_gdrive)):
         if fetch(module, resolved_version, target):
             log.info("pulled %s/%s from %s -> %s", module, resolved_version, origin, target)
-            return Checkpoint(module, resolved_version, target, origin, _dir_sha256(target))
+            checked = _verify(module, resolved_version, target, discard_on_fail=True)
+            return Checkpoint(
+                module, resolved_version, target, origin, checked.sha256, checked.verified
+            )
 
     if not required:
         log.warning(
@@ -164,7 +292,8 @@ def resolve(module: str, version: str | None = None, *, required: bool = True) -
         f"no checkpoint for {module}/{resolved_version}.\n"
         f"  looked in: {target}, hf://{get_settings().hf_repo}, {get_settings().gdrive_dir}\n"
         f"  produce it with: python -m modeling.cli train {module}\n"
-        f"  or point HF_REPO / GDRIVE_DIR at an existing copy."
+        f"  or set HF_REPO and HF_TOKEN in .env to pull it from the private Hub repo.\n"
+        f"  reasons counted so far: {dict(REASON_COUNTS) or 'none'}"
     )
 
 

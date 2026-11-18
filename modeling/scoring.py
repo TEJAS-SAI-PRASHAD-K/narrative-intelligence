@@ -536,7 +536,13 @@ def _laya_stage_config(settings: ModelingSettings) -> dict[str, Any]:
     override = getattr(settings, "laya_hi_checkpoint", None)
     if not tuned.get("hi") and override:
         path = Path(str(override)).expanduser()
-        tuned["hi"] = str(path if path.is_absolute() else settings.models_dir / path)
+        resolved = path if path.is_absolute() else settings.models_dir / path
+        if not path.is_absolute() and not resolved.is_dir() and len(path.parts) == 2:
+            # `laya/<version>` is a registry layout. A fresh clone pulls it from the Hub here.
+            from modeling.registry import resolve
+
+            resolve(path.parts[0], path.parts[1], required=False)
+        tuned["hi"] = str(resolved)
     config["finetuned_checkpoints"] = tuned
     return config
 
