@@ -30,7 +30,8 @@ from app.schemas.actors import (
     CohortMembership,
     CohortOut,
 )
-from app.schemas.common import PageResponse, ScoreComponent
+from app.schemas.common import NamedRef, PageResponse, ScoreComponent
+from app.schemas.narratives import NarrativeSummary
 from app.schemas.posts import PostOut
 
 log = logging.getLogger(__name__)
@@ -409,6 +410,136 @@ async def list_cohorts(
         total=len(rows),
         filters_applied=spec.as_response_dict(),
     )
+
+
+async def author_cohorts(
+    session: AsyncSession, author_id: str, spec: FilterSpec, page: Page
+) -> PageResponse[CohortOut]:
+    """Cohorts one author belongs to, largest first, with project-wide cohort stats."""
+    from app.models.actors import AuthorCohort, Cohort
+
+    author = await _load_author(session, author_id)
+    stmt = (
+        select(Cohort)
+        .where(
+            Cohort.id.in_(select(AuthorCohort.cohort_id).where(AuthorCohort.author_id == author_id))
+        )
+        .order_by(Cohort.author_count.desc(), Cohort.name, Cohort.id)
+    )
+    offset = decode_cursor(page.cursor).get("o", 0)
+    total = await count_rows(session, stmt)
+    rows = (await session.execute(stmt.offset(offset).limit(page.limit))).scalars().all()
+
+    stats = {
+        row.cohort_id: row
+        for row in (
+            await session.execute(
+                text(
+                    """
+                    SELECT ac.cohort_id,
+                           avg(a.bot_score) AS mean_bot,
+                           avg(a.toxicity_score) AS mean_tox
+                    FROM author_cohorts ac
+                    JOIN authors a ON a.author_id = ac.author_id
+                    WHERE a.project_id = :p AND ac.cohort_id = ANY(:ids)
+                    GROUP BY ac.cohort_id
+                    """
+                ),
+                {"p": author.project_id, "ids": [r.id for r in rows]},
+            )
+        ).all()
+    }
+
+    def _mean(row_id, column):
+        value = getattr(stats[row_id], column) if row_id in stats else None
+        return float(value) if value is not None else None
+
+    return PageResponse[CohortOut](
+        items=[
+            CohortOut(
+                id=str(row.id),
+                project_id=str(row.project_id),
+                name=row.name,
+                description=row.description,
+                category=row.category,
+                author_count=row.author_count or 0,
+                post_pct=row.post_pct,
+                mean_bot_score=_mean(row.id, "mean_bot"),
+                mean_toxicity=_mean(row.id, "mean_tox"),
+            )
+            for row in rows
+        ],
+        next_cursor=(
+            encode_cursor({"o": offset + page.limit}) if len(rows) == page.limit else None
+        ),
+        total=total,
+        filters_applied=spec.as_response_dict(),
+    )
+
+
+async def author_narratives(
+    session: AsyncSession, author_id: str, spec: FilterSpec, page: Page
+) -> PageResponse[NarrativeSummary]:
+    """Narratives containing at least one post by this author, highest priority first."""
+    from app.models.corpus import Post
+    from app.models.narratives import Narrative, NarrativePost
+    from app.models.narratives import NarrativeScorecard as Scorecard
+    from app.repositories.narratives import to_summary
+
+    await _load_author(session, author_id)
+    touched = (
+        select(NarrativePost.narrative_id)
+        .join(Post, Post.id == NarrativePost.post_id)
+        .where(Post.author_id == author_id)
+    )
+    stmt = (
+        select(Narrative, Scorecard)
+        .outerjoin(Scorecard, Scorecard.narrative_id == Narrative.id)
+        .where(Narrative.id.in_(touched))
+        .order_by(Scorecard.fusion_score.desc().nullslast(), Narrative.id.desc())
+    )
+    offset = decode_cursor(page.cursor).get("o", 0)
+    total = await count_rows(session, stmt)
+    rows = (await session.execute(stmt.offset(offset).limit(page.limit))).all()
+
+    return PageResponse[NarrativeSummary](
+        items=[to_summary(narrative, card) for narrative, card in rows],
+        next_cursor=(
+            encode_cursor({"o": offset + page.limit}) if len(rows) == page.limit else None
+        ),
+        total=total,
+        filters_applied=spec.as_response_dict(),
+    )
+async def get_cohort_name(session: AsyncSession, cohort_id: str) -> NamedRef:
+    from app.models.actors import Cohort
+
+    try:
+        parsed = uuid.UUID(cohort_id)
+    except ValueError:
+        raise NotFound(f"No cohort with id {cohort_id}.", code="cohort_not_found") from None
+    name = (
+        await session.execute(select(Cohort.name).where(Cohort.id == parsed))
+    ).scalar_one_or_none()
+    if name is None:
+        raise NotFound(f"No cohort with id {cohort_id}.", code="cohort_not_found")
+    return NamedRef(id=str(parsed), name=name)
+
+
+async def get_author_group_name(session: AsyncSession, group_id: str) -> NamedRef:
+    from app.models.actors import AuthorGroup
+
+    try:
+        parsed = uuid.UUID(group_id)
+    except ValueError:
+        raise NotFound(
+            f"No author group with id {group_id}.", code="author_group_not_found"
+        ) from None
+    name = (
+        await session.execute(select(AuthorGroup.name).where(AuthorGroup.id == parsed))
+    ).scalar_one_or_none()
+    if name is None:
+        raise NotFound(f"No author group with id {group_id}.", code="author_group_not_found")
+    return NamedRef(id=str(parsed), name=name)
 
 
 async def cohort_authors(

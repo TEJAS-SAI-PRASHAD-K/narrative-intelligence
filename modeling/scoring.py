@@ -288,7 +288,11 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
 @stage("misinfo")
 def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
-    """Calibrated misinformation probability -> record_scores.misinfo_prob."""
+    """Calibrated misinformation probability -> record_scores.misinfo_prob.
+
+    Records from a fact-checker get no value and ``misinfo:fact_check_publisher``.
+    """
+    from modeling.aux.base import SkipReason
     from modeling.config import module_config
     from modeling.registry import resolve
     from modeling.text.misinfo_clf import MisinfoClassifier
@@ -323,6 +327,9 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
     reasons = ctx.records.apply(
         lambda row: _text_skip_reason(ctx.settings, "misinfo", row["text"], row["lang"], 20),
         axis=1,
+    )
+    reasons = reasons.astype(object).where(
+        ~_from_fact_checker(ctx.records), SkipReason.FACT_CHECK_PUBLISHER
     )
     skip_note = _record_misinfo_skips(ctx, reasons)
     eligible = ctx.records.loc[reasons.isna() & ~ctx.records["id"].astype(str).isin(done)]
@@ -367,6 +374,26 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             ),
         }
     ]
+
+
+def _from_fact_checker(records: pd.DataFrame) -> pd.Series:
+    """Which records come from a fact-checker listed in ``configs/factcheck.yaml``.
+
+    A fact-check article states the false claim it debunks, and the misinformation
+    models score it as misinformation. Fusion would then raise the risk of every
+    narrative that a fact-checker answered. The comparison leaves the same domains
+    out of its flag rate, so the scoring stages and the evaluation agree.
+    """
+    from modeling.config import fact_check_domains, normalise_domain
+
+    if "source_detail" not in records.columns:
+        log.warning(
+            "the records have no `source_detail` column, so no record can be matched to a "
+            "fact-checker and fact-check articles will be scored"
+        )
+        return pd.Series(False, index=records.index)
+    domains = fact_check_domains()
+    return records["source_detail"].map(normalise_domain).isin(domains)
 
 
 def _text_skip_reason(
@@ -420,7 +447,14 @@ def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
     The column is shared with the aux pass, and a merge write replaces a list
     rather than appending to it, so the aux entries already on disk are read
     back and kept. Entries this stage wrote on an earlier run are replaced.
+
+    A skipped record that carries a ``misinfo`` stamp from an earlier run also has
+    its ``misinfo_prob`` cleared and the stamp retracted, so a value the stage would
+    no longer write does not stay in the table. A record without the stamp keeps
+    its ``misinfo_prob``, because that value belongs to another module (``laya``).
     """
+    from modeling.io import _as_version_dict
+
     skipped = ctx.records.loc[reasons.notna()]
     if not len(skipped):
         return ""
@@ -431,24 +465,46 @@ def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
 
     existing = ctx.store.read("record_scores")
     prior: dict[str, list[str]] = {}
+    owned: set[str] = set()
     if len(existing) and "skip_reasons" in existing.columns:
         prior = {
             str(rid): [str(r) for r in as_list(value)]
             for rid, value in zip(existing["record_id"], existing["skip_reasons"], strict=True)
         }
-    rows = []
+    if len(existing) and "model_versions" in existing.columns:
+        owned = {
+            str(rid)
+            for rid, value in zip(existing["record_id"], existing["model_versions"], strict=True)
+            if "misinfo" in _as_version_dict(value)
+        }
+    reason_rows: list[dict[str, Any]] = []
+    cleared_rows: list[dict[str, Any]] = []
     for row, reason in zip(skipped.itertuples(index=False), reasons.dropna(), strict=True):
         record_id = str(row.id)
         kept = [r for r in prior.get(record_id, []) if not r.startswith("misinfo:")]
-        rows.append(
-            {
-                "record_id": record_id,
-                "source": str(row.source),
-                "skip_reasons": [*kept, f"misinfo:{reason}"],
-                "scored_at": utcnow_local(),
-            }
+        entry = {
+            "record_id": record_id,
+            "source": str(row.source),
+            "skip_reasons": [*kept, f"misinfo:{reason}"],
+            "scored_at": utcnow_local(),
+        }
+        if record_id in owned:
+            cleared_rows.append({**entry, "misinfo_prob": None, "model_versions": {}})
+        else:
+            reason_rows.append(entry)
+    # Two writes because the merge is column-wise: a row in a frame that carries
+    # `misinfo_prob` has that column overwritten, and only owned rows may lose it.
+    known = ctx.known_record_ids or None
+    if reason_rows:
+        ctx.store.write("record_scores", pd.DataFrame(reason_rows), known_keys=known)
+    if cleared_rows:
+        ctx.store.write(
+            "record_scores",
+            pd.DataFrame(cleared_rows),
+            known_keys=known,
+            drop_model_versions={(r["record_id"],): {"misinfo"} for r in cleared_rows},
         )
-    ctx.store.write("record_scores", pd.DataFrame(rows), known_keys=ctx.known_record_ids or None)
+        note += f"; cleared {len(cleared_rows)} earlier misinfo value(s)"
     return note
 
 
@@ -540,9 +596,13 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
     counts the raw values outside the fitted range and the distinct calibrated values. It
     warns on a collapse and does not refuse.
 
+    A record from a fact-checker gets ``laya:fact_check_publisher`` and no value, as in the
+    ``misinfo`` stage.
+
     A record scored under the current stamp is not scored again. A skipped record has its
     value cleared and its stamp retracted, so ``already_scored`` cannot return it.
     """
+    from modeling.aux.base import SkipReason
     from modeling.io import _as_version_dict
     from modeling.text.laya_calibration import MIN_DISTINCT_OUTPUTS
     from modeling.text.laya_clf import MIN_CHARS, LayaScorer, LayaSkipReason
@@ -605,6 +665,9 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
     candidates = [r for r in in_scope.itertuples(index=False) if not foreign(str(r.id))]
     protected = [r for r in in_scope.itertuples(index=False) if foreign(str(r.id))]
+    from_fact_checker = set(
+        in_scope.loc[_from_fact_checker(in_scope), "id"].astype(str)
+    )
 
     scorer = LayaScorer(settings=ctx.settings, _config=config)
     refused: dict[str, tuple[str, str]] = {}
@@ -628,6 +691,9 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
     pending = []
     for row in candidates:
         rid, lang = str(row.id), str(row.lang).lower()
+        if rid in from_fact_checker:
+            reasons[rid] = SkipReason.FACT_CHECK_PUBLISHER
+            continue
         if lang in refused:
             reasons[rid] = refused[lang][0]
             continue
