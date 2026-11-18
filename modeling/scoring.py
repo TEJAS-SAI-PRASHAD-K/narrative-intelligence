@@ -315,8 +315,9 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 "stage": "misinfo",
                 "table": "record_scores",
                 "note": ctx.note(
-                    "no trained checkpoint; misinfo_prob stays null. Train with "
-                    "`modeling train misinfo` once a benchmark is on disk."
+                    "no checkpoint" + _registry_reason_note("misinfo", version)
+                    + "; misinfo_prob stays null. Pull it with `modeling checkpoint-pull "
+                    "misinfo`, or train with `modeling train misinfo`."
                 ),
             }
         ]
@@ -537,18 +538,27 @@ def _laya_stage_config(settings: ModelingSettings) -> dict[str, Any]:
     if not tuned.get("hi") and override:
         path = Path(str(override)).expanduser()
         resolved = path if path.is_absolute() else settings.models_dir / path
-        if not path.is_absolute() and not resolved.is_dir() and len(path.parts) == 2:
-            # `laya/<version>` is a registry layout. A fresh clone pulls it from the Hub here.
-            from modeling.registry import resolve
+        if not path.is_absolute() and len(path.parts) == 2:
+            # `<module>/<version>` is a registry layout. It always goes through `resolve`,
+            # so a local copy is hash-checked too and an absent one is pulled.
+            from modeling.registry import CheckpointIntegrityError, resolve
 
-            resolve(path.parts[0], path.parts[1], required=False)
+            try:
+                found = resolve(path.parts[0], path.parts[1], required=False)
+            except CheckpointIntegrityError as exc:
+                config.setdefault("_registry_refusals", {})["hi"] = (exc.reason, str(exc))
+                found = None
+            if found is not None:
+                resolved = found.path
         tuned["hi"] = str(resolved)
     config["finetuned_checkpoints"] = tuned
     return config
 
 
 def _laya_refusals(
-    scorer: Any, languages: Sequence[str]
+    scorer: Any,
+    languages: Sequence[str],
+    registry_refusals: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, Any]]]:
     """Per language, ``(reason, message)`` when the stage cannot score it, else a calibrator.
 
@@ -566,6 +576,9 @@ def _laya_refusals(
     refused: dict[str, tuple[str, str]] = {}
     usable: dict[str, tuple[str, Any]] = {}
     for lang in languages:
+        if registry_refusals and lang in registry_refusals:
+            refused[lang] = registry_refusals[lang]
+            continue
         tuned = scorer.finetuned_path_for(lang)
         if not tuned:
             refused[lang] = (
@@ -693,7 +706,9 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
     usable: dict[str, tuple[str, Any]] = {}
     if candidates:
         refused, usable = _laya_refusals(
-            scorer, sorted({str(r.lang).lower() for r in candidates})
+            scorer,
+            sorted({str(r.lang).lower() for r in candidates}),
+            config.get("_registry_refusals"),
         )
         for lang, (reason, message) in refused.items():
             log.error("laya stage refused for lang=%s (laya:%s): %s", lang, reason, message)
@@ -912,8 +927,9 @@ def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 "stage": "stance",
                 "table": "record_scores",
                 "note": ctx.note(
-                    "not trained; stance and stance_conf are written as null, as the "
-                    "contract permits. See artifacts/model_cards/stance.md."
+                    "not trained or not pulled" + _registry_reason_note("stance", version)
+                    + "; stance and stance_conf are written as null, as the contract "
+                    "permits. See artifacts/model_cards/stance.md."
                 ),
             }
         ]
@@ -1494,6 +1510,14 @@ def _narratives_touched(records: pd.DataFrame, membership: pd.DataFrame) -> dict
         .apply(lambda s: sorted(set(s.astype(str))))
         .to_dict()
     )
+
+
+def _registry_reason_note(module: str, version: str) -> str:
+    """`` (reason: <code>)`` when the registry counted a reason for this checkpoint."""
+    from modeling.registry import last_reason
+
+    reason = last_reason(module, version)
+    return f" (reason: {reason})" if reason else ""
 
 
 def checkpoint_stamp(module: str, version: str, checkpoint) -> str:

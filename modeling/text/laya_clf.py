@@ -62,6 +62,8 @@ class LayaSkipReason(SkipReason):
     #: A fine-tuned checkpoint directory is configured but does not exist.
     #: The base checkpoint is never substituted for it.
     CHECKPOINT_MISSING = "checkpoint_missing"
+    #: The checkpoint folder failed the registry hash check. See ``modeling.registry``.
+    CHECKPOINT_SHA256_MISMATCH = "checkpoint_sha256_mismatch"
     #: The scoring stage found no calibrator beside the checkpoint, or the file is
     #: unreadable, or it was rejected. See ``laya_calibration``. The raw score is
     #: never written as ``misinfo_prob``.
