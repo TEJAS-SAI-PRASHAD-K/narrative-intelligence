@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.deps import FilterSpec, Page
 from app.mock.responses import DEFINITIONS
 from app.repositories.engagement import measured_sum
-from app.repositories.filters import apply_post_filters, decode_cursor, resolve_project_id
+from app.repositories.filters import (
+    apply_post_filters,
+    count_rows,
+    decode_cursor,
+    encode_cursor,
+    resolve_project_id,
+)
 from app.schemas.drivers import DriverItem, DriversResponse
 
 log = logging.getLogger(__name__)
@@ -79,11 +85,17 @@ async def drivers(
         )
         .where(Post.id.in_(select(matching.c.id)))
         .group_by(entity)
-        .order_by(func.count().desc())
+        # The entity is the tiebreaker: post counts tie constantly, and without a
+        # total order the offset windows overlap or skip rows between pages.
+        .order_by(func.count().desc(), entity.asc())
     )
 
     offset = decode_cursor(page.cursor).get("o", 0)
-    rows = (await session.execute(stmt.offset(offset).limit(page.limit))).all()
+    total = await count_rows(session, stmt)
+    # One extra row says whether another page exists, so the last full page does
+    # not hand out a cursor that leads to an empty one.
+    fetched = (await session.execute(stmt.offset(offset).limit(page.limit + 1))).all()
+    rows = fetched[: page.limit]
 
     return DriversResponse(
         entity_type=entity_type,
@@ -109,4 +121,9 @@ async def drivers(
             for row in rows
         ],
         definition=DEFINITIONS[f"drivers_{entity_type}s"],
+        next_cursor=(
+            encode_cursor({"o": offset + page.limit}) if len(fetched) > page.limit else None
+        ),
+        total=total,
+        filters_applied=spec.as_response_dict(),
     )

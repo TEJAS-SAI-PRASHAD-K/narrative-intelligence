@@ -130,12 +130,6 @@ class ApiSettings(BaseSettings):
     #: serves a precomputed layout instead.
     layout_threshold_nodes: int = 1_000
 
-    # --- media -----------------------------------------------------------
-    uploads_dir: Path = Path("uploads")
-    #: Files that an earlier version accepted as uploads are images of real people.
-    #: The purge beat task deletes every entry under ``uploads_dir`` older than this.
-    media_retention_hours: int = 24
-
     # --- llm (compass + summarize) --------------------------------------
     anthropic_api_key: str | None = None
     llm_model: str = "claude-haiku-4-5-20251001"
@@ -208,7 +202,7 @@ class ApiSettings(BaseSettings):
             return tuple(str(part).strip() for part in parsed if str(part).strip())
         return tuple(part.strip() for part in text.split(",") if part.strip())
 
-    @field_validator("data_dir", "models_dir", "uploads_dir", "reports_dir", mode="after")
+    @field_validator("data_dir", "models_dir", "reports_dir", mode="after")
     @classmethod
     def _absolute(cls, v: Path) -> Path:
         return v if v.is_absolute() else (REPO_ROOT / v).resolve()

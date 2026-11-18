@@ -71,7 +71,6 @@ def api_env(monkeypatch, tmp_path) -> Iterator[None]:
     monkeypatch.setenv("API_KEY_PEPPER", "test-pepper-not-a-real-one")
     monkeypatch.setenv("DEMO_MODE", "0")
     monkeypatch.setenv("ENVIRONMENT", "ci")
-    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
 
     _clear_caches()
