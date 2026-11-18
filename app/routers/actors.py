@@ -28,6 +28,7 @@ from app.schemas.actors import (
     CohortOut,
 )
 from app.schemas.common import NamedRef, PageResponse
+from app.schemas.narratives import NarrativeSummary
 from app.schemas.posts import PostOut
 
 router = APIRouter(tags=["actors"], dependencies=[Depends(rate_limit)])
@@ -148,6 +149,58 @@ async def author_posts(
     from app.repositories.actors import author_posts as query_posts
 
     return await query_posts(session, author_id, filters, page)
+
+
+@router.get(
+    "/authors/{author_id:path}/cohorts",
+    response_model=PageResponse[CohortOut],
+    summary="An author's cohorts",
+)
+async def author_cohorts(
+    author_id: str,
+    principal: RequireRead,
+    filters: Filters,
+    page: Pagination,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PageResponse[CohortOut]:
+    # Declared before the bare ``/authors/{author_id:path}`` route: that converter
+    # matches slashes, so it would otherwise swallow this path as an author id.
+    if mock.demo_mode():
+        author = _demo_author(author_id)
+        by_cohort = mock.corpus().by_cohort
+        items = [mock.to_cohort(by_cohort[cid]) for cid in author.cohort_ids]
+        items.sort(key=lambda c: (-c.author_count, c.name))
+        return mock.paginate(items, page, filters.as_response_dict())
+    from app.repositories.actors import author_cohorts as query_cohorts
+
+    return await query_cohorts(session, author_id, filters, page)
+
+
+@router.get(
+    "/authors/{author_id:path}/narratives",
+    response_model=PageResponse[NarrativeSummary],
+    summary="Narratives an author touched",
+)
+async def author_narratives(
+    author_id: str,
+    principal: RequireRead,
+    filters: Filters,
+    page: Pagination,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PageResponse[NarrativeSummary]:
+    if mock.demo_mode():
+        author = _demo_author(author_id)
+        by_narrative = mock.corpus().by_narrative
+        narratives = [by_narrative[nid] for nid in author.narrative_ids if nid in by_narrative]
+        narratives.sort(
+            key=lambda n: (-(n.scorecard["fusion_score"] or 0), n.id),
+        )
+        return mock.paginate(
+            [mock.to_narrative_summary(n) for n in narratives], page, filters.as_response_dict()
+        )
+    from app.repositories.actors import author_narratives as query_narratives
+
+    return await query_narratives(session, author_id, filters, page)
 
 
 @router.get("/authors/{author_id:path}", response_model=AuthorOut, summary="Author detail")

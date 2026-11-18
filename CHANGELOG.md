@@ -13,6 +13,10 @@ decision.
 
 ### Added
 
+- **`GET /authors/{author_id}/cohorts` and `GET /authors/{author_id}/narratives`**,
+  cursor paginated, returning `CohortOut` and `NarrativeSummary`. An unknown
+  author is a 404 `author_not_found`. Both are declared ahead of the
+  `:path` author detail route, which would otherwise match them.
 - **Name lookups for filter chips.** `GET /cohorts/{cohort_id}` and
   `GET /author-groups/{group_id}` return `{id, name}` and a 404 (`cohort_not_found`,
   `author_group_not_found`) for an unknown id. Narratives already resolve through
