@@ -518,7 +518,15 @@ claim_dedup:
   # A filled row with no valid labeller_kind, an answer that is not yes or no, or one
   # name for both labellers is refused. A sample with no labeller_kind column is an
   # older sample. It reads as kind unknown with reason code labeller_kind_missing and
-  # is never measured.
+  # is never measured. A prefilled labeller_kind alone does not make a sample labelled.
+  # A row with blank is_same_claim and a filled label_1 or label_2 is refused. A row
+  # whose two labels agree must have the same is_same_claim.
+  # The status is measured only when every labelled row is human with two different
+  # names, one pair has both labels, and every labelled pair is in the current links.
+  # Otherwise it is provisional with reason codes labeller_names_missing,
+  # no_double_labelled_pair or sample_pairs_stale. Kappa below 0.6 prints a warning.
+  # The Wilson interval treats pairs as independent. The sample is systematic over
+  # the similarity range, so the interval is approximate.
   # `dedup-claims` never overwrites a sample that has a filled label. It writes the new
   # blank sample to claim_dedup_sample.new.csv, warns with reason code sample_has_labels,
   # and reads the precision from the kept file. Pass --overwrite-sample to replace it.

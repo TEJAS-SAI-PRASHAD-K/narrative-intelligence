@@ -24,7 +24,12 @@ decision.
   with the reason code `labeller_kind_missing`. `dedup-claims` no longer overwrites a sample
   that has a filled label. It writes the new blank sample to `claim_dedup_sample.new.csv`,
   warns with the reason code `sample_has_labels` and reads the precision from the kept file.
-  The option `--overwrite-sample` replaces a labelled sample on purpose.
+  The option `--overwrite-sample` replaces a labelled sample on purpose
+  and deletes an older `claim_dedup_sample.new.csv`. The command refuses an invalid sample
+  before it writes any file. The status is `measured` only for human labels with two names,
+  one double-labelled pair and pairs that are in the current links. Stale pairs, a half-filled
+  row, mixed kinds and a refused sample show on the rendered line. The Wilson interval treats
+  pairs as independent, and the sample is systematic over the similarity range.
 
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in

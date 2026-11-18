@@ -637,7 +637,9 @@ until then. The sample has a `labeller_kind` column (`human`, `model-reviewed` o
 `label_2`. Only `human` gives a measured precision. A model label gives a provisional number
 that the report marks as not measured. The report also gives a Wilson interval and the
 agreement of the two labellers. The command keeps a sample that has labels and writes the new
-blank sample to `claim_dedup_sample.new.csv`. The option `--overwrite-sample` replaces it.
+blank sample to `claim_dedup_sample.new.csv`. The option `--overwrite-sample` replaces it. The Wilson interval treats pairs as
+independent, and the sample is systematic over the similarity range, so the interval is
+approximate.
 
 Two more things the numbers say:
 
