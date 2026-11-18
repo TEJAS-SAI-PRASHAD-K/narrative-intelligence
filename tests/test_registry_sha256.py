@@ -252,15 +252,95 @@ def test_symlinks_are_followed_by_content(tmp_path):
     assert registry._dir_sha256(linked) != registry._dir_sha256(real)
 
 
-def test_a_directory_cycle_terminates_and_a_broken_link_is_refused(tmp_path):
-    root = tmp_path / "cyc"
-    _write(root, {"config.json": b"{}", "d/w.bin": b"w"})
-    os.symlink(root, root / "d" / "loop")
-    assert registry._dir_sha256(root)
+def test_a_broken_file_link_is_refused(tmp_path):
+    root = tmp_path / "broken"
+    _write(root, {"config.json": b"{}"})
     os.symlink(tmp_path / "missing", root / "dead")
     with pytest.raises(CheckpointIntegrityError) as err:
         registry._dir_sha256(root)
     assert err.value.reason == "checkpoint_broken_symlink"
+
+
+def test_a_sibling_directory_link_is_refused_and_counted(tmp_path):
+    root = tmp_path / "sib"
+    _write(root, {"config.json": b"{}", "real/w.bin": b"w"})
+    os.symlink(root / "real", root / "alias")
+    with pytest.raises(CheckpointIntegrityError) as err:
+        registry._dir_sha256(root)
+    assert err.value.reason == "checkpoint_dir_symlink"
+    assert registry.REASON_COUNTS["checkpoint_dir_symlink"] == 1
+
+
+def test_a_directory_cycle_is_refused_and_counted(tmp_path):
+    root = tmp_path / "cyc"
+    _write(root, {"config.json": b"{}", "d/w.bin": b"w"})
+    os.symlink(root, root / "d" / "loop")
+    registry.REASON_COUNTS.clear()
+    with pytest.raises(CheckpointIntegrityError) as err:
+        registry._dir_sha256(root)
+    assert err.value.reason == "checkpoint_dir_symlink"
+    assert registry.REASON_COUNTS["checkpoint_dir_symlink"] == 1
+
+
+def test_an_excluded_directory_link_does_not_count(tmp_path):
+    root = tmp_path / "ex"
+    _write(root, {"config.json": b"{}"})
+    os.symlink(root, root / "checkpoint_latest")
+    assert registry._dir_sha256(root) == registry._dir_sha256(_write_new(tmp_path, "ref"))
+
+
+def _write_new(tmp_path, name):
+    root = tmp_path / name
+    _write(root, {"config.json": b"{}"})
+    return root
+
+
+def test_a_folder_with_only_excluded_entries_is_refused_as_empty(env):
+    local = registry.local_dir("laya", "v1")
+    _write(local, {"checkpoint_latest/a.pt": b"x", "m.tmp": b"y"})
+    with pytest.raises(CheckpointIntegrityError) as err:
+        registry.resolve("laya", "v1")
+    assert err.value.reason == "checkpoint_empty" and "None" not in str(err.value)
+    assert registry.REASON_COUNTS["checkpoint_empty"] == 1
+    assert local.exists()
+
+
+def test_a_pulled_folder_with_only_excluded_entries_is_deleted_as_empty(env, monkeypatch):
+    import huggingface_hub
+
+    def only_excluded(**kwargs):
+        _write(env.settings.models_dir / ".hub", {"laya/v1/m.tmp": b"y"})
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", only_excluded)
+    with pytest.raises(CheckpointIntegrityError) as err:
+        registry.resolve("laya", "v1")
+    assert err.value.reason == "checkpoint_empty"
+    assert not registry.local_dir("laya", "v1").exists()
+
+
+def test_a_copy_that_fails_leaves_no_target_and_no_staging_folder(env, monkeypatch):
+    env.config["sha256"] = {"v1": _good_hash(env)}
+    real_copy = shutil.copy2
+    real_tree = shutil.copytree
+    calls = []
+
+    def flaky(src, dst, **kwargs):
+        calls.append(src)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real_copy(src, dst, **kwargs)
+
+    def failing_tree(src, dst, **kwargs):
+        monkeypatch.setattr(shutil, "copytree", real_tree)
+        return real_tree(src, dst, copy_function=flaky, **kwargs)
+
+    monkeypatch.setattr(shutil, "copytree", failing_tree)
+    with pytest.raises(OSError):
+        registry.resolve("laya", "v1")
+    parent = registry.local_dir("laya", "v1").parent
+    assert not registry.local_dir("laya", "v1").exists()
+    assert [p.name for p in parent.iterdir()] == []
+    assert registry.resolve("laya", "v1").verified
 
 
 def test_register_writes_a_digest_that_matches_the_folder(env, tmp_path):
@@ -297,7 +377,20 @@ def test_missing_token_is_counted_only_when_the_pull_fails(env, monkeypatch):
     assert registry.REASON_COUNTS[CheckpointReason.HUB_TOKEN_MISSING] == 1
     assert registry.REASON_COUNTS[CheckpointReason.HUB_PULL_FAILED] == 1
     assert registry.resolve("laya", "v1", required=False) is None
+    # The token reason is the one the user sees, because the user can fix it.
+    assert registry.last_reason("laya", "v1") == "hub_token_missing"
+
+
+def test_a_failed_pull_with_a_token_keeps_the_pull_reason(env, monkeypatch):
+    import huggingface_hub
+
+    def refuse(**kwargs):
+        raise OSError("no network")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", refuse)
+    assert registry.resolve("laya", "v1", required=False) is None
     assert registry.last_reason("laya", "v1") == "hub_pull_failed"
+    assert registry.REASON_COUNTS[CheckpointReason.HUB_TOKEN_MISSING] == 0
 
 
 def test_repo_without_the_folder_is_counted(env, monkeypatch):
@@ -329,6 +422,22 @@ def test_checkpoint_hash_prints_the_digest_and_lists_folders_on_a_miss(env):
     miss = runner.invoke(app, ["checkpoint-hash", "laya", "--version", "v9"])
     assert miss.exit_code == 1
     assert "v1" in _plain(miss.output)
+
+
+def test_checkpoint_pull_lists_the_valid_folders_for_a_missing_or_unknown_version(env):
+    from typer.testing import CliRunner
+
+    from modeling.cli import app
+
+    env.config["version"] = "v0.2.1"
+    env.config["sha256"] = {"multi-v0.2.1": "a" * 64, "en-v0.2.1": "b" * 64}
+    runner = CliRunner()
+    for args in (["laya"], ["laya", "--version", "v9"]):
+        result = runner.invoke(app, ["checkpoint-pull", *args])
+        text = _plain(result.output)
+        assert result.exit_code == 1, text
+        assert "en-v0.2.1" in text and "multi-v0.2.1" in text
+    assert env.calls == []
 
 
 def test_checkpoint_pull_fetches_and_verifies(env):

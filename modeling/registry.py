@@ -57,6 +57,10 @@ class CheckpointReason:
     SHA256_MISSING_KEY = "checkpoint_sha256_missing_key"
     #: A symbolic link in the checkpoint points at nothing.
     BROKEN_SYMLINK = "checkpoint_broken_symlink"
+    #: A directory symbolic link is inside the checkpoint. The hash would depend on link names.
+    DIR_SYMLINK = "checkpoint_dir_symlink"
+    #: The folder has no file that the hash covers. It is empty or holds only excluded entries.
+    EMPTY = "checkpoint_empty"
     #: ``HF_REPO`` is set, ``HF_TOKEN`` is not, and the anonymous pull then failed.
     HUB_TOKEN_MISSING = "hub_token_missing"
     #: ``HF_REPO`` is set and ``huggingface_hub`` is not installed.
@@ -85,9 +89,10 @@ HUB_IGNORE_PATTERNS = [f"{RESUME_DIR}/*", f"*/{RESUME_DIR}/*", "*.tmp"]
 
 
 def excluded_name(name: str) -> bool:
-    """The one exclusion rule: resume folders at any depth and ``*.tmp`` files.
+    """The one exclusion rule: resume folders at any depth, and files and folders ``*.tmp``.
 
-    The hash, the Hub pull, the local copy and the Drive copy all use it.
+    The name test does not tell a file from a folder, so a folder called ``x.tmp`` is
+    excluded too. The hash, the Hub pull, the local copy and the Drive copy all use it.
     """
     return name == RESUME_DIR or name.endswith(".tmp")
 
@@ -223,20 +228,25 @@ def _file_bytes_digest(file: Path, relative: str) -> str:
 def _hashed_files(path: Path) -> list[tuple[str, Path]]:
     """``(relative POSIX path, file)`` pairs that make up a checkpoint's hash, sorted.
 
-    The walk follows symbolic links, so a link counts by the content of its target. A
-    directory link that leads back to a folder already visited on the walk is skipped, which
-    stops a cycle. A link that points at nothing raises ``checkpoint_broken_symlink``.
-    Excluded by :func:`excluded_name`: ``checkpoint_latest/`` at any depth and ``*.tmp``.
+    A symbolic link to a file counts by the content of its target. A link that points at
+    nothing raises ``checkpoint_broken_symlink``. A symbolic link to a directory raises
+    ``checkpoint_dir_symlink``, whatever its target. A sibling link and a link to an ancestor
+    are both refused, so the hash never depends on link names and the walk cannot loop.
+    Excluded by :func:`excluded_name`: ``checkpoint_latest/`` at any depth, and files and
+    folders that end in ``.tmp``.
     """
     out: list[tuple[str, Path]] = []
-    seen: set[str] = set()
-    for root, dirs, names in os.walk(path, followlinks=True):
-        real = os.path.realpath(root)
-        if real in seen:
-            dirs[:] = []
-            continue
-        seen.add(real)
+    for root, dirs, names in os.walk(path):
         dirs[:] = sorted(d for d in dirs if not excluded_name(d))
+        for name in dirs:
+            link = Path(root) / name
+            if link.is_symlink():
+                _count(CheckpointReason.DIR_SYMLINK, str(link))
+                raise CheckpointIntegrityError(
+                    f"{CheckpointReason.DIR_SYMLINK}: {link} is a link to a directory. "
+                    "Copy the real folder into the checkpoint.",
+                    CheckpointReason.DIR_SYMLINK,
+                )
         for name in names:
             if excluded_name(name):
                 continue
@@ -283,7 +293,15 @@ def directory_sha256(module: str, version: str | None = None) -> tuple[Path, str
 def sibling_folders(module: str) -> list[str]:
     """Folder names under ``models/<module>/``. Lists the choices when a version is wrong."""
     root = get_settings().models_dir / module
-    return sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def sha256_versions(module: str) -> list[str]:
+    """Folder names that have a ``sha256`` in ``configs/models.yaml``. Empty for no map."""
+    value = module_config(module).get("sha256")
+    return sorted(str(k) for k in value) if isinstance(value, dict) else []
 
 
 def _expected(module: str, version: str) -> tuple[str | None, str | None]:
@@ -329,6 +347,17 @@ def _verify(
     """
     digest = _dir_sha256(target)
     expected, missing = _expected(module, version)
+    if digest is None:
+        if pulled:
+            shutil.rmtree(target, ignore_errors=True)
+        message = (
+            f"{module}/{version} at {target} has no file that the hash covers. "
+            "The folder is empty or holds only excluded entries."
+        )
+        _count(CheckpointReason.EMPTY, message, module=module, version=version)
+        raise CheckpointIntegrityError(
+            f"{CheckpointReason.EMPTY}: {message}", CheckpointReason.EMPTY
+        )
 
     def refuse(reason: str, message: str) -> CheckpointIntegrityError:
         if pulled:
@@ -360,6 +389,25 @@ def _verify(
     return Checkpoint(module, version, target, origin, digest, verified=True)
 
 
+def _install_copy(source: Path, target: Path) -> None:
+    """Copy ``source`` to ``target`` through a staging folder, so ``target`` is all or nothing.
+
+    A copy that stops half way leaves no ``target``. The next resolve then pulls again
+    instead of refusing a partial folder as a hash mismatch.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f".{target.name}.staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        shutil.copytree(source, staging, ignore=_ignore_excluded)
+        if target.exists():
+            shutil.rmtree(target)
+        staging.rename(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
 def _try_hub(module: str, version: str, target: Path) -> bool:
     settings = get_settings()
     if not settings.hf_repo:
@@ -381,21 +429,20 @@ def _try_hub(module: str, version: str, target: Path) -> bool:
             revision=revision,
         )
     except Exception as exc:
+        _count(CheckpointReason.HUB_PULL_FAILED, f"{module}/{version}: {exc}",
+               module=module, version=version)
+        # Counted last, so it is the reason a stage note shows. A missing token is the
+        # cause that the user can act on.
         if not settings.hf_token:
             _count(CheckpointReason.HUB_TOKEN_MISSING, "HF_REPO is set, HF_TOKEN is not",
                    module=module, version=version)
-        _count(CheckpointReason.HUB_PULL_FAILED, f"{module}/{version}: {exc}",
-               module=module, version=version)
         return False
     staged = settings.models_dir / ".hub" / module / version
     if not staged.exists():
         _count(CheckpointReason.HUB_PATH_ABSENT, f"{module}/{version} is not in the Hub repo",
                module=module, version=version)
         return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(staged, target, ignore=_ignore_excluded)
+    _install_copy(staged, target)
     # The staging copy is deleted so a failed check leaves nothing to reuse.
     shutil.rmtree(staged, ignore_errors=True)
     return True
@@ -408,10 +455,7 @@ def _try_gdrive(module: str, version: str, target: Path) -> bool:
     source = Path(settings.gdrive_dir) / module / version
     if not source.exists():
         return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(source, target, ignore=_ignore_excluded)
+    _install_copy(source, target)
     return True
 
 
@@ -517,7 +561,8 @@ def list_local() -> list[dict[str, Any]]:
     out = []
     modules = sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
     for module_dir in modules:
-        for version_dir in sorted(p for p in module_dir.iterdir() if p.is_dir()):
+        versions = [p for p in module_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        for version_dir in sorted(versions):
             meta = metadata(module_dir.name, version_dir.name)
             out.append(
                 {
