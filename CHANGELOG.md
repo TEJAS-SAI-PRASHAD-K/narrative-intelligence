@@ -346,6 +346,13 @@ decision.
   0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
   the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
   `artifacts/model_cards/coordination.md`.
+- **The Laya calibration diagnosis is recorded, and the clamp at 5 stays.** The optimum
+  temperature on validation is 11.846 for the multilingual fine-tune and 11.408 for the
+  English fine-tune, inside the search of 0.05 to 100. The cause is overconfident logits.
+  `laya.temperature_refit` stays `false`. The isotonic calibrator lowers ECE prob on the
+  stored scores from 0.159 to 0.009 and from 0.151 to 0.009 out of fold. The model card holds
+  the full table. Both diagnosis reports are `valid: false`, so the card bases the decision
+  on the stored scores. Issue 33.
 - **The coordination null leaves out shuffles with no edges.** The coordination module
   is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
   pulled the null down. It is now counted in `null_empty_shuffles` and left out. The

@@ -240,7 +240,7 @@ The stage scores the title of the record, not the full text. The Hindi gate pass
 
 The stage reads the title as the comparison script reads `corpus_title`. A record with no title gets a null value and the reason `laya:no_title`. The rule `text_too_short` applies to the title.
 
-The stage writes the output of a calibrator, not the raw Laya score. The raw score has a mean confidence of about 0.97 and an expected calibration error of 0.159. The calibrator files are in the checkpoint directory. The command `python scripts/run_comparison.py calibrate-laya` fits them on the validation rows of the comparison.
+The stage writes the output of a calibrator, not the raw Laya score. The raw score has a mean confidence of about 0.97 and an expected calibration error of 0.159. After the calibrator, the error is 0.009. This value is for the multilingual fine-tune, out of fold, on the English validation rows. No Hindi ECE exists yet. The calibrator files are in the checkpoint directory. The command `python scripts/run_comparison.py calibrate-laya` fits them on the validation rows of the comparison.
 
 The fit refuses raw scores with a ROC-AUC of 0.60 or less. The fit and the load both refuse a map with fewer than 5 distinct values. The calibrator file records the demo flag and the identity of the checkpoint. The fit refuses a directory that does not hold the comparison checkpoint.
 
