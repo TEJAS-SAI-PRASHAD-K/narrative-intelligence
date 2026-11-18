@@ -308,6 +308,9 @@ decision.
 
 ### Changed
 
+- **The first real load is rescored after the fact-checker skip.** 178 records lost a
+  `misinfo_likelihood`, and the fusion scores of the 3 narratives changed. All 3 stay low
+  priority. See `docs/roadmap.md`.
 - **The coordination null leaves out shuffles with no edges.** The coordination module
   is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
   pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
