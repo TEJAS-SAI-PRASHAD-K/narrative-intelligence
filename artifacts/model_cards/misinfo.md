@@ -171,10 +171,12 @@ labels, every flag is a false positive. The model flags all 20 debunks (20 of 20
 [0.839, 1.000]) and 22 of the 80 other articles (0.275, [0.189, 0.381]). The model
 reacts to articles about false claims, not only to articles that push one.
 
-The fact-check comparison excludes fact-check publishers from its corpus. The live
-scoring stage scores them. In the live corpus, fact-check articles therefore receive
-high `misinfo` values in the sample. Fusion reads that value with the weight
-`misinfo_likelihood_agg` (0.40) in `configs/fusion.yaml`.
+The scoring stage gives records from a fact-checker no value and the reason
+`misinfo:fact_check_publisher`, the same domains that the fact-check comparison leaves
+out of its corpus. Without that skip, fusion would read a debunk as misinformation with
+the weight `misinfo_likelihood_agg` (0.40) in `configs/fusion.yaml`. The skip does not
+fix the cause: the model still flags articles about false claims from outlets that are
+not fact-checkers, 22 of the 80 in this sample.
 
 `modeling.cli evaluate misinfo` refuses transfer metrics on this sheet, because the
 labelled rows hold one class. The transfer gap stays unmeasured. A useful next sample

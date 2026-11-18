@@ -52,6 +52,17 @@ decision.
   contract test fails if any `risk_score` field loses its bounds. `GraphNode.bot_score`
   and `DomainOut.sharing_author_bot_ratio` now declare their 0 to 1 range the same way.
 
+- **Fact-check articles had a misinformation score, and fusion counted it.** A debunk
+  quotes the false claim, and `misinfo` v0.2.0 flagged all 20 debunks in the English
+  sample. The `misinfo` and `laya` stages now give records from a fact-checker no value
+  and the reason `fact_check_publisher`. The `misinfo` stage also clears a value it wrote
+  on an earlier run when it now skips the record, and retracts its stamp.
+- **The fact-check comparison left only four fact-checkers out of the flag rate.** It
+  read the `publishers` block, which holds the publishers with an extraction tier. Alt
+  News, Factly, Newschecker and DigitEye are in the corpus too. `other_fact_checkers` in
+  `configs/factcheck.yaml` lists them, and `modeling.config.fact_check_domains` returns
+  all eight for the comparison and the scoring stages. The committed report predates
+  this and needs a rerun.
 - **The fact-check backfill spent its URL budget on pages that it had already dropped.**
   Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
   verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
