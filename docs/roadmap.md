@@ -28,7 +28,7 @@ the module being quietly described as present.
 | API | done | 66 paths, 77 operations, contract tested under `DEMO_MODE` |
 | database | done | 26 tables, 5 migrations, round-trip asserted in CI |
 | deepfake module | removed | code, API, table and dependency tree are gone |
-| first real load into Postgres | done | 957 news records, 3 narratives, scored by all four layers, fusion `fusion-v1.2.0` runs, see below |
+| first real load into Postgres | done, rescored | 957 news records, 3 narratives, scored by all four layers, rescored after the fact-checker skip, fusion `fusion-v1.2.0` runs, see below |
 | dashboard | done | separate repo, built against the committed contract |
 | CI | done | lint, suite on 3.11 and 3.12, OpenAPI drift, Postgres suite |
 
@@ -50,16 +50,76 @@ The corpus and the verdicts are not in the repo.
 **The first real load into Postgres ran on real data.** The corpus has 957 news records:
 English 716, Hindi 233, Telugu 4 and 4 in other languages. It has 17 authors (one per
 outlet) and 124 domains. All 957 records have a score row, and fusion `fusion-v1.2.0`
-ran. English toxicity, sentiment, emotion and misinfo cover all 716 records, and stance
-covers 83. The Laya stage scored all 233 Hindi titles. Toxicity, sentiment, emotion and
-stance scored no Hindi record, because those models are English only.
+ran. In the load before the rescore, English toxicity, sentiment, emotion and misinfo
+covered all 716 records, and stance covered 83. The Laya stage scored all 233 Hindi
+titles. Toxicity, sentiment, emotion and stance scored no Hindi record, because those
+models are English only. After the rescore below, 145 English and 33 Hindi `misinfo` and
+Laya values are cleared, and 771 of 957 posts have a `misinfo_likelihood`.
 
 Clustering found 3 narratives, and 67 percent of records are noise. One narrative is
-almost all Hindi (218 posts). The fusion scores are 26.6, 22.5 and 15.3, so all 3
-narratives are low priority. The coordination detector found no edges, so the network
-graph is empty. No news site exposes likes, shares, replies or views, so the engagements
-KPI is null and not 0. Every GET endpoint that the check could fill returned without a
-server error.
+almost all Hindi (218 posts). All 3 narratives are low priority. The fusion scores
+changed after the rescore that this section describes below. The coordination detector
+found no edges, so the network graph is empty. No news site exposes likes, shares,
+replies or views, so the engagements KPI is null and not 0. Every GET endpoint that the
+check could fill returned without a server error.
+
+**The first load was rescored after the fact-checker skip.** The `misinfo` and `laya`
+stages now give a record from a fact-checker no score. Both stages clear a value that
+they wrote earlier. The first load held scores from before that change. We ran both
+stages again on the 957 records of the first load. Then we ran a migration to head and
+reloaded the scored tables into the Postgres database of the first load. Then we
+recomputed fusion.
+
+The scorer finds 182 fact-checker posts. Their domains are:
+
+| domain | posts |
+|---|---|
+| altnews.in | 23 |
+| boomlive.in | 62 |
+| digiteye.in | 6 |
+| factcrescendo.com | 10 |
+| factly.in | 12 |
+| newschecker.in | 15 |
+| thequint.com | 42 |
+| vishvasnews.com | 12 |
+
+The table shows the counts before and after the rescore.
+
+| count | before | after |
+|---|---|---|
+| fact-checker posts with a `misinfo_likelihood` | 178 | 0 |
+| fact-checker posts with a `fact_check_publisher` skip reason | 0 | 182 |
+| `post_scores` rows with a `misinfo_likelihood`, of 957 | 949 | 771 |
+
+The `misinfo` stage skipped 182 records with the reason `fact_check_publisher`. It also
+skipped 204 records with the reason `unsupported_language`. It cleared 145 earlier values.
+The `laya` stage skipped 33 Hindi records with the reason `fact_check_publisher` and
+cleared their values. It wrote no new score, because the other records already had a score
+under the current stamp. In total, 178 records lost a value.
+
+The fusion scores of the 3 narratives are in the next table. Fusion is `fusion-v1.2.0`.
+The first column is the value that Postgres stored on 2026-11-11. The second column is
+the value that we recomputed on the old scores with the current inputs. The third
+column is the value after the rescore.
+
+| narrative | posts | stored 2026-11-11 | recomputed on old scores | after rescore |
+|---|---|---|---|---|
+| 1000 | 19 | 15.28 | 24.04 | 24.04 |
+| 1001 | 75 | 26.58 | 36.05 | 34.22 |
+| 1002 | 218 | 22.48 | 31.18 | 30.71 |
+
+Two effects explain the table. The first effect is that the stored values were stale. The
+stored scorecard has a null `domain_risk_agg`, because the domain risk scores did not exist
+on 2026-11-11. Now the value is 0.8117 for narrative 1001. With the domain risk present,
+narrative 1000 moves from 15.28 to 24.04, narrative 1001 from 26.58 to 36.05 and narrative
+1002 from 22.48 to 31.18. The fusion code did not change in this step. The git log shows no
+commit to `app/scoring/fusion.py`, `app/scoring/signals.py` or `configs/fusion.yaml` after
+the stored run of 2026-11-11.
+
+The second effect is the rescore. It moves narrative 1001 from 36.05 to 34.22 and narrative
+1002 from 31.18 to 30.71. Narrative 1000 does not change. The `misinfo_likelihood_agg`
+after the rescore is 0.2926, 0.6617 and 0.4179 for narratives 1000, 1001 and 1002. For
+narrative 1001 it was 0.7379 before. All 3 narratives stay low priority.
 
 **The API serves the full contract without a database.** All contract tests pass
 under `DEMO_MODE=1`, and `make openapi-check` holds the committed `openapi.json`

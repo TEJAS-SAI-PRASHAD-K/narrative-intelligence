@@ -326,6 +326,11 @@ decision.
 
 ### Changed
 
+- **The first real load is rescored after the fact-checker skip.** The rescore ran on the
+  957 records of the first load. 178 records lost a `misinfo_likelihood`. The stored fusion
+  values were stale because domain risk was missing. With domain risk, narrative 1000 moves
+  from 15.28 to 24.04. The rescore then moves 1001 from 36.05 to 34.22 and 1002 from 31.18
+  to 30.71. Narrative 1000 does not change. All 3 stay low priority. See `docs/roadmap.md`.
 - **The coordination null leaves out shuffles with no edges.** The coordination module
   is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
   pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
