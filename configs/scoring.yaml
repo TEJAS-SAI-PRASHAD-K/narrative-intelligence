@@ -5,7 +5,7 @@
 # already carrying the current model versions are skipped, not recomputed.
 
 corpus:
-  sources: [reddit, mastodon, news, gdelt, youtube]
+  sources: [reddit, mastodon, news, gdelt, youtube, telegram]
   start_date: null          # YYYY-MM-DD, null = no lower bound
   end_date: null
   limit: null               # cap rows for a smoke run; null = whole corpus

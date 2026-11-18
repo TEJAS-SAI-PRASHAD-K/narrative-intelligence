@@ -13,7 +13,7 @@ the module being quietly described as present.
 | component | state | notes |
 |---|---|---|
 | canonical schema | done | `ingest/schema.py`, the contract everything converges on |
-| source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube |
+| source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube, Telegram |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
 | fact-check verdicts | partial | 4311 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News archive read inside the 2022 window |
