@@ -2165,6 +2165,8 @@
           "sharing_author_bot_ratio": {
             "anyOf": [
               {
+                "maximum": 1.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -2691,6 +2693,8 @@
           "bot_score": {
             "anyOf": [
               {
+                "maximum": 1.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {

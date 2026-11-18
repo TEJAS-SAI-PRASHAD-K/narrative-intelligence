@@ -49,7 +49,8 @@ decision.
   `AuthorScoreExplanation.risk_score` now carry `minimum: 0` and `maximum: 100` in
   `openapi.json`, like `AuthorOut.risk_score`. A client could only learn the 0 to 100
   scale from a sample response, and a dashboard once read 33.2 as 3320 percent. A
-  contract test fails if any `risk_score` field loses its bounds.
+  contract test fails if any `risk_score` field loses its bounds. `GraphNode.bot_score`
+  and `DomainOut.sharing_author_bot_ratio` now declare their 0 to 1 range the same way.
 
 - **The fact-check backfill spent its URL budget on pages that it had already dropped.**
   Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
