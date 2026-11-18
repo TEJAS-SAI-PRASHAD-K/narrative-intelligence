@@ -492,6 +492,16 @@ def test_unfrozen_set_is_stated_in_the_notices_and_frozen_is_not():
     assert frozen["evaluation_set"]["frozen"] is True
 
 
+def test_a_claim_links_threshold_that_differs_from_config_is_noticed():
+    uni = universe(["c1", "c2", "c3", "c4", "c5"])
+    uni.claim_dedup = {
+        "passes": {"embedding": {"status": "ok", "collapsed": 1, "threshold": 0.5}}
+    }
+    notices = run(pair(), universe=uni)["notices"]
+    assert any("claim links artifact used cosine >= 0.5" in n for n in notices)
+    assert any("dedup-claims" in n for n in notices)
+
+
 def test_result_states_what_the_evaluation_set_contains():
     statement = run(pair())["evaluation_set"]["statement"]
     assert "only the claims that publishers chose to debunk" in statement

@@ -622,6 +622,18 @@ several publishers within days, so a longer collection window *will* produce
 cross-publisher duplicates, and counting one claim three times would inflate the
 apparent size of the only evaluation set this project has for its actual subject.
 
+**A second, read-side claim pass links rewordings and translations.** The simhash
+radius cannot see a claim reworded past 3 bits, or the same claim debunked in English by
+one publisher and in Hindi by another. `python -m modeling.cli dedup-claims` links
+claims whose multilingual claim embeddings have cosine similarity at or above
+`claim_dedup.min_similarity` in `configs/factcheck.yaml`, and writes
+`data/factchecks/claim_links.json` with cluster ids and a collapse count per pass.
+`factchecks.parquet` is never modified. The threshold is provisional at 0.85, chosen
+from the similarity distribution of the written pairs, and the command also writes
+`data/factchecks/claim_dedup_sample.csv` for a person to label. The comparison report
+records the embedding precision once that sample has labels and says `not_measured`
+until then.
+
 Two more things the numbers say:
 
 - **The binary mapping costs ~8% of rated items.** `configs/factcheck.yaml` maps

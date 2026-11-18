@@ -37,6 +37,12 @@ embed:
     - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
     # 768-dim. Refused at load while vector_dim is 384; needs a column migration.
     - BAAI/bge-base-en-v1.5
+  # The multilingual alternative the read-side claim dedup pass uses
+  # (`python -m modeling.cli dedup-claims`). It must also be in `alternatives`
+  # above, so its width is auditable against the pgvector column. The pass
+  # imports sentence-transformers lazily and reports `sentence_transformers_not_installed`
+  # when the optional `modeling` extra is absent.
+  claim_dedup_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
   batch_size: 64
   max_seq_length: 256      # tokens; long articles are title + head, see embed.py
   normalize: true          # L2 -- cosine assumptions downstream depend on it

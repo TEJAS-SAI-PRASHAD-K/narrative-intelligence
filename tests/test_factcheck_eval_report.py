@@ -131,6 +131,62 @@ def test_a_manifest_row_missing_from_the_data_stops_the_harness(env):
         run_comparison(env["scores"], manifest_path=env["manifest"], n_bootstrap=50)
 
 
+def test_the_report_states_each_pass_collapse_count_and_precision_not_measured(env):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,is_same_claim\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    result, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    passes = result["evaluation_set"]["claim_dedup"]["passes"]
+    assert passes["simhash"]["collapsed"] == 0
+    assert passes["embedding"]["collapsed"] == 1
+    assert result["evaluation_set"]["claim_dedup"]["precision"]["precision"] is None
+    text = paths[1].read_text()
+    assert "Claim deduplication (read side)" in text
+    assert "| simhash | ok | 0 |" in text
+    assert "| embedding | ok | 1 |" in text
+    assert "not measured" in text
+    assert "embedding claim dedup pass is not_run" not in text
+
+
+def test_a_labelled_hand_check_records_embedding_precision(env):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,yes\n"
+        "c3,c1,0.88,false,x,false,y,no\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c1", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    result, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    precision = result["evaluation_set"]["claim_dedup"]["precision"]
+    assert precision["status"] == "measured"
+    assert precision["precision"] == pytest.approx(0.5)
+    assert "Embedding pass precision: 0.500" in paths[1].read_text()
+
+
 def test_cli_runs_and_prints_the_decision(env):
     result = runner.invoke(
         cli.app,

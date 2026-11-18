@@ -191,14 +191,18 @@ the honest entry in that cell, not a zero.
   measured error rate before it sits next to structured data.
 - **Telegram adapter.** Free official API, widely used for political forwards in
   the target domain, and the cheapest large source still missing.
-- **Cross-publisher claim deduplication over longer windows.** A 96-claim
-  set measured earlier had zero near-duplicates at the project's own Hamming threshold.
-  The freeze collapsed 29 duplicate false verdicts among 4310. It reads
-  `read_deduplicated_factchecks`, and `collapse_duplicate_claims` links claims whose
-  `claim_simhash` values differ in 3 bits or fewer, so near-duplicates within that radius
-  are collapsed. A claim reworded past 3 bits, or translated, is not caught. Several
-  publishers often debunk the same claim within days, so a longer collection window
-  will produce more of both.
+- **A person must label the claim dedup sample before the threshold is a measured
+  choice.** `python -m modeling.cli dedup-claims` links claims by simhash and by the
+  cosine similarity of multilingual claim embeddings, and writes
+  `data/factchecks/claim_links.json` plus `data/factchecks/claim_dedup_sample.csv`.
+  The sample holds linked pairs across the similarity range with a blank
+  `is_same_claim`. The threshold `claim_dedup.min_similarity` is 0.85, chosen from the
+  distribution of those pairs and not from a hand check, so the comparison report
+  records the embedding precision as `not_measured` until the sample is labelled. The
+  links cover the claims stored today; a longer collection window needs the command
+  rerun before the evaluation set is frozen again. Run the command before freezing: if
+  the pass turns a frozen row into a duplicate, the harness refuses the stale manifest,
+  and the manifest is rebuilt on purpose with the reason recorded.
 
 ### Modeling
 

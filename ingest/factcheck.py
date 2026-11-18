@@ -1128,14 +1128,26 @@ def collapse_duplicate_claims(
     return CollapseResult(kept=kept, collapsed=collapsed, counts=counts)
 
 
+def read_factcheck_rows(settings: Settings | None = None) -> list[dict[str, Any]]:
+    """Every row of ``factchecks.parquet``, for a read-side pass over the claims.
+
+    ``factchecks.parquet`` is the merged file; the ``factchecks-*.parquet`` files
+    from the older layout are folded into it by :func:`write_factchecks` and are
+    not read here. The file is never modified. An absent file gives an empty
+    list, the same as the deduplicating reader.
+    """
+    settings = settings or get_settings()
+    path = settings.data_dir / "factchecks" / FACTCHECKS_FILENAME
+    return _read_rows(path) if path.exists() else []
+
+
 def read_deduplicated_factchecks(settings: Settings | None = None) -> CollapseResult:
     """``factchecks.parquet`` with duplicate claims collapsed, for an evaluation harness.
 
     An absent file gives an empty result. The file is not modified.
     """
     settings = settings or get_settings()
-    path = settings.data_dir / "factchecks" / FACTCHECKS_FILENAME
-    rows = _read_rows(path) if path.exists() else []
+    rows = read_factcheck_rows(settings)
     result = collapse_duplicate_claims(rows)
     if result.collapsed:
         log.info(
