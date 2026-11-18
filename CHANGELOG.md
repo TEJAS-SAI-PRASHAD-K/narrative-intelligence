@@ -46,6 +46,10 @@ decision.
   flags 42 of 100 rows at threshold 0.5, and all 42 are false positives. It flags all 20
   debunk articles. The transfer gap stays unmeasured, and `evaluate misinfo` refuses
   transfer metrics on one class.
+- **Cursor pagination on `/drivers/authors`, `/drivers/hashtags` and `/drivers/urls`.**
+  `DriversResponse` gains `next_cursor`, `total` and `filters_applied`, with the same
+  opaque cursor as the other list routes. Rows sort by post count and then by entity, so
+  tied counts keep one order across pages.
 
 ### Fixed
 
