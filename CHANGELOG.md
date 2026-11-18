@@ -14,7 +14,7 @@ decision.
 ### Fixed
 
 - **The fact-check comparison is rerun with all eight fact-checker domains left out.** The
-  run of 2026-11-19 used the same score files and the seed 20260813. The corpus rows that
+  run of 2026-11-18 used the same score files and the seed 20260813. The corpus rows that
   the report excludes are 265 for `corpus_title` and 265 for `corpus_text`: altnews.in 34,
   boomlive.in 66, digiteye.in 9, factcrescendo.com 24, factly.in 22, newschecker.in 29,
   thequint.com 55 and vishvasnews.com 26. The evaluation set has 4428 claims (4334 Hindi,
@@ -326,7 +326,7 @@ decision.
   News, Factly, Newschecker and DigitEye are in the corpus too. `other_fact_checkers` in
   `configs/factcheck.yaml` lists them, and `modeling.config.fact_check_domains` returns
   all eight for the comparison and the scoring stages. The committed report predated
-  this. The rerun of 2026-11-19 has its own entry at the top of this section.
+  this. The rerun of 2026-11-18 has its own entry in the Fixed list at the top of this section.
 - **The fact-check backfill spent its URL budget on pages that it had already dropped.**
   Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
   verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
@@ -423,7 +423,8 @@ decision.
   `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
   `eligible_sources`.
 - **The fact-check manifest is refrozen at 4281 claims after the full Hindi archive
-  read.** With the backfill fix of pull request 21, the Vishvas News sitemap backfill read
+  read (2026-11-14, superseded by the refreeze at 4428 claims on 2026-11-18).** The figures
+  in this entry are the state of 2026-11-14. With the backfill fix of pull request 21, the Vishvas News sitemap backfill read
   the whole archive inside the 2022 window. The set grew from 1107 claims. 1106 old rows
   are unchanged. One claim is now kept under a different Vishvas News article with the
   same `claim_sha256`. The Hindi gate is measured again on 4180 Hindi claims. It still

@@ -8,7 +8,8 @@
 ## Status
 
 **The transformer clears the TF-IDF baseline at the precision 0.85 operating point.**
-This card reports the comparison run of 2026-11-09. The full report is
+This card reports the comparison run of 2026-11-09. The fact-check figures below are from the
+rerun of 2026-11-18. The full report is
 [docs/results/factcheck-comparison.md](../../docs/results/factcheck-comparison.md).
 
 The checkpoint is a `roberta-base` fine-tune. Training saved the last epoch. The
@@ -132,12 +133,12 @@ gap is the conservative figure.
 
 ### Fact-check set and the unlabelled corpus
 
-The set has 4428 known-false claims (report of 2026-11-19), and the frozen manifest is
+The set has 4428 known-false claims (report of 2026-11-18), and the frozen manifest is
 `configs/factcheck_eval_manifest.csv`. This model scores the 93 English claims and
 skips the 4335 other claims with `unsupported_language`. The skipped claims are 4334
 Hindi claims and one claim in another language. The report left all eight fact-checker
-domains out of the corpus (265 rows). The earlier report, on 4281 claims and four domains
-left out, gave a recall of 0.520 [0.420, 0.610], a flag rate of 0.081 [0.067, 0.096] on
+domains out of the corpus (265 rows). The earlier report (freeze of 2026-11-14, 4281 claims, four domains
+left out) gave a recall of 0.520 [0.420, 0.610], a flag rate of 0.081 [0.067, 0.096] on
 1350 corpus titles and a lift of 6.382 [4.950, 8.297].
 
 | measure, English titles | `misinfo` v0.2.0 | TF-IDF + logreg |

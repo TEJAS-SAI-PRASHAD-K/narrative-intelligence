@@ -9,7 +9,7 @@ The comparison run of 2026-11-09 fine-tuned two checkpoints of
 `convaiinnovations/laya`, revision `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`.
 Training used the same LIAR, FakeNewsNet and CoAID split as the `misinfo` module. The
 full report is [docs/results/factcheck-comparison.md](../../docs/results/factcheck-comparison.md).
-The report was rerun on 2026-11-19 with the same score files and seed, on 4428 claims and with
+The report was rerun on 2026-11-18 with the same score files and seed, on 4428 claims and with
 all eight fact-checker domains left out of the corpus. The macro F1 values and the decisions
 below are the same in both runs. The Hindi numbers below are from the rerun.
 
@@ -31,7 +31,7 @@ scorer adds cost and no measured gain.
 
 Hindi is the one language that only Laya can score here. The gate needs at least 50
 Hindi claims and a title lift interval with a lower limit above 1. The set grew from
-13 to 1016 to 4180 to 4334 Hindi claims. The sitemap backfill read the whole Vishvas News
+13 to 1016 (2026-11-11) to 4180 (2026-11-14) to 4334 (2026-11-18) Hindi claims. The sitemap backfill read the whole Vishvas News
 archive inside the 2022 window. A later backfill added BOOM Hindi and Fact Crescendo. We froze
 the manifest again each time.
 
@@ -42,13 +42,13 @@ the manifest again each time.
 | flag rate on 717 scored corpus titles (721 rows, 4 without a title) | 0.068 [0.050, 0.086] |
 | lift | 1.735 [1.331, 2.368] |
 
-The report of 2026-11-19 leaves all eight fact-checker domains out of the corpus (265 rows
-out of the title and text counts). The earlier report, on 4180 claims, left out four. It gave
-a lift of 1.760 [1.286, 2.630] on 431 Hindi titles.
+The report of 2026-11-18 leaves all eight fact-checker domains out of the corpus (265 rows
+out of the title and text counts). The earlier report (freeze of 2026-11-14, 4180 claims) left
+out four. It gave a lift of 1.760 [1.286, 2.630] on 431 Hindi titles.
 
 **The gate passes.** The result has clear limits:
 
-- The lower limit is 1.331. With 1016 claims it was 1.116. The interval is much
+- The lower limit is 1.331. With 1016 claims (freeze of 2026-11-11) it was 1.116. The interval is much
   narrower now, but the corpus has only 717 scored Hindi titles.
 - On full text, the lift is 0.503 [0.432, 0.590] and the upper limit is below 1. The
   model flags Hindi corpus articles (0.236) more often than debunked claims (0.119).
@@ -58,7 +58,7 @@ a lift of 1.760 [1.286, 2.630] on 431 Hindi titles.
 - Most Hindi claims come from one publisher. Vishvas News gives 3789 of the 4334
   claims (87.4 percent), BOOM gives 524 (12.1 percent) and Fact Crescendo gives 21
   (0.5 percent). The result reflects mostly the choice of claims by Vishvas News. In the
-  earlier freeze, Vishvas News gave 4173 of 4180 claims (99.8 percent).
+  freeze of 2026-11-14, Vishvas News gave 4173 of 4180 claims (99.8 percent).
 - The claim dedup pass with embeddings collapsed 421 rows, and the simhash pass collapsed 29.
   The precision of the embedding collapses is 0.390 (78 of 200 labelled pairs), Wilson
   [0.325, 0.459]. It is provisional. The labeller is a model, and no person reviewed the labels.
