@@ -317,7 +317,8 @@ bot:
 coordination:
   # v0.2.0: coordination_score is 0.0, not null, for an account the detector saw
   # and linked to nobody.
-  version: v0.2.0
+  # v0.3.0: telegram is eligible, and the threading exemption is a list.
+  version: v0.3.0
   # Simhash, shared URLs, hashtags and timing. Language agnostic.
   languages: ["*"]
   window_minutes: 60
@@ -330,7 +331,16 @@ coordination:
   min_edge_weight: 0.15
   # Sources whose records carry real threading and stable author identity.
   # Kaggle-flat Reddit has parent_id=None honestly and is excluded.
-  eligible_sources: [reddit, mastodon, youtube]
+  # Telegram authors are channels. Its records carry stable ids and exact times, and the
+  # evidence is shared text and links, not reply threads.
+  eligible_sources: [reddit, mastodon, youtube, telegram]
+  # Sources kept although no record has a parent_id.
+  threading_optional_sources: [mastodon, telegram]
+  # A source below either floor gets a reason code in the per-source report.
+  min_source_authors: 10
+  min_source_edges: 10
+  # Seed of every time shuffle, so a rerun gives the same null distribution.
+  null_seed: 20260813
   evidence_weights:
     near_dup: 1.0
     cotweet: 0.8

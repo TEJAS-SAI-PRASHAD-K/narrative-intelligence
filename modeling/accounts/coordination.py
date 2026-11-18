@@ -34,11 +34,17 @@ Complexity becomes O(sum over buckets of k^2) where k is the bucket occupancy �
 linear in the corpus for a fixed posting rate, and bounded by
 ``MAX_BUCKET_PAIRS`` for the pathological case of one enormous burst.
 
-**Input filtering.** Only sources with real threading and stable author identity
-(ConvoKit Reddit, Mastodon, YouTube comments). Kaggle-flat Reddit carries
-``parent_id = None`` honestly and is excluded — the filter is on *threading
-availability*, not on a source name, so a future flat dump is excluded
-automatically. The exclusion is reported.
+**Input filtering.** Only sources with stable author identity and either real
+threading or content and link evidence (ConvoKit Reddit, Mastodon, YouTube comments,
+Telegram channels). Kaggle-flat Reddit carries ``parent_id = None`` honestly and is
+excluded — the filter is on *threading availability*, so a future flat dump is
+excluded automatically. Mastodon and Telegram are listed in
+``threading_optional_sources`` and keep their place without threads. The exclusion is
+reported.
+
+**Per source.** ``per_source_comparison`` builds one graph per source and compares its
+modularity with its own time-shuffled null. A source with too few authors or edges
+gets a reason code, not a number.
 """
 
 from __future__ import annotations
@@ -96,6 +102,12 @@ class CoordinationResult:
     #: Every account that was in the detector's input after eligibility
     #: filtering, whether or not it ended up with an edge.
     seen_accounts: frozenset[str] = frozenset()
+    #: Observed against null modularity for the whole corpus, with the null
+    #: distribution. None when the null model did not run.
+    overall: dict[str, Any] | None = None
+    #: The same comparison for each source alone, or a reason code when the source
+    #: has too little graph to measure.
+    per_source: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def score_for(self, account: str) -> float | None:
         """The coordination score of one account, or None when it was not measured.
@@ -128,6 +140,8 @@ class CoordinationResult:
             "null_std": round(self.null_std, 4),
             "exceeds_null": self.exceeds_null,
             "excluded_sources": self.excluded_sources,
+            "overall": self.overall,
+            "per_source": self.per_source,
             **self.diagnostics,
         }
 
@@ -152,6 +166,12 @@ class CoordinationDetector:
         self.null_shuffles = int(self.config.get("null_model_shuffles", 5))
         self.weights = dict(self.config.get("evidence_weights") or {})
         self.eligible_sources = set(self.config.get("eligible_sources") or [])
+        #: Sources kept although no record has a parent. Their evidence is content
+        #: and links, not reply threads.
+        self.threading_optional = set(self.config.get("threading_optional_sources") or [])
+        self.min_source_authors = int(self.config.get("min_source_authors", 10))
+        self.min_source_edges = int(self.config.get("min_source_edges", 10))
+        self.null_seed = int(self.config.get("null_seed", self.settings.seed))
 
     # --- input filtering -------------------------------------------------
     def eligible_records(self, records: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
@@ -184,7 +204,9 @@ class CoordinationDetector:
         # and is usually a flat dump with unreliable author identity.
         if "parent_id" in work.columns and "source" in work.columns:
             for source, group in work.groupby("source"):
-                if group["parent_id"].notna().mean() == 0.0 and source != "mastodon":
+                if group["parent_id"].notna().mean() == 0.0 and (
+                    source not in self.threading_optional
+                ):
                     excluded[f"{source}:no_threading"] = len(group)
                     work = work.loc[work["source"] != source]
 
@@ -315,7 +337,7 @@ class CoordinationDetector:
 
     # --- communities and scores ------------------------------------------
     def detect(
-        self, records: pd.DataFrame, *, run_null_model: bool = True
+        self, records: pd.DataFrame, *, run_null_model: bool = True, per_source: bool = True
     ) -> CoordinationResult:
         import networkx as nx
 
@@ -351,8 +373,21 @@ class CoordinationDetector:
                 assignment[str(account)] = community_id
 
         null_mean = null_std = 0.0
+        overall = None
+        per_source_rows: dict[str, dict[str, Any]] = {}
         if run_null_model:
-            null_mean, null_std = self._null_model(work)
+            values = self._null_values(work)
+            null_mean = float(np.mean(values)) if values else 0.0
+            null_std = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+            overall = null_comparison(modularity, values)
+            overall.update(
+                status="measured",
+                authors=int(work["author_id"].nunique()),
+                records=len(work),
+                edges=graph.number_of_edges(),
+            )
+            if per_source and "source" in work.columns:
+                per_source_rows = self.per_source_comparison(work)
 
         scores = self._coordination_scores(graph, assignment, sizes, work)
 
@@ -374,6 +409,8 @@ class CoordinationDetector:
                 "largest_community": max(sizes.values()) if sizes else 0,
             },
             seen_accounts=_seen(work),
+            overall=overall,
+            per_source=per_source_rows,
         )
         log.info("coordination: %s", result.summary())
         if not result.exceeds_null and run_null_model:
@@ -410,17 +447,25 @@ class CoordinationDetector:
         return graph
 
     def _null_model(self, records: pd.DataFrame) -> tuple[float, float]:
+        """Mean and standard deviation of the time-shuffled modularity."""
+        values = self._null_values(records)
+        mean = float(np.mean(values)) if values else 0.0
+        std = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+        return mean, std
+
+    def _null_values(self, records: pd.DataFrame) -> list[float]:
         """Modularity of the same corpus with timestamps shuffled within author.
 
         Shuffling *within* each author, not globally: that destroys cross-account
         timing coincidences — the thing coordination detection claims to find —
         while preserving each author's own volume, burstiness and diurnal
         pattern. A global shuffle would also destroy those, and would therefore
-        be too easy a null to beat.
+        be too easy a null to beat. The generator starts from ``null_seed``, so a
+        rerun on the same records gives the same distribution.
         """
         import networkx as nx
 
-        rng = np.random.default_rng(self.settings.seed)
+        rng = np.random.default_rng(self.null_seed)
         values: list[float] = []
         for shuffle in range(self.null_shuffles):
             shuffled = records.copy()
@@ -433,17 +478,51 @@ class CoordinationDetector:
                 values.append(0.0)
                 continue
             communities = nx.community.louvain_communities(
-                graph, weight="weight", seed=self.settings.seed + shuffle
+                graph, weight="weight", seed=self.null_seed + shuffle
             )
             values.append(float(nx.community.modularity(graph, communities, weight="weight")))
 
-        mean = float(np.mean(values)) if values else 0.0
-        std = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
         log.info(
-            "null model: %d time-shuffled run(s), modularity %.4f +/- %.4f",
-            len(values), mean, std,
+            "null model: %d time-shuffled run(s), modularity %.4f",
+            len(values),
+            float(np.mean(values)) if values else 0.0,
         )
-        return mean, std
+        return values
+
+    def per_source_comparison(self, work: pd.DataFrame) -> dict[str, dict[str, Any]]:
+        """Observed against null modularity for each source on its own.
+
+        Each source is a separate graph, so cross-source edges never count. A
+        source with too few authors or edges gets a reason code instead of a
+        number, and the row stays in the report.
+        """
+        import networkx as nx
+
+        rows: dict[str, dict[str, Any]] = {}
+        for source, group in work.groupby("source"):
+            authors = int(group["author_id"].nunique())
+            row: dict[str, Any] = {"records": len(group), "authors": authors}
+            if authors < self.min_source_authors:
+                rows[str(source)] = {**row, "status": "too_few_authors",
+                                     "min_authors": self.min_source_authors}
+                continue
+            graph = self._to_graph(self.build_edges(group))
+            row["edges"] = graph.number_of_edges()
+            if graph.number_of_edges() == 0:
+                rows[str(source)] = {**row, "status": "no_edges"}
+                continue
+            if graph.number_of_edges() < self.min_source_edges:
+                rows[str(source)] = {**row, "status": "too_few_edges",
+                                     "min_edges": self.min_source_edges}
+                continue
+            communities = nx.community.louvain_communities(
+                graph, weight="weight", seed=self.null_seed
+            )
+            observed = float(nx.community.modularity(graph, communities, weight="weight"))
+            comparison = null_comparison(observed, self._null_values(group))
+            rows[str(source)] = {**row, **comparison, "status": "measured",
+                                 "communities": len(communities)}
+        return rows
 
     def _coordination_scores(
         self,
@@ -570,6 +649,55 @@ def _edge_row(edge: Edge, graph) -> dict[str, Any]:
     }
 
 
+def null_comparison(observed: float, null_values: list[float]) -> dict[str, Any]:
+    """Observed modularity against a null distribution.
+
+    The interval is the 2.5th to 97.5th percentile of the shuffled values. The
+    empirical p value is ``(1 + k) / (1 + n)``, where k counts shuffles at or above
+    the observed value. Its floor is ``1 / (1 + n)``, so a run with few shuffles
+    cannot show a small p value.
+    """
+    values = np.asarray(null_values, dtype=float)
+    n = len(values)
+    if n == 0:
+        return {"observed": round(observed, 4), "null_shuffles": 0, "p_value": None}
+    at_or_above = int((values >= observed).sum())
+    return {
+        "observed": round(observed, 4),
+        "null_mean": round(float(values.mean()), 4),
+        "null_std": round(float(values.std(ddof=1)), 4) if n > 1 else 0.0,
+        "null_low": round(float(np.percentile(values, 2.5)), 4),
+        "null_high": round(float(np.percentile(values, 97.5)), 4),
+        "null_shuffles": n,
+        "p_value": round((1 + at_or_above) / (1 + n), 4),
+    }
+
+
+def per_source_table(result: CoordinationResult) -> str:
+    """A Markdown table of the observed and null modularity, overall then per source."""
+    lines = [
+        "| scope | authors | edges | observed | null mean | null 95% interval "
+        "| shuffles | p | status |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    rows = ([("all eligible", result.overall)] if result.overall else []) + sorted(
+        result.per_source.items()
+    )
+    for name, row in rows:
+        if row.get("status") != "measured":
+            lines.append(
+                f"| {name} | {row.get('authors', 'n/a')} | {row.get('edges', 'n/a')} "
+                f"| n/a | n/a | n/a | n/a | n/a | {row.get('status')} |"
+            )
+            continue
+        lines.append(
+            f"| {name} | {row['authors']} | {row.get('edges', 'n/a')} | {row['observed']:.4f} "
+            f"| {row['null_mean']:.4f} | [{row['null_low']:.4f}, {row['null_high']:.4f}] "
+            f"| {row['null_shuffles']} | {row['p_value']:.4f} | measured |"
+        )
+    return "\n".join(lines)
+
+
 def null_model_section(result: CoordinationResult) -> str:
     """The paragraph that decides whether the communities mean anything."""
     verdict = (
@@ -591,5 +719,28 @@ def null_model_section(result: CoordinationResult) -> str:
             f"over shuffles",
             "",
             verdict,
+            *(["", "Per source:", "", per_source_table(result)] if result.overall else []),
         ]
     )
+
+
+def write_report(result: CoordinationResult, out_dir) -> list:
+    """Write ``report.md`` and ``report.json`` with the overall and per-source null."""
+    import json
+    from pathlib import Path
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    markdown = out / "report.md"
+    markdown.write_text(
+        "# Coordination against the time-shuffled null\n\n"
+        + null_model_section(result)
+        + "\n\n"
+        + "Excluded records, by reason: "
+        + (", ".join(f"{k}={v}" for k, v in sorted(result.excluded_sources.items())) or "none")
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = out / "report.json"
+    payload.write_text(json.dumps(result.summary(), indent=2, default=str) + "\n", encoding="utf-8")
+    return [markdown, payload]

@@ -568,6 +568,45 @@ def ablate(
     console.print(result.render())
 
 
+@app.command(name="coordination-report")
+def coordination_report_command(
+    sources: str | None = typer.Option(None, help="Comma-separated source filter."),
+    null_shuffles: int | None = typer.Option(
+        None, help="Time shuffles per null. Default: null_model_shuffles in configs/models.yaml."
+    ),
+    out: Path | None = typer.Option(
+        None, help="Output directory. Default: artifacts/eval/coordination."
+    ),
+    demo: bool = typer.Option(False, "--demo"),
+    limit: int | None = typer.Option(None),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Observed against time-shuffled modularity, overall and for each source.
+
+    Reads the corpus and writes only report.md and report.json under --out. It
+    does not write to data/scored. A source with too few authors or edges appears
+    with a reason code. The empirical p value cannot fall below 1 / (1 + shuffles),
+    so use at least 200 shuffles when you quote a p value.
+    """
+    _bootstrap(verbose)
+    from modeling.accounts.coordination import CoordinationDetector, write_report
+    from modeling.scoring import _reader_for
+
+    settings = get_settings()
+    wanted = [s.strip() for s in sources.split(",")] if sources else None
+    records = _reader_for(demo, settings).records(sources=wanted, limit=limit)
+    if not len(records):
+        console.print("[red]no records for that source filter[/red]")
+        raise typer.Exit(code=1)
+    detector = CoordinationDetector(settings)
+    if null_shuffles is not None:
+        detector.null_shuffles = null_shuffles
+    result = detector.detect(records)
+    target = out or settings.eval_dir / ("coordination_demo" if demo else "coordination")
+    for path in write_report(result, target):
+        console.print(f"wrote {path}", soft_wrap=True, highlight=False)
+
+
 @app.command(name="compare-embedder")
 def compare_embedder_command(
     model: str = typer.Option(
