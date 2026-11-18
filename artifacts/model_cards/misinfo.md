@@ -248,6 +248,59 @@ notebook 05. English-only coverage means the fairness question is currently
 about *register* rather than language: the model was trained on edited,
 journalist-adjacent prose and is applied to conversational text.
 
+## Reporting articles as negatives (candidate option)
+
+Result: not measured yet. No candidate checkpoint is trained, and no candidate score exists.
+The numbers need the GPU host and the corpus on disk. This section describes the option only.
+
+The problem. The model reacts to the subject of an article. A news report or a rebuttal
+names a false claim, and the model scores it as if it pushed the claim. The fact-checker
+skip hides the fact-check publishers in live scoring. It does not hide other outlets that
+report on a false claim.
+
+The option. A training run can add articles that report on false claims as extra label 0
+rows. The candidate is a separate checkpoint. `configs/models.yaml` does not change, and no
+version is promoted.
+
+```bash
+# 1. Build the extra negatives from the corpus on disk. The rows are fact-check articles.
+python -m modeling.cli reporting-negatives --out data/reporting_negatives_en.parquet --lang en
+
+# 2. Train a candidate. The folder models/misinfo/<VERSION> must not exist.
+python -m modeling.cli train misinfo \
+    --extra-negatives data/reporting_negatives_en.parquet --output-version <VERSION>
+```
+
+The file has the columns `text` and `group_id`, and an optional `domain`. The builder uses
+the domain as the group id. Every row is label 0 with the source `reporting`, and the group
+id becomes `reporting:<group_id>`. The run refuses a file with missing columns, empty text
+or no rows. It drops rows that repeat a text, or that repeat a benchmark text, and counts
+them by reason code in the log and in the report.
+
+Split. The benchmark rows are split alone, with the same splitter and seed as a run without
+extra rows. Their train, validation and test assignment does not change. A split of the
+union would change it, because the shuffle sees more groups. The extra rows are split on
+their own, by group. The held-out groups of the extra rows are not in the benchmark test
+set. The report scores them in the section "Held-out reporting negatives". The report also
+records the file name, its sha256, and the row and group counts.
+
+Score with the candidate, with no change to the configuration:
+
+```bash
+python -m modeling.cli checkpoint-hash misinfo --version <VERSION>   # read the digest
+python -m modeling.cli score misinfo --misinfo-version <VERSION> --allow-unverified-candidate
+```
+
+A candidate has no `sha256` in `configs/models.yaml`, so the registry cannot check it. The
+load is refused unless the flag is set. With the flag, the log carries a warning. Scored
+rows carry `<VERSION>+<sha8>`, never `v0.2.0`. The run overwrites `misinfo_prob` of rows
+that another version scored, so use a separate `DATA_DIR`. For the comparison on the
+fact-check set, `scripts/run_comparison.py score --misinfo-version <VERSION>` does the same.
+
+The shipping bar does not change. A candidate must not lower recall at precision 0.85 on the
+fact-check set beyond its interval. The false-positive rate on reporting articles, before
+and after, is added here when the run exists.
+
 ## Get the weights on a fresh clone
 
 Weights are not in git. A fresh clone pulls them from a private Hugging Face model repo.
