@@ -30,8 +30,8 @@ Do not search the web for the truth. Judge the record on what it says and on wha
 know. If a claim needs a search to check, put `0` in `label_a` or `label_b` and write
 "unchecked" in `notes`. Do not guess.
 
-Ignore the `stratum` and `weight` columns while you label. They are codes for the
-sample draw and they must not change your judgement.
+The sheet has no data about the sample draw. The rows are in random order. Do not try to guess
+how the sample was drawn.
 
 ## What is misinformation-like
 
@@ -145,6 +145,13 @@ Run the evaluation with `make relabel-eval`. It rewrites the agreement reports a
 transfer metrics from the sheets in one run.
 
 ## Keep the sheets private
+
+The lead gives each labeller only the sheet file, for example
+`misinfo_corpus_sample_en.csv`. The lead keeps the other files in `artifacts/hand_labels/`
+away from labellers: `*.design.csv` holds the stratum and weight of each row, and
+`*.sampling.json` describes the sample draw. A labeller who sees them can guess which rows are
+likely to be misinformation-like, and the guess changes the labels. Keep the design file
+next to the merged sheet. The evaluation commands join it on `id`.
 
 The sheets hold corpus text. Keep them outside git. Git ignores the files in
 `artifacts/hand_labels/`. Do not paste row text into an issue, a pull request, or a chat.

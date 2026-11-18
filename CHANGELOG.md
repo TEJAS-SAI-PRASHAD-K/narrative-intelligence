@@ -78,9 +78,15 @@ decision.
   embeddings. Without it, the draw counts `embedding_unavailable` and says that only
   simhash matches count. The eight fact-checker domains from `configs/factcheck.yaml` never
   enter the sample (reason `fact_check_publisher`), and a Hindi row with no title is left
-  out (reason `no_title`). Each row records `stratum`, `weight` and `sample_seed`
-  (default 20260813). A `.sampling.json` file beside the sheet explains the strata codes.
-  The command refuses to replace an existing sheet unless `--force` is set.
+  out. A Hindi draw applies the skip logic of the `laya` stage to the title (reasons
+  `no_title`, `text_too_short`, `unsupported_language`). `--lang` is required. The sheet rows
+  are shuffled with the seed (default 20260813) and hold no stratum and no weight. Those go
+  to `<sheet>.design.csv`, and `<sheet>.sampling.json` records the draw. Keep both files
+  away from labellers. The command refuses to replace an existing sheet unless `--force`
+  is set, and it refuses an `--n` that is too small to give each non-empty stratum a row.
+  It prints how many records match a claim and warns when the count is 0. The matching
+  thresholds are `claim_match` in `configs/labelling.yaml`, separate from the claim dedup.
+  An embeddings file that names another model is refused (`embedding_model_mismatch`).
 - **Label sheet columns and agreement report.** The sheet has `label_a`, `label_b`,
   `reports_on_false_claim_a`, `reports_on_false_claim_b`, the adjudicated columns,
   `labeller_kind` and `notes`. `modeling label-agreement <sheet>` prints Cohen's kappa with
@@ -93,15 +99,23 @@ decision.
   unless `--allow-model-labels` is set. A labelled row with no valid `labeller_kind` is
   always refused. With the flag, every output carries `labeller: model, unreviewed by a
   person`. The transfer section also reports precision, recall, flag rate and positive
-  rate reweighted by the sample weight, and the flag rate on rows that report on a false
-  claim against the other rows (the input for issue 32).
+  rate reweighted to the corpus. The weight of a row is its stratum pool over the rows of
+  that stratum that reach the metrics, so a dropped row does not skew the figures. The
+  bootstrap resamples inside each stratum, and the Kish effective sample size appears next
+  to each reweighted figure. The output lists dropped rows per stratum with their reason
+  and warns when a stratum has no used row. It also reports the false-positive rate (flag
+  rate among rows labelled 0) for rows that report on a false claim against the other
+  rows, weighted and unweighted, with intervals (the input for issue 32). The transfer
+  functions need a `ResolvedSheet` and enforce the labeller rule themselves.
 - **`modeling evaluate-laya-hindi`.** It reads Laya values from `record_scores` and
   reports precision, recall, flag rate and ROC-AUC on Hindi titles, and the expected
   calibration error of the calibrated values, each with a bootstrap interval, for the
-  sample and reweighted to the corpus. With no `laya.decision_threshold`, the thresholded
-  metrics are "not measured". The command runs no model.
+  sample and reweighted to the corpus. The ECE line states the bin count and `n`, and a
+  caveat when `n` is below 200. With no `laya.decision_threshold`, the thresholded metrics
+  are "not measured". The command runs no model.
 - **`make relabel-eval`.** One command that reads the filled sheets and rewrites
-  `artifacts/eval/labelling/<lang>/` (agreement, disagreement ids, transfer metrics).
+  `artifacts/eval/labelling/<lang>/` (agreement, disagreement ids, transfer metrics). Every
+  interval uses seed 20260813, and `transfer.json` records it.
 
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
