@@ -876,7 +876,8 @@ python -m modeling.cli report misinfo        # regenerate charts without retrain
 
 Training happens on Colab (T4); inference is CPU. Checkpoints save **every epoch**, then
 `modeling/registry.py` resolves them by name+version from the local cache, a private HF Hub
-repo (`HF_REPO`) or a Drive mount (`GDRIVE_DIR`). `models/` is gitignored — the repo
+repo (`HF_REPO`, with `HF_TOKEN`) or a Drive mount (`GDRIVE_DIR`). A fresh clone does not
+train again. The registry checks each pulled folder against `sha256` in `configs/models.yaml`. `models/` is gitignored — the repo
 commits the pointer, never the blob.
 
 ## What the corpus told us that the plan did not

@@ -49,6 +49,16 @@ decision.
   records that sit in a cluster with each other language. Both embedders cluster the same
   sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
   each size. The narratives manifest records `min_cluster_size`.
+- **Checkpoint backup and hash check.** `modeling.registry.resolve` pulls a checkpoint
+  from the private repo in `HF_REPO` and checks its sha256 against the optional `sha256`
+  map in `configs/models.yaml`, for local and pulled copies. A mismatch raises
+  `checkpoint_sha256_mismatch` and deletes a pulled copy. A checkpoint with no configured
+  hash counts `checkpoint_unverified`. The pull covers the Laya calibrator files and skips
+  `checkpoint_latest/`. New reason codes: `hub_token_missing`, `hub_not_installed`,
+  `hub_pull_failed`, `hub_path_absent`. New command: `python -m modeling.cli
+  checkpoint-hash <module> [--version <folder>]`. The hash no longer covers
+  `registry.json` or `checkpoint_latest/`. The model cards and `docs/laya-finetune.md`
+  no longer say that a new clone must train again.
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict

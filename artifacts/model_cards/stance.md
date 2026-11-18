@@ -33,8 +33,25 @@ The fine-tune clears every baseline. The `deny` class is the weakest, and 46 per
 of `deny` pairs are missed. The FNC-1 competition score is not computed.
 
 The benchmark is English news headlines and bodies. This result does not measure
-stance on this corpus. The weights are on the GPU host only, so a new clone must
-train again.
+stance on this corpus. A private Hugging Face copy holds the weights at
+`stance/v0.3.0`. See "Get the weights on a fresh clone" below.
+
+## Get the weights on a fresh clone
+
+Weights are not in git. A fresh clone pulls them from a private Hugging Face model repo.
+Put these two lines in `.env`. The repo id is `<owner>/<repo>`. Ask the repo owner for it
+and for a token with read access.
+
+```bash
+HF_REPO=<owner>/<repo>
+HF_TOKEN=<read token>
+```
+
+Run `python -m modeling.cli score --all`. The registry pulls `stance/v0.3.0` into
+`models/stance/v0.3.0` on first use and checks it against `sha256` in `configs/models.yaml`.
+A copy with a different hash is refused with `checkpoint_sha256_mismatch`. A pulled copy
+that fails the check is deleted. The pull leaves out `checkpoint_latest/`, which only
+training resume needs. No training run is needed.
 
 ## Status: the training path and the checkpoint exist; the corpus has no stance labels
 

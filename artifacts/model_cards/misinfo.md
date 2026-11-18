@@ -13,8 +13,8 @@ This card reports the comparison run of 2026-11-09. The full report is
 
 The checkpoint is a `roberta-base` fine-tune. Training saved the last epoch. The
 checkpoint sha256 is `be9cc846c5d019881269bce7b1b007e5ffd937bc520a70a8e0b28dcaba5d70e6`.
-The weights are on the GPU host only. No private Hugging Face copy exists yet, so a
-new clone must train again.
+A private Hugging Face copy holds the weights at `misinfo/v0.2.0`. See "Get the
+weights on a fresh clone" below.
 
 The weights of the older `v0.1.0` run are lost. That run recorded macro F1 0.8062
 [0.7956, 0.8161] on the same split. It is not reproducible, and `v0.2.0` replaces it.
@@ -247,6 +247,23 @@ Score distributions across language groups and source slices are reported in
 notebook 05. English-only coverage means the fairness question is currently
 about *register* rather than language: the model was trained on edited,
 journalist-adjacent prose and is applied to conversational text.
+
+## Get the weights on a fresh clone
+
+Weights are not in git. A fresh clone pulls them from a private Hugging Face model repo.
+Put these two lines in `.env`. The repo id is `<owner>/<repo>`. Ask the repo owner for it
+and for a token with read access.
+
+```bash
+HF_REPO=<owner>/<repo>
+HF_TOKEN=<read token>
+```
+
+Run `python -m modeling.cli score --all`. The registry pulls `misinfo/v0.2.0` into
+`models/misinfo/v0.2.0` on first use and checks it against `sha256` in `configs/models.yaml`.
+A copy with a different hash is refused with `checkpoint_sha256_mismatch`. A pulled copy
+that fails the check is deleted. The pull leaves out `checkpoint_latest/`, which only
+training resume needs. No training run is needed.
 
 ## Deployment
 

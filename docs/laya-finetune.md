@@ -437,10 +437,35 @@ PR curve at a precision target and is **re-derived for every checkpoint**. A
 threshold copied from another run belongs to that run.
 
 Weights never enter git — `/models/` is gitignored (anchored, see
-`tests/test_repo_layout.py`). Push the checkpoint to a **private** HF repo and
-set `HF_REPO` / `HF_TOKEN`; `modeling/registry.py` resolves
-`MODELS_DIR → HF_REPO → GDRIVE_DIR`, first hit wins, and a miss writes honest
-nulls rather than guessing.
+`tests/test_repo_layout.py`). The fine-tunes are in a **private** HF model repo with the
+layout `<module>/<version>`: `laya/multi-v0.2.1` and `laya/en-v0.2.1`. Each folder holds
+the weights, the tokenizer and the calibrator files.
+
+A fresh clone needs these lines in `.env`. The repo id is `<owner>/<repo>`. Ask the repo
+owner for the id and for a read token.
+
+```bash
+HF_REPO=<owner>/<repo>
+HF_TOKEN=<read token>
+LAYA_HI_CHECKPOINT=laya/multi-v0.2.1
+```
+
+`modeling/registry.py` resolves `MODELS_DIR → HF_REPO → GDRIVE_DIR`, first hit wins. The
+`laya` stage calls it when `LAYA_HI_CHECKPOINT` is a `laya/<version>` path that is not on
+disk. The pull skips `checkpoint_latest/`, which only training resume needs.
+
+The registry checks each folder against the `sha256` in `configs/models.yaml` on every
+resolve. A different hash raises `checkpoint_sha256_mismatch`, and a pulled copy is
+deleted. A folder with no `sha256` resolves with the reason `checkpoint_unverified`.
+To fill in the values, run this on the host that holds the weights, once per folder:
+
+```bash
+python -m modeling.cli checkpoint-hash laya --version multi-v0.2.1
+```
+
+The hash covers every file in the folder, with the calibrator files, but not
+`checkpoint_latest/`, `registry.json`, `*.tmp` or `tokenizer/tokenizer_config.json`. A miss
+writes honest nulls rather than guessing.
 
 ---
 
