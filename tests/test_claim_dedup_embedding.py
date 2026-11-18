@@ -996,5 +996,7 @@ def test_the_kept_sample_warning_has_no_count_and_escapes_the_path(tmp_path, mon
     data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
     cd.hand_check_sample_path(data).write_text(_labelled_sample_text(), encoding="utf-8")
     _, _, output = _run_dedup_cli(tmp_path, monkeypatch)
-    assert "1 sample kept" not in output
-    assert "claim_dedup_sample.csv has labels and is kept" in output
+    # Rich wraps long paths at the terminal width, which is narrow in CI.
+    flat = "".join(output.split())
+    assert "1samplekept" not in flat
+    assert "claim_dedup_sample.csvhaslabelsandiskept" in flat
