@@ -5,11 +5,15 @@ than any hyperparameter sweep.
 
 | file | produced by | consumed by |
 |---|---|---|
-| `misinfo_corpus_sample.csv` | `modeling sample-for-labelling misinfo --n 100` | the corpus-transfer table in `artifacts/eval/misinfo/*/report.md` |
+| `misinfo_corpus_sample_en.csv` | `modeling sample-for-labelling misinfo --lang en` | the English corpus-transfer table and `artifacts/eval/labelling/en/` |
+| `misinfo_corpus_sample_hi.csv` | `modeling sample-for-labelling misinfo --lang hi` | the Laya Hindi transfer table and `artifacts/eval/labelling/hi/` |
+| `*.sampling.json` | the same command | the seed, the strata and the pool sizes of the draw |
 | `narratives.csv` | `modeling sample-for-labelling narratives` | the quality columns of the ablation table |
 
-Each command writes a CSV with one blank column. Fill it in by hand, then rerun
-`modeling evaluate misinfo` or `modeling ablate`. Until the column is filled,
+The misinfo sheets are weighted towards likely positives and list their stratum and sampling
+weight per row. Labellers follow `docs/labelling-guide.md`. Run `make relabel-eval` to read
+the filled sheets and rewrite the agreement and transfer outputs. The `narratives` command
+writes a CSV with one blank column. Fill it in by hand, then rerun `modeling ablate`. Until the column is filled,
 both reports state that the corresponding gap is **unmeasured** rather than
 guessing at it.
 
