@@ -31,6 +31,11 @@ decision.
   row, mixed kinds and a refused sample show on the rendered line. The Wilson interval treats
   pairs as independent, and the sample is systematic over the similarity range.
 
+- **Per-domain count of the corpus rows that the fact-check comparison excludes.** The report
+  JSON has `excluded_fact_check_publisher_by_domain` for `corpus_title` and `corpus_text` of
+  each model. The Markdown report has a table with one row for each fact-checker domain, also
+  a domain with 0 rows. The counts use the same domain function as the exclusion. The code
+  fails if they do not add up to `n_excluded_fact_check_publisher`.
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
   `configs/factcheck.yaml`. A guard cancels a negated verdict, a headline that calls the
