@@ -156,13 +156,14 @@ describe the logits of the diagnosis run.
 
 ### Does the clamp change the served score
 
-No, not on validation. The vendor rounds P(true) to 4 decimals. At a temperature of 5, a
-logit gap above about 46 gives exactly 1.0, and a gap below about -46 gives exactly 0.0. Every
-such row ties with the rows beyond it, and an isotonic map cannot split a tie. The largest
-absolute logit gap on validation is 31.875 for the multilingual fine-tune and 18.438 for the
-English fine-tune, so no validation row reaches a tie. The `isotonic_served` row is the same
-as the exact `isotonic` row to the third decimal for both fine-tunes. The clamp does not change
-the calibrated value.
+No, not on validation. The vendor rounds P(true) to 4 decimals. Rows with the same rounded
+value tie, and an isotonic map cannot split a tie. At a temperature of 5, the rounded value is
+exactly 1.0 for a logit gap above 5 × ln(0.99995 / 0.00005), which is about 49.5, and exactly
+0.0 below about -49.5. The largest absolute logit gap on validation is 31.875 for the
+multilingual fine-tune and 18.438 for the English fine-tune, so no validation row is at 0.0 or
+1.0. Rounding still makes near-saturated rows share a value. The measured effect is small: the
+`isotonic_served` row is the same as the exact `isotonic` row to the third decimal for both
+fine-tunes. The clamp does not change the calibrated value on validation.
 
 ### The temperature refit
 
