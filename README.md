@@ -636,7 +636,8 @@ until then. The sample has a `labeller_kind` column (`human`, `model-reviewed` o
 `model-unreviewed`) and columns for two labellers, `labeller_1`, `labeller_2`, `label_1` and
 `label_2`. Only `human` gives a measured precision. A model label gives a provisional number
 that the report marks as not measured. The report also gives a Wilson interval and the
-agreement of the two labellers.
+agreement of the two labellers. The command keeps a sample that has labels and writes the new
+blank sample to `claim_dedup_sample.new.csv`. The option `--overwrite-sample` replaces it.
 
 Two more things the numbers say:
 

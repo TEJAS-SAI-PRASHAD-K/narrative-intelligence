@@ -517,7 +517,11 @@ claim_dedup:
   #   is_same_claim  The adjudicated yes or no. The precision counts this column.
   # A filled row with no valid labeller_kind, an answer that is not yes or no, or one
   # name for both labellers is refused. A sample with no labeller_kind column is an
-  # older sample. It reads as kind unknown and is never measured.
+  # older sample. It reads as kind unknown with reason code labeller_kind_missing and
+  # is never measured.
+  # `dedup-claims` never overwrites a sample that has a filled label. It writes the new
+  # blank sample to claim_dedup_sample.new.csv, warns with reason code sample_has_labels,
+  # and reads the precision from the kept file. Pass --overwrite-sample to replace it.
   min_similarity: 0.85
   # Pairs written to the hand-check sample, taken at evenly spaced positions
   # across the similarity range rather than only the most obvious duplicates.

@@ -20,7 +20,11 @@ decision.
   give `provisional` with the reason code `labeller_not_human`, and the CLI and the
   comparison report print `labeller: model, unreviewed by a person` for `model-unreviewed`.
   A filled row with no valid kind, an answer that is not yes or no, or one name for both
-  labellers is refused. An older sample with only `is_same_claim` reads as kind `unknown`.
+  labellers is refused. An older sample with only `is_same_claim` reads as kind `unknown`
+  with the reason code `labeller_kind_missing`. `dedup-claims` no longer overwrites a sample
+  that has a filled label. It writes the new blank sample to `claim_dedup_sample.new.csv`,
+  warns with the reason code `sample_has_labels` and reads the precision from the kept file.
+  The option `--overwrite-sample` replaces a labelled sample on purpose.
 
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
