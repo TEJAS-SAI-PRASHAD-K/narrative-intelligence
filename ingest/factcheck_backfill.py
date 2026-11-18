@@ -5,7 +5,10 @@ articles. A publisher's sitemap lists its archive. This module discovers article
 URLs from the sitemaps named in `configs/factcheck.yaml` and sends each one
 through the same tier 1 ClaimReview path the RSS-sourced records use
 (`FactCheckExtractor.fetch_html` and `from_html`). It adds no extraction code, so
-rows have the same columns, tier, id scheme and language detection.
+rows have the same columns, tier, id scheme and language detection. A publisher
+whose daily verdict comes from another path opts in with
+`backfill.claimreview: true`; pages that carry no ClaimReview are counted as
+`no_claimreview`.
 
 Sitemap XML is untrusted input. Three checks run before the parser sees a byte:
 
@@ -39,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 from ingest.config import Settings
 from ingest.factcheck import (
@@ -70,6 +74,12 @@ DEFAULTS: dict[str, Any] = {
     "max_sitemap_bytes": 50_000_000,
     "min_lastmod": None,
     "ledger_recheck_days_transient": 30,
+}
+
+#: Defaults of a publisher's `backfill.listing` block.
+LISTING_DEFAULTS: dict[str, Any] = {
+    "max_pages": 60,
+    "max_page_bytes": 5_000_000,
 }
 
 
@@ -106,6 +116,10 @@ class PublisherStats:
     #: Child sitemaps that were read and held no new URL: every page was stored,
     #: in the ledger, or filtered. They do not use the sitemap budget.
     sitemaps_exhausted: int = 0
+    #: Listing pages read (an archive path read instead of a sitemap), and the
+    #: distinct article links they held.
+    listing_pages_read: int = 0
+    listing_links_found: int = 0
     #: Ledger rows skipped as stale: written under another rating map or
     #: `claim_languages`, so the page was fetched again.
     ledger_stale: int = 0
@@ -703,6 +717,108 @@ class SitemapBackfill:
             else:
                 stats.sitemaps_exhausted += 1
 
+    # --- listing pages ---------------------------------------------------
+    def _read_listing_page(self, url: str, domain: str, stats: PublisherStats) -> str | None:
+        """One listing page as text, or ``None`` after counting why it was not read."""
+        extractor = self.extractor
+        listing = (extractor.publishers[domain].get("backfill") or {}).get("listing") or {}
+        max_bytes = int(listing.get("max_page_bytes") or LISTING_DEFAULTS["max_page_bytes"])
+        if resolve_domain(url) != domain:
+            self._count(stats, DropReason.SITEMAP_OFF_DOMAIN, url)
+            return None
+        fetch_config = extractor.config.get("fetch") or {}
+        limit = int(fetch_config.get("max_consecutive_failures_per_domain", 3))
+        if extractor._fetch_failures.get(domain, 0) >= limit:
+            self._count(stats, DropReason.DOMAIN_GIVEN_UP, url)
+            return None
+        allowed, reason = extractor._robots_allows(url)
+        if not allowed:
+            self._count(stats, reason or DropReason.ROBOTS_UNREACHABLE, url)
+            return None
+        try:
+            body = extractor._http_get(
+                url, as_bytes=True, max_bytes=max_bytes, expected_domain=domain
+            )
+        except ResponseTooLarge as exc:
+            self._count(stats, DropReason.LISTING_TOO_LARGE, f"{url}: {exc}")
+            return None
+        except OffDomainRedirect as exc:
+            extractor._fetch_failures[domain] = extractor._fetch_failures.get(domain, 0) + 1
+            self._count(stats, DropReason.BACKFILL_OFF_DOMAIN_REDIRECT, f"{url}: {exc}")
+            return None
+        except Exception as exc:
+            extractor._fetch_failures[domain] = extractor._fetch_failures.get(domain, 0) + 1
+            self._count(
+                stats, DropReason.LISTING_UNREACHABLE, f"{url}: {type(exc).__name__}: {exc}"
+            )
+            return None
+        extractor._fetch_failures[domain] = 0
+        stats.listing_pages_read += 1
+        return body.decode("utf-8", "replace")
+
+    def _discover_listing(
+        self,
+        listing: dict[str, Any],
+        domain: str,
+        stats: PublisherStats,
+        accept: Callable[[SitemapEntry], bool],
+        wanted: int,
+        is_new: Callable[[str], bool],
+    ) -> Iterator[SitemapEntry]:
+        """Accepted article entries from paginated listing pages, newest page first.
+
+        For a publisher whose sitemaps list only the newest articles. Page 1 is
+        ``first_url``. Page ``n`` from 2 on is ``page_url`` with ``{page}`` replaced.
+        ``link_pattern`` is a regex over the page text. Its first group, or the whole
+        match when it has none, is an article URL or a path on the page's host.
+        Entries carry no ``lastmod``, so ``min_lastmod`` cannot apply to them.
+
+        Paging stops at ``wanted`` new entries, at ``max_pages``, on a page that
+        gives no link not seen before (the end of the archive), and on a page that
+        cannot be read. Each stop is counted with a reason.
+        """
+        first_url = listing.get("first_url")
+        page_url = listing.get("page_url")
+        pattern = listing.get("link_pattern")
+        if not (first_url and page_url and pattern and "{page}" in str(page_url)):
+            self._count(
+                stats,
+                DropReason.NO_BACKFILL_CONFIG,
+                f"{domain}: listing needs first_url, page_url with {{page}} and link_pattern",
+            )
+            return
+        link_re = re.compile(str(pattern))
+        max_pages = int(listing.get("max_pages") or LISTING_DEFAULTS["max_pages"])
+        seen_links: set[str] = set()
+        found_new = 0
+        for page in range(1, max_pages + 1):
+            if found_new >= wanted:
+                return
+            url = str(first_url) if page == 1 else str(page_url).replace("{page}", str(page))
+            text = self._read_listing_page(url, domain, stats)
+            if text is None:
+                return
+            fresh_links = []
+            for match in link_re.finditer(text):
+                link = urljoin(url, match.group(1) if link_re.groups else match.group(0))
+                if link not in seen_links:
+                    seen_links.add(link)
+                    fresh_links.append(link)
+            stats.listing_links_found += len(fresh_links)
+            if not fresh_links:
+                self._count(stats, DropReason.LISTING_END, f"{url}: no new article link")
+                return
+            for link in fresh_links:
+                entry = SitemapEntry(link)
+                if not accept(entry):
+                    continue
+                yield entry
+                if is_new(link):
+                    found_new += 1
+        self._count(
+            stats, DropReason.LISTING_PAGES_EXHAUSTED, f"{first_url}: stopped at {max_pages} pages"
+        )
+
     # --- per publisher ---------------------------------------------------
     def candidates(self, domain: str) -> list[SitemapEntry]:
         """URLs to fetch for one publisher: filtered, not yet stored, bounded, newest first."""
@@ -710,12 +826,17 @@ class SitemapBackfill:
         block = publisher.get("backfill") or {}
         stats = self.stats.setdefault(domain, PublisherStats(publisher.get("name") or domain))
         sitemap_urls = [str(u) for u in (block.get("sitemaps") or []) if u]
-        if not sitemap_urls:
-            self._count(stats, DropReason.NO_BACKFILL_CONFIG, f"{domain}: no sitemaps listed")
-            return []
-        if publisher.get("tier") != Tier.CLAIMREVIEW.value:
+        listing = block.get("listing") or {}
+        if not sitemap_urls and not listing:
             self._count(
-                stats, DropReason.NO_BACKFILL_CONFIG, f"{domain}: tier is not claimreview"
+                stats, DropReason.NO_BACKFILL_CONFIG, f"{domain}: no sitemaps or listing"
+            )
+            return []
+        if publisher.get("tier") != Tier.CLAIMREVIEW.value and not block.get("claimreview"):
+            self._count(
+                stats,
+                DropReason.NO_BACKFILL_CONFIG,
+                f"{domain}: tier is not claimreview and backfill.claimreview is not set",
             )
             return []
         include = re.compile(block["url_pattern"]) if block.get("url_pattern") else None
@@ -761,10 +882,22 @@ class SitemapBackfill:
                 return False
             return True
 
-        for entry in self._discover(
-            sitemap_urls, domain, stats, cutoff, cap, accept, sitemap_filter
-        ):
-            kept[entry.loc] = entry
+        def is_new(loc: str) -> bool:
+            record_id = f"news:{_article_id(loc)}"
+            return record_id not in self.known_ids and not self._in_ledger(record_id, domain)
+
+        if sitemap_urls:
+            for entry in self._discover(
+                sitemap_urls, domain, stats, cutoff, cap, accept, sitemap_filter
+            ):
+                kept[entry.loc] = entry
+        if listing:
+            still_wanted = cap - sum(1 for loc in kept if is_new(loc))
+            if still_wanted > 0:
+                for entry in self._discover_listing(
+                    listing, domain, stats, accept, still_wanted, is_new
+                ):
+                    kept[entry.loc] = entry
         stats.discovered = len(kept)
 
         fresh = []

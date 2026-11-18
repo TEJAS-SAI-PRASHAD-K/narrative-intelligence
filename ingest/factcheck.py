@@ -167,6 +167,17 @@ class DropReason(str, Enum):
     #: The publisher answered 404 or 410. The page is gone, so the answer will
     #: not change. It does not count as a failure of the domain.
     PAGE_GONE = "page_gone"
+    #: A listing page (an archive path read instead of a sitemap) could not be
+    #: fetched: network error, bad status, or the domain's failure limit. Paging
+    #: stops there, so the older pages are unread this run.
+    LISTING_UNREACHABLE = "listing_unreachable"
+    #: A listing page is larger than `backfill.listing.max_page_bytes`.
+    LISTING_TOO_LARGE = "listing_too_large"
+    #: A listing page held no article link that was not already seen, so the
+    #: archive ends there. Counted once per run, not a failure.
+    LISTING_END = "listing_end"
+    #: Paging stopped at `backfill.listing.max_pages` with older pages unread.
+    LISTING_PAGES_EXHAUSTED = "listing_pages_exhausted"
     #: A `dom_block` page where the verdict selector matched no element. Either
     #: the page is not a fact-check (a weekly roundup, an explainer) or the
     #: publisher changed its markup. A sudden rise in this count is the reskin signal.

@@ -495,6 +495,66 @@ def verify_manifest(
         )
 
 
+#: Language key for a claim whose language was not detected. Not folded into any
+#: language, so an undetected claim never counts as Hindi.
+UNDETECTED_LANGUAGE = "undetected"
+#: Publisher key for a row that records no domain.
+UNKNOWN_PUBLISHER = "unknown"
+#: Reason code for a Hindi evaluation set that rests on fewer than two publishers.
+HINDI_SINGLE_PUBLISHER = "hindi_single_publisher"
+
+
+def claims_by_publisher(
+    kept_rows: list[dict[str, Any]], ids: set[str] | frozenset[str] | None = None
+) -> dict[str, dict[str, int]]:
+    """Counts of claims per publisher domain and detected language.
+
+    Counts the known-false rows, or only the rows whose record id is in ``ids``.
+    A row with no ``claim_lang`` is counted under ``undetected``.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for item in kept_rows:
+        if ids is None:
+            if not _is_false(item):
+                continue
+        elif str(item["record_id"]) not in ids:
+            continue
+        domain = str(item.get("domain") or UNKNOWN_PUBLISHER)
+        lang = str(item.get("claim_lang") or UNDETECTED_LANGUAGE)
+        per_language = counts.setdefault(domain, {})
+        per_language[lang] = per_language.get(lang, 0) + 1
+    return {d: dict(sorted(v.items())) for d, v in sorted(counts.items())}
+
+
+def hindi_publisher_shares(by_publisher: dict[str, dict[str, int]]) -> dict[str, Any]:
+    """Each publisher's share of the Hindi claims, largest first.
+
+    ``share`` of a publisher is its Hindi claims over all Hindi claims. With no
+    Hindi claim there is no publisher entry, so no share is invented. ``reason``
+    is ``hindi_single_publisher`` when fewer than two publishers supply Hindi claims.
+    """
+    per_publisher = {d: int(v.get("hi", 0)) for d, v in by_publisher.items()}
+    per_publisher = {d: n for d, n in per_publisher.items() if n > 0}
+    total = sum(per_publisher.values())
+    publishers = [
+        {"publisher": d, "n_hindi_claims": n, "share": n / total}
+        for d, n in sorted(per_publisher.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    return {
+        "n_hindi_claims": total,
+        "n_publishers": len(publishers),
+        "publishers": publishers,
+        "reason": HINDI_SINGLE_PUBLISHER if len(publishers) < 2 else None,
+    }
+
+
+def publisher_shares_from_data(data_dir: Path) -> dict[str, Any]:
+    """``hindi_publisher_shares`` for the deduplicated known-false claims on disk."""
+    from ingest.config import Settings
+    from ingest.factcheck import read_deduplicated_factchecks
+
+    result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
+    return hindi_publisher_shares(claims_by_publisher(result.kept))
 #: Tier label for a fact-check row whose `tier` column is empty.
 TIER_UNKNOWN = "unknown"
 
@@ -512,6 +572,8 @@ class ClaimUniverse:
     manifest_rows: int = 0
     #: Counts from the deduplicating reader, for the report.
     dedup_counts: dict[str, int] = field(default_factory=dict)
+    #: Evaluation claims per publisher domain and detected claim language.
+    claims_by_publisher: dict[str, dict[str, int]] = field(default_factory=dict)
     #: Deduplicated fact-check rows per extraction tier, including rows outside the
     #: frozen set, so a tier that only appears after freezing is still counted.
     tier_counts: dict[str, int] = field(default_factory=dict)
@@ -569,6 +631,7 @@ def build_claim_universe(
         manifest_path=manifest_path,
         manifest_rows=len(manifest) if manifest is not None else 0,
         dedup_counts=dict(dedup_counts or {}),
+        claims_by_publisher=claims_by_publisher(kept_rows, eval_ids),
         tier_counts=dict(sorted(tier_counts.items())),
         eval_tier_counts=dict(sorted(eval_tier_counts.items())),
     )
@@ -1343,6 +1406,14 @@ def evaluate(
                 "both scored"
             )
 
+    hindi_shares = hindi_publisher_shares(universe.claims_by_publisher)
+    if hindi_shares["reason"]:
+        notices.append(
+            f"{hindi_shares['reason']}: {hindi_shares['n_hindi_claims']} Hindi evaluation "
+            f"claims come from {hindi_shares['n_publishers']} publisher(s). A Hindi result "
+            "then reflects the claims one publisher chose to check"
+        )
+
     hindi_gates = {}
     for name in ordered:
         gate = hindi_gate(name, cells[name].get("hi"))
@@ -1372,6 +1443,8 @@ def evaluate(
             "manifest": str(universe.manifest_path) if universe.manifest_path else None,
             "manifest_rows": universe.manifest_rows,
             "n_evaluation_claims": len(universe.eval_ids),
+            "claims_by_publisher": universe.claims_by_publisher,
+            "hindi_publisher_shares": hindi_shares,
             "dedup_counts": universe.dedup_counts,
             "rows_per_tier": universe.tier_counts,
             "claims_per_tier": universe.eval_tier_counts,
@@ -1587,6 +1660,24 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
             f"**{gate_text(gate)}** | {_escape(gate['reason'])} |"
         )
     lines.append("")
+
+    shares = evaluation_set["hindi_publisher_shares"]
+    lines += [
+        "## Hindi claims by publisher",
+        "",
+        f"{shares['n_hindi_claims']} Hindi evaluation claims from {shares['n_publishers']} "
+        "publisher(s). Share is the publisher's Hindi claims over all Hindi evaluation claims.",
+        "",
+    ]
+    if shares["reason"]:
+        lines += [f"> {shares['reason']}: a Hindi result reflects one publisher's choices.", ""]
+    if shares["publishers"]:
+        lines += ["| publisher | Hindi claims | share |", "|---|---|---|"]
+        lines += [
+            f"| {_escape(row['publisher'])} | {row['n_hindi_claims']} | {row['share']:.1%} |"
+            for row in shares["publishers"]
+        ]
+        lines.append("")
 
     lines += [
         "## Skipped and excluded rows",

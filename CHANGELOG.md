@@ -83,6 +83,13 @@ decision.
   flags 42 of 100 rows at threshold 0.5, and all 42 are false positives. It flags all 20
   debunk articles. The transfer gap stays unmeasured, and `evaluate misinfo` refuses
   transfer metrics on one class.
+- **BOOM Hindi and Fact Crescendo archive backfill.** BOOM Hindi lists only its newest
+  day in its sitemaps, so the backfill reads the paginated `/fact-check` listing
+  (`backfill.listing`) and walks about 600 articles. Fact Crescendo keeps its `rss_tag`
+  daily path but opts into the ClaimReview backfill (`backfill.claimreview`), because
+  ClaimReview is appearing on its recent posts. Pages without one are counted as
+  `no_claimreview`. The frozen-set summary and the comparison report now print the Hindi
+  claim share per publisher, so a set that still rests on one publisher is visible.
 - **`coordinated_author_ratio` on the narrative scorecard and the authors KPI.** Fusion
   reads this ratio and not `bot_like`, so the API now serves the one it uses. The scorecard
   stores the value fusion read at score time (new nullable column, migration `c4d8a2f6e193`),

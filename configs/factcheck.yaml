@@ -50,7 +50,38 @@ publishers:
   boomlive.in:
     name: BOOM
     tier: claimreview
-    languages: [en]
+    languages: [en, hi]
+    # BOOM Hindi (hindi.boomlive.in) shares the registrable domain, so it is
+    # backfilled under this key. The English site is not backfilled: only the
+    # Hindi host is listed below.
+    # Probed live 2026-11-18. robots.txt allows everything except admin, xhr,
+    # staging, search and preview paths, and a few test paths.
+    # `sitemap-daily.xml` lists 7 URLs,
+    # `news-sitemap-daily.xml` 7 and `sitemap-daily-updated.xml` 2, all from the last
+    # day or two, and there is no sitemap index (`sitemap.xml` and
+    # `sitemap_index.xml` answer 404). The sitemaps
+    # stay shallow, so the archive is read from the paginated category listing
+    # `/fact-check/N`: pages 1 to 51 hold 11 to 12 article links each and page 52
+    # holds none, so the archive path reaches about 600 articles. Page 51 reaches
+    # article ids near 29200, against 32507 on page 1. A listing page is about
+    # 800 KB. 23 of 24 sampled articles (8 each from pages 1, 25 and 51) carried a
+    # ClaimReview, all rating `False`; one page had none. A page URL accepts
+    # `/news/x-<id>` and redirects to the canonical article, so ids below the
+    # listing depth can be enumerated, but that costs one 900 KB request per id
+    # with most ids not being fact-checks, and it is not used.
+    backfill:
+      sitemaps:
+        - https://hindi.boomlive.in/sitemap-daily.xml
+      # Archive path for the pages the sitemaps do not reach. See the `listing`
+      # keys under "Archive backfill" below.
+      listing:
+        first_url: https://hindi.boomlive.in/fact-check
+        page_url: https://hindi.boomlive.in/fact-check/{page}
+        link_pattern: 'href="(/fact-check/[^"/?#]+-[0-9]{3,6})"'
+        max_pages: 60
+      url_pattern: "^https://hindi\\.boomlive\\.in/fact-check/"
+      # Rows whose detected claim language is not Hindi are not written.
+      claim_languages: [hi]
   thequint.com:
     name: The Quint WebQoof
     tier: claimreview
@@ -88,6 +119,29 @@ publishers:
     name: Fact Crescendo
     tier: rss_tag
     languages: [hi, en]
+    # Probed live 2026-11-18. The Hindi site is factcrescendo.com itself
+    # (`<html lang="hi-IN">`, Devanagari titles); hindi.factcrescendo.com does not
+    # resolve. robots.txt allows everything and lists `wp-sitemap.xml` (post
+    # sitemaps 1 to 3 hold 4741 posts, 2018 to 2026) and `sitemap-news.xml`. The
+    # daily verdict is an RSS `<category>` term, so `tier` stays `rss_tag`.
+    # ClaimReview is being added to recent posts. A 21-post sample taken during the
+    # rollout found 2 with one, both from 2026-11-17 or 2026-11-18; a later backfill
+    # of the 6 newest posts found one on all 6, rated `False` twice and `Misleading`
+    # four times. Older posts carry none and their Article JSON-LD holds no rating.
+    # The block opts into the ClaimReview path with `claimreview: true`, so pages
+    # without one are fetched and counted as `no_claimreview` rather than left
+    # unmeasured. A `Misleading` rating is dropped as `rating_is_middle`, like every
+    # other middle rating.
+    # The site rate-limits aggressively: a burst of about seven requests answers
+    # 503 with `retry-after: 3600`, and the block lifted within minutes. `max_urls`
+    # keeps one run small, and the domain failure limit stops a run that is refused.
+    backfill:
+      claimreview: true
+      sitemaps:
+        - https://factcrescendo.com/wp-sitemap.xml
+      sitemap_pattern: "/wp-sitemap-posts-post-[0-9]+\\.xml$"
+      claim_languages: [hi]
+      max_urls: 50
   newschecker.in:
     name: Newschecker
     tier: dom_block
@@ -146,20 +200,38 @@ other_fact_checkers:
 # daily pass. Run it with `python -m ingest.cli factchecks --backfill`.
 #
 # Publisher `backfill` keys:
-#   sitemaps         URLs of sitemap indexes or sitemaps (required)
+#   sitemaps         URLs of sitemap indexes or sitemaps (required unless `listing` is set)
 #   sitemap_pattern  regex, a child sitemap URL must match it (optional)
 #   url_pattern      regex, a page URL must match it (optional)
 #   exclude_pattern  regex, a page URL must not match it (optional)
+#   claimreview      true to read a publisher whose `tier` is not `claimreview`
+#                    through its ClaimReview markup. `tier` still chooses the daily
+#                    path. Pages without a ClaimReview are counted as
+#                    `no_claimreview`. Default false (optional)
 #   claim_languages  list of language codes, a row with another detected language
 #                    is not written and is counted by language (optional)
+#   listing          archive path for a site whose sitemaps are shallow (optional)
+#                      first_url     page 1 of a paginated listing (required)
+#                      page_url      URL of page n, with `{page}` in it (required)
+#                      link_pattern  regex over the page text, group 1 or the whole
+#                                    match is an article URL or path (required)
+#                      max_pages     most pages one run reads, default 60
+#                      max_page_bytes  size bound of one page, default 5000000
+#                    Paging stops on a page with no new link (`listing_end`), at
+#                    max_pages (`listing_pages_exhausted`), at the URL bound, on a
+#                    page that cannot be read (`listing_unreachable`), or on an
+#                    oversized page (`listing_too_large`). Listing entries have no
+#                    `lastmod`, so `min_lastmod` does not apply to them.
+#                    `sitemaps` may be empty when `listing` is set.
 #   max_urls         lower bound than the global cap, for this publisher (optional)
 #   min_lastmod      later cutoff than the global one, for this publisher (optional)
 # The backfill has its own budget, `max_urls_per_publisher`. It is separate from
 # `fetch.max_articles`, which limits only the daily pass. A page whose `lastmod`
 # is absent or not an ISO 8601 date is kept and counted. Sitemap and page
 # responses must end on the publisher's registrable domain after redirects.
-# Only publishers with `tier: claimreview` are read. Page URLs and sitemap URLs
-# on another registrable domain are refused and counted.
+# Only publishers with `tier: claimreview` are read, unless the block sets
+# `claimreview: true`. Page URLs and sitemap URLs on another registrable domain
+# are refused and counted.
 backfill:
   # Most URLs one publisher can add in one run. The newest pages go first.
   max_urls_per_publisher: 300

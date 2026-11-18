@@ -639,7 +639,7 @@ Two more things the numbers say:
 | publisher | ClaimReview JSON-LD | how the verdict is reachable |
 |---|---|---|
 | BOOM, The Quint, Vishvas News | ✅ | structured, tier 1 |
-| Fact Crescendo | ❌ | verdict is an RSS `<category>` term, tier 2 |
+| Fact Crescendo | partial | a ClaimReview on some pages; the daily verdict is an RSS `<category>` term, tier 2 |
 | Newschecker | ❌ | rating in the visible result block, claim in the `Claim` block, tier 3 (`dom_block`) |
 | Alt News, Factly | ❌ | headline predicate only — **not implemented** |
 | DigitEye | — | site unreachable when probed |

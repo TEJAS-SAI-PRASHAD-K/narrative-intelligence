@@ -172,12 +172,16 @@ the honest entry in that cell, not a zero.
   archive URL through the tier 1 ClaimReview path. The operator runs it on the data host.
   The budget is separate from `fetch.max_articles`. The Vishvas entry sets
   `claim_languages: [hi]`, so the backfill writes no English or Marathi row. The Hindi set
-  therefore comes almost all from one publisher (99.8 percent). A Hindi result reflects
-  the claims that Vishvas News chose to check, not Hindi misinformation in general. Fact
-  Crescendo and the BOOM Hindi site are not configured. Fact Crescendo shows a ClaimReview
-  on only some pages. The BOOM Hindi site lists only the newest articles in its sitemaps.
-  To add a publisher, add a `backfill` block to `configs/factcheck.yaml`. No code change
-  is necessary.
+  therefore comes almost all from one publisher (99.8 percent) in that freeze. A Hindi
+  result reflects the claims that Vishvas News chose to check, not Hindi misinformation
+  in general. The BOOM Hindi archive is now configured through its paginated
+  `/fact-check` listing, because its sitemaps hold only the newest day, and Fact
+  Crescendo opts into the ClaimReview path under its `rss_tag` tier. Both blocks are in
+  `configs/factcheck.yaml`, and the listing path and the tier opt-in are covered by tests.
+  The next backfill run on the data host adds their claims, and
+  `modeling.cli freeze-factchecks` prints the Hindi share per publisher; the comparison
+  report records the same shares. Refreezing the manifest and rerunning the Hindi gate
+  remain a data host task.
 - **Fact-check extraction tier 4, and a tier 3 run on the data host.** Tier 3 reads
   the Newschecker result and claim blocks with selectors from `configs/factcheck.yaml`.
   Run `python -m ingest.cli factchecks` on the data host to add its rows to
