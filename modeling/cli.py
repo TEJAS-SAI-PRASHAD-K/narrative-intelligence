@@ -446,9 +446,21 @@ def label_agreement(
     for line in render_agreement(agreement_report(frame, seed=DEFAULT_SEED), DEFAULT_SEED):
         console.print(line, markup=False, highlight=False, soft_wrap=True)
     if fill_agreed:
+        import shutil
+
         filled, counts = fill(frame)
-        filled.to_csv(sheet, index=False)
-        console.print(f"filled {counts['filled']} cells, {counts['left_for_adjudication']} left")
+        # Keep the sheet as it was, then replace it in one step, so a crash cannot leave a
+        # half-written sheet that holds hand labels.
+        backup = sheet.with_name(sheet.name + ".bak")
+        shutil.copy2(sheet, backup)
+        temporary = sheet.with_name(sheet.name + ".tmp")
+        filled.to_csv(temporary, index=False)
+        temporary.replace(sheet)
+        console.print(
+            f"filled {counts['filled']} cells, {counts['left_for_adjudication']} left. "
+            f"The sheet as it was before is in {backup}.",
+            soft_wrap=True,
+        )
 
 
 @app.command(name="relabel-eval")
