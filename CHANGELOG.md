@@ -49,6 +49,26 @@ decision.
   records that sit in a cluster with each other language. Both embedders cluster the same
   sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
   each size. The narratives manifest records `min_cluster_size`.
+- **Checkpoint backup and hash check.** `modeling.registry.resolve` pulls a checkpoint
+  from the private repo in `HF_REPO` and checks its sha256 against the optional `sha256`
+  map in `configs/models.yaml`, for local, Hub and Drive copies. A mismatch raises
+  `checkpoint_sha256_mismatch` and deletes a pulled copy. The Laya stage turns it into
+  the reason `laya:checkpoint_sha256_mismatch`. A pulled copy with no hash is refused and
+  deleted with `checkpoint_unverified_pull`, unless `ALLOW_UNVERIFIED_PULL=1`. A local
+  copy with no hash is used and counts `checkpoint_unverified`. A map with no value for
+  the version counts `checkpoint_sha256_missing_key`. `HF_REVISION` or `hf_revision`
+  pins the repo revision. The pull covers the Laya calibrator files and skips
+  `checkpoint_latest/` at any depth. Other new reason codes: `checkpoint_broken_symlink`,
+  `hub_token_missing`, `hub_not_installed`, `hub_pull_failed`, `hub_path_absent`.
+  New commands: `python -m modeling.cli checkpoint-hash <module> [--version <folder>]`
+  and `python -m modeling.cli checkpoint-pull <module> [--version <folder>]`. The model
+  cards and `docs/laya-finetune.md` no longer say that a new clone must train again.
+- **The checkpoint hash definition changed.** The hash now frames each path with a length
+  prefix, follows symbolic links, skips `checkpoint_latest/` at any depth and `*.tmp`
+  files, and reads `tokenizer/tokenizer_config.json` and `registry.json` in a normalized
+  form. Every value that the old function produced is replaced, including the value
+  `be9cc846...` in the misinfo model card. So the `checkpoint_stamp` suffix in
+  `model_versions` changes, and the corpus is scored once again.
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict

@@ -315,8 +315,9 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 "stage": "misinfo",
                 "table": "record_scores",
                 "note": ctx.note(
-                    "no trained checkpoint; misinfo_prob stays null. Train with "
-                    "`modeling train misinfo` once a benchmark is on disk."
+                    "no checkpoint" + _registry_reason_note("misinfo", version)
+                    + "; misinfo_prob stays null. Pull it with `modeling checkpoint-pull "
+                    "misinfo`, or train with `modeling train misinfo`."
                 ),
             }
         ]
@@ -521,11 +522,18 @@ def _record_misinfo_skips(ctx: StageContext, reasons: pd.Series) -> str:
 # ---------------------------------------------------------------------------
 # laya: Hindi misinfo_prob
 # ---------------------------------------------------------------------------
-def _laya_stage_config(settings: ModelingSettings) -> dict[str, Any]:
+def _laya_stage_config(
+    settings: ModelingSettings, needed: set[str] | None = None
+) -> dict[str, Any]:
     """The ``laya`` config with the Hindi directory filled in from ``LAYA_HI_CHECKPOINT``.
 
     The committed ``finetuned_checkpoints.hi`` is null because the path is a property of
     the host. A value in the file wins. A relative setting resolves against ``MODELS_DIR``.
+
+    The registry pulls and hashes a checkpoint only when ``needed`` names its language.
+    ``needed=None`` resolves every language, and an empty set resolves none. A registry
+    refusal goes in ``_registry_refusals``, and the registry reason code goes in
+    ``_registry_reasons``, both keyed by language.
     """
     import copy
 
@@ -536,13 +544,36 @@ def _laya_stage_config(settings: ModelingSettings) -> dict[str, Any]:
     override = getattr(settings, "laya_hi_checkpoint", None)
     if not tuned.get("hi") and override:
         path = Path(str(override)).expanduser()
-        tuned["hi"] = str(path if path.is_absolute() else settings.models_dir / path)
+        resolved = path if path.is_absolute() else settings.models_dir / path
+        if not path.is_absolute() and len(path.parts) == 2:
+            # `<module>/<version>` is a registry layout. It always goes through `resolve`,
+            # so a local copy is hash-checked too and an absent one is pulled.
+            from modeling.registry import CheckpointIntegrityError, last_reason, resolve
+
+            found = None
+            if needed is None or "hi" in needed:
+                try:
+                    found = resolve(path.parts[0], path.parts[1], required=False)
+                except CheckpointIntegrityError as exc:
+                    config.setdefault("_registry_refusals", {})["hi"] = (exc.reason, str(exc))
+                    config.setdefault("_registry_reasons", {})["hi"] = exc.reason
+                else:
+                    if found is None:
+                        reason = last_reason(path.parts[0], path.parts[1])
+                        if reason:
+                            config.setdefault("_registry_reasons", {})["hi"] = reason
+            if found is not None:
+                resolved = found.path
+        tuned["hi"] = str(resolved)
     config["finetuned_checkpoints"] = tuned
     return config
 
 
 def _laya_refusals(
-    scorer: Any, languages: Sequence[str]
+    scorer: Any,
+    languages: Sequence[str],
+    registry_refusals: dict[str, tuple[str, str]] | None = None,
+    registry_reasons: dict[str, str] | None = None,
 ) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, Any]]]:
     """Per language, ``(reason, message)`` when the stage cannot score it, else a calibrator.
 
@@ -560,7 +591,11 @@ def _laya_refusals(
     refused: dict[str, tuple[str, str]] = {}
     usable: dict[str, tuple[str, Any]] = {}
     for lang in languages:
+        if registry_refusals and lang in registry_refusals:
+            refused[lang] = registry_refusals[lang]
+            continue
         tuned = scorer.finetuned_path_for(lang)
+        registry_reason = (registry_reasons or {}).get(lang)
         if not tuned:
             refused[lang] = (
                 LayaSkipReason.CHECKPOINT_MISSING,
@@ -572,7 +607,8 @@ def _laya_refusals(
         try:
             scorer.checkpoint_for(lang)
         except LayaCheckpointMissing as exc:
-            refused[lang] = (LayaSkipReason.CHECKPOINT_MISSING, str(exc))
+            detail = f" (registry reason: {registry_reason})" if registry_reason else ""
+            refused[lang] = (LayaSkipReason.CHECKPOINT_MISSING, f"{exc}{detail}")
             continue
         try:
             loaded = load_calibrator(
@@ -621,7 +657,7 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
     from modeling.text.laya_clf import MIN_CHARS, LayaScorer, LayaSkipReason
     from modeling.titles import title_of
 
-    config = _laya_stage_config(ctx.settings)
+    config = _laya_stage_config(ctx.settings, needed=set())
     languages = [str(lang).strip().lower() for lang in config.get("scoring_languages") or []]
     declared = {str(lang).lower() for lang in config.get("languages") or []}
     problem = None
@@ -682,12 +718,19 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
         in_scope.loc[_from_fact_checker(in_scope), "id"].astype(str)
     )
 
+    # Only a record that this stage will score needs a checkpoint, so the registry is asked
+    # for the languages of those records and for no other.
+    needed = {str(r.lang).lower() for r in candidates if str(r.id) not in from_fact_checker}
+    config = _laya_stage_config(ctx.settings, needed=needed)
     scorer = LayaScorer(settings=ctx.settings, _config=config)
     refused: dict[str, tuple[str, str]] = {}
     usable: dict[str, tuple[str, Any]] = {}
-    if candidates:
+    if needed:
         refused, usable = _laya_refusals(
-            scorer, sorted({str(r.lang).lower() for r in candidates})
+            scorer,
+            sorted(needed),
+            config.get("_registry_refusals"),
+            config.get("_registry_reasons"),
         )
         for lang, (reason, message) in refused.items():
             log.error("laya stage refused for lang=%s (laya:%s): %s", lang, reason, message)
@@ -830,8 +873,18 @@ def _laya_stage(ctx: StageContext) -> list[dict[str, Any]]:
         if skip_counts
         else ""
     )
+    reasons_by_lang = config.get("_registry_reasons") or {}
     refused_note = (
-        "; REFUSED " + ", ".join(f"{lang}: laya:{code}" for lang, (code, _) in refused.items())
+        "; REFUSED "
+        + ", ".join(
+            f"{lang}: laya:{code}"
+            + (
+                f" (reason: {reasons_by_lang[lang]})"
+                if reasons_by_lang.get(lang) and reasons_by_lang[lang] != code
+                else ""
+            )
+            for lang, (code, _) in refused.items()
+        )
         if refused
         else ""
     )
@@ -906,8 +959,9 @@ def _stance_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 "stage": "stance",
                 "table": "record_scores",
                 "note": ctx.note(
-                    "not trained; stance and stance_conf are written as null, as the "
-                    "contract permits. See artifacts/model_cards/stance.md."
+                    "not trained or not pulled" + _registry_reason_note("stance", version)
+                    + "; stance and stance_conf are written as null, as the contract "
+                    "permits. See artifacts/model_cards/stance.md."
                 ),
             }
         ]
@@ -1488,6 +1542,14 @@ def _narratives_touched(records: pd.DataFrame, membership: pd.DataFrame) -> dict
         .apply(lambda s: sorted(set(s.astype(str))))
         .to_dict()
     )
+
+
+def _registry_reason_note(module: str, version: str) -> str:
+    """`` (reason: <code>)`` when the registry counted a reason for this checkpoint."""
+    from modeling.registry import last_reason
+
+    reason = last_reason(module, version)
+    return f" (reason: {reason})" if reason else ""
 
 
 def checkpoint_stamp(module: str, version: str, checkpoint) -> str:

@@ -112,6 +112,69 @@ def registry() -> None:
     console.print(table)
 
 
+@app.command(name="checkpoint-hash")
+def checkpoint_hash(
+    module: str = typer.Argument(..., help="misinfo | stance | laya"),
+    version: str | None = typer.Option(
+        None, "--version", help="Checkpoint folder name. Default: the version in models.yaml."
+    ),
+) -> None:
+    """Print the sha256 of a local checkpoint directory, to put in configs/models.yaml.
+
+    Reads the directory under MODELS_DIR. It never pulls from the Hub.
+    """
+    _bootstrap()
+    from modeling.registry import directory_sha256, sibling_folders
+
+    path, digest = directory_sha256(module, version)
+    if digest is None:
+        found = sibling_folders(module)
+        console.print(f"[red]no checkpoint files in {path}[/]")
+        console.print(f"folders under models/{module}: {', '.join(found) if found else 'none'}")
+        raise typer.Exit(1)
+    typer.echo(digest)
+    typer.echo(f"{module}/{path.name}  {path}", err=True)
+
+
+@app.command(name="checkpoint-pull")
+def checkpoint_pull(
+    module: str = typer.Argument(..., help="misinfo | stance | laya"),
+    version: str | None = typer.Option(
+        None, "--version", help="Checkpoint folder name. Default: the version in models.yaml."
+    ),
+) -> None:
+    """Resolve a checkpoint, pull it from HF_REPO if absent, and verify its sha256."""
+    _bootstrap()
+    from modeling.config import module_config
+    from modeling.registry import (
+        CheckpointIntegrityError,
+        CheckpointNotFound,
+        resolve,
+        sha256_versions,
+    )
+
+    known = sha256_versions(module)
+    wanted = version or str(module_config(module).get("version", ""))
+    if known and wanted not in known:
+        console.print(f"[red]no sha256 for {module}/{wanted}. Pass --version with one of:[/]")
+        console.print(", ".join(known))
+        raise typer.Exit(1)
+
+    try:
+        found = resolve(module, version)
+    except CheckpointIntegrityError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+    except CheckpointNotFound as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+    assert found is not None
+    state = "verified" if found.verified else "UNVERIFIED (no sha256 in configs/models.yaml)"
+    console.print(f"{found.module}/{found.version}  origin={found.origin}  {state}")
+    console.print(f"path: {found.path}")
+    console.print(f"sha256: {found.sha256}")
+
+
 @app.command(name="show-config")
 def show_config() -> None:
     """Seeds, device, paths and library versions -- the reproducibility block."""

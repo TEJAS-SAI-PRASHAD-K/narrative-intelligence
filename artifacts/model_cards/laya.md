@@ -129,6 +129,29 @@ check averages `ECE(out of fold) - ECE(raw)` over five fold seeds, with a group 
 zero. A fixed margin was removed because it rejected calibrated scores by chance at 400 rows.
 A real fit needs a group id for every validation row, and the stage fails without them.
 
+## Get the weights on a fresh clone
+
+Weights are not in git. A fresh clone pulls the two fine-tunes from a private Hugging Face
+model repo. The folders are `laya/multi-v0.2.1` (Hindi, used by the stage) and
+`laya/en-v0.2.1` (English, a comparison only). Each folder holds the calibrator files
+`misinfo_prob_calibrator.json` and `misinfo_prob_calibration_report.json`.
+
+```bash
+HF_REPO=<owner>/<repo>
+HF_TOKEN=<read token>
+LAYA_HI_CHECKPOINT=laya/multi-v0.2.1
+```
+
+Put the three lines in `.env`. The first `laya` stage run pulls the folder into
+`models/laya/multi-v0.2.1`. To fetch a folder by hand, run
+`python -m modeling.cli checkpoint-pull laya --version multi-v0.2.1`, and the same for
+`en-v0.2.1`. The registry checks each folder against the `sha256` map in
+`configs/models.yaml`. A different hash gives `checkpoint_sha256_mismatch`. The stage then
+writes no score and gives the reason `laya:checkpoint_sha256_mismatch`. A pulled copy that
+fails the check is deleted. A pulled copy with no `sha256` value is refused with
+`checkpoint_unverified_pull`. The pull leaves out `checkpoint_latest/`. No training run is
+needed.
+
 ## Out-of-scope use
 
 Laya scores are not a determination that a claim is false. Do not use them for
