@@ -44,9 +44,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
-#: Phase 1's five source values. Six adapters converge on them: ConvoKit and
+#: Phase 1's six source values. Seven adapters converge on them: ConvoKit and
 #: Kaggle both emit `reddit`.
-SOURCES = ("reddit", "mastodon", "news", "gdelt", "youtube")
+SOURCES = ("reddit", "mastodon", "news", "gdelt", "youtube", "telegram")
 
 
 class Post(Base):

@@ -76,7 +76,7 @@ class UnavailableSource(FakeSource):
     source = "youtube"
 
     def preflight(self) -> None:
-        raise SourceUnavailable("youtube: YOUTUBE_API_KEY absent; skipping")
+        raise SourceUnavailable("youtube: yt-dlp is not installed; skipping")
 
 
 class TestStats:
@@ -139,7 +139,7 @@ class TestManifest:
 
 class TestShowConfig:
     def test_reports_presence_never_values(self, cli_env, monkeypatch):
-        monkeypatch.setattr(cli_env, "youtube_api_key", "SECRET-VALUE-DO-NOT-PRINT")
+        monkeypatch.setattr(cli_env, "mastodon_access_token", "SECRET-VALUE-DO-NOT-PRINT")
         result = runner.invoke(cli.app, ["show-config"])
         assert result.exit_code == 0
         assert "SECRET-VALUE" not in result.stdout
@@ -166,7 +166,7 @@ class TestFetchAll:
         result = runner.invoke(cli.app, ["fetch-all"])
         assert result.exit_code == 0
         assert "skipped" in result.stdout
-        assert "YOUTUBE_API_KEY absent" in result.stdout
+        assert "yt-dlp is not installed" in result.stdout
 
     def test_mixed_availability_still_writes_what_it_can(self, cli_env, monkeypatch):
         classes = {"reddit_convokit": FakeSource, "youtube": UnavailableSource}

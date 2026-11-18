@@ -150,7 +150,7 @@ are anchored with a leading slash on purpose, and
 | file | governs |
 |---|---|
 | `configs/topics.yaml` | the case under study: seed keywords, GDELT phrases, hashtags, query strings |
-| `configs/sources.yaml` | which feeds, instances, corpora and quotas |
+| `configs/sources.yaml` | which feeds, instances, corpora and caps |
 | `configs/models.yaml` | per-module checkpoints, versions, thresholds |
 | `configs/scoring.yaml` | which batch scoring stages run, in what order |
 | `configs/fusion.yaml` | the fused risk score: weights, normalization, priority bounds |

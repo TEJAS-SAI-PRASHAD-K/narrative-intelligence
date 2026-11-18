@@ -116,6 +116,7 @@ def to_scorecard(row) -> NarrativeScorecard:
     return NarrativeScorecard(
         priority=row.priority or "low",
         bot_like=row.bot_like,
+        coordinated_author_ratio=row.coordinated_author_ratio,
         anomalous=row.anomalous,
         toxicity=row.toxicity,
         compass_risk=row.compass_risk,

@@ -669,3 +669,35 @@ def test_no_warning_when_the_values_are_spread(tmp_path, settings, checkpoint, m
     info = out[0]["calibration"]["hi"]
     assert info["collapse_warning"] is False
     assert info["distinct_calibrated"] >= LC.MIN_DISTINCT_OUTPUTS
+
+
+# ---------------------------------------------------------------------------
+# fact-checkers
+# ---------------------------------------------------------------------------
+def test_a_fact_check_article_gets_no_value_and_the_reason(tmp_path, settings, checkpoint):
+    frame = records()
+    frame["source_detail"] = "amarujala.com"
+    frame.loc[frame["id"] == "hi2", "source_detail"] = "www.vishvasnews.com"
+    ctx = make_ctx(tmp_path, settings, frame=frame)
+    S._laya_stage(ctx)
+    rows = table(ctx)
+    assert prob_of(rows["hi1"]) is not None
+    assert prob_of(rows["hi2"]) is None
+    assert reasons_of(rows["hi2"]) == ["laya:fact_check_publisher"]
+    assert HINDI_2 not in FakeScorer.scored_texts
+
+
+def test_a_fact_check_article_scored_earlier_loses_its_value_and_stamp(
+    tmp_path, settings, checkpoint
+):
+    frame = records()
+    frame["source_detail"] = "amarujala.com"
+    ctx = make_ctx(tmp_path, settings, frame=frame)
+    S._laya_stage(ctx)
+    assert prob_of(table(ctx)["hi1"]) is not None
+    ctx.records.loc[ctx.records["id"] == "hi1", "source_detail"] = "vishvasnews.com"
+    S._laya_stage(ctx)
+    row = table(ctx)["hi1"]
+    assert prob_of(row) is None
+    assert "laya" not in _as_version_dict(row["model_versions"])
+    assert reasons_of(row) == ["laya:fact_check_publisher"]

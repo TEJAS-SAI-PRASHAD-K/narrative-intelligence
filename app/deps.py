@@ -42,6 +42,9 @@ class Principal:
     key_id: str
     name: str
     scopes: frozenset[str]
+    #: First characters of the key, for identification. None when the caller is
+    #: not a stored key (demo mode).
+    prefix: str | None = None
 
     def has(self, scope: str) -> bool:
         # `admin` implies the other two. Three scopes with an implication is
@@ -85,7 +88,10 @@ async def get_principal(
     for row in rows:
         if verify_key(x_api_key, row.key_hash):
             principal = Principal(
-                key_id=str(row.id), name=row.name, scopes=frozenset(row.scopes or ())
+                key_id=str(row.id),
+                name=row.name,
+                scopes=frozenset(row.scopes or ()),
+                prefix=row.prefix,
             )
             request.state.principal = principal
             await _touch_last_used(session, row)

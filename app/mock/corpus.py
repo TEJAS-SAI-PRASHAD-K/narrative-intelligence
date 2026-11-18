@@ -514,9 +514,13 @@ def corpus() -> MockCorpus:
         member_authors = [a for a in authors if a.author_id in narrative.author_ids]
         bot_scores = [a.bot_score for a in member_authors if a.bot_score is not None]
 
-        coordination_scores = [
-            a.coordination_score for a in member_authors if a.coordination_score is not None
-        ]
+        # Cluster 4 has no author data at all (see `missing` below), so the
+        # coordination stage never scored its authors and the ratio is null.
+        coordination_scores = (
+            []
+            if narrative.cluster_id == 4
+            else [a.coordination_score for a in member_authors if a.coordination_score is not None]
+        )
         narrative.coordinated_author_ratio = (
             round(sum(1 for c in coordination_scores if c > 0.5) / len(coordination_scores), 3)
             if coordination_scores
@@ -555,6 +559,7 @@ def corpus() -> MockCorpus:
         narrative.scorecard = {
             "priority": "high" if fusion >= 70 else ("medium" if fusion >= 40 else "low"),
             "bot_like": bot_like,
+            "coordinated_author_ratio": narrative.coordinated_author_ratio,
             "anomalous": anomalous,
             "toxicity": toxicity,
             "compass_risk": rng.choice(("high", "medium", "low")),

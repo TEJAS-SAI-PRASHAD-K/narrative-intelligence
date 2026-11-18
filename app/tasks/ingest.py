@@ -36,7 +36,7 @@ def fetch(self, *, job_id: str | None = None, project_id: str = "", **params: An
 
     fetched: dict[str, Any] = {}
     errors: dict[str, str] = {}
-    targets = sources or ["reddit_convokit", "mastodon", "news_rss", "gdelt", "youtube"]
+    targets = sources or ["reddit_convokit", "mastodon", "news_rss", "gdelt", "youtube", "telegram"]
 
     for index, source in enumerate(targets):
         report_progress(job_id, 0.05 + 0.7 * index / max(len(targets), 1))

@@ -46,7 +46,14 @@ from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 from ingest.config import Settings, get_settings, load_yaml
-from ingest.normalize import WORD_CHARS, clean_text, detect_lang, resolve_domain, simhash
+from ingest.normalize import (
+    WORD_CHARS,
+    clean_text,
+    detect_lang,
+    html_parser_class,
+    resolve_domain,
+    simhash,
+)
 
 log = logging.getLogger("ingest.factcheck")
 
@@ -58,6 +65,10 @@ class Tier(str, Enum):
     CLAIMREVIEW = "claimreview"
     #: The RSS category list carries the verdict as one of its terms.
     RSS_TAG = "rss_tag"
+    #: A visible block in the article body, found with a per-publisher CSS
+    #: selector from configs/factcheck.yaml. The publisher states the rating, but
+    #: the markup is not a published interface and changes when the site is reskinned.
+    DOM_BLOCK = "dom_block"
 
 
 class OffDomainRedirect(Exception):
@@ -167,6 +178,15 @@ class DropReason(str, Enum):
     LISTING_END = "listing_end"
     #: Paging stopped at `backfill.listing.max_pages` with older pages unread.
     LISTING_PAGES_EXHAUSTED = "listing_pages_exhausted"
+    #: A `dom_block` page where the verdict selector matched no element. Either
+    #: the page is not a fact-check (a weekly roundup, an explainer) or the
+    #: publisher changed its markup. A sudden rise in this count is the reskin signal.
+    DOM_BLOCK_NOT_FOUND = "dom_block_not_found"
+    #: A `dom_block` publisher with no usable `dom_block` selectors, or a
+    #: selector the HTML parser rejects. Counted per page, so it cannot go unseen.
+    DOM_BLOCK_BAD_CONFIG = "dom_block_bad_config"
+    #: No HTML parser could be imported, so no `dom_block` page can be read.
+    HTML_PARSER_UNAVAILABLE = "html_parser_unavailable"
 
 
 @dataclass
@@ -324,7 +344,7 @@ def normalize_rating(rating: str) -> str:
 
 
 class FactCheckExtractor:
-    """Reads corpus records, writes verdict rows. Network only for tier 1."""
+    """Reads corpus records, writes verdict rows. Network for tiers 1 and 3."""
 
     def __init__(self, settings: Settings | None = None, config: dict | None = None):
         self.settings = settings or get_settings()
@@ -429,6 +449,65 @@ class FactCheckExtractor:
         # from "no markup at all" because they are different bugs.
         self.drop(DropReason.NO_RATING, url)
         return None
+
+    # --- tier 3: a visible block in the page ------------------------------
+    def from_dom_block(self, record: dict, html: str) -> FactCheck | None:
+        """Read the rating and the claim from the rendered article body.
+
+        The selectors come from the publisher's ``dom_block`` entry in
+        configs/factcheck.yaml (see there for what each key means), never from
+        this code, so a reskin is a config edit. A page where ``verdict`` matches
+        nothing is counted as DOM_BLOCK_NOT_FOUND and nothing is guessed.
+        """
+        url = record.get("url") or ""
+        domain = record.get("source_detail") or resolve_domain(url) or ""
+        spec = (self.publishers.get(domain) or {}).get("dom_block")
+        verdict_selector = spec.get("verdict") if isinstance(spec, dict) else None
+        heading_selector = spec.get("claim_heading") if isinstance(spec, dict) else None
+        heading_terms = (spec.get("claim_heading_text") or []) if isinstance(spec, dict) else []
+        body_selector = spec.get("claim_body") if isinstance(spec, dict) else None
+        if not (verdict_selector and heading_selector and heading_terms and body_selector):
+            self.drop(DropReason.DOM_BLOCK_BAD_CONFIG, f"{domain}: incomplete dom_block entry")
+            return None
+        parser_class = html_parser_class()
+        if parser_class is None:
+            self.drop(DropReason.HTML_PARSER_UNAVAILABLE, url)
+            return None
+        wanted = {normalize_rating(str(term)) for term in heading_terms}
+        try:
+            tree = parser_class(html or "")
+            # Next.js renders both `src` and `srcset`, so one rating can match twice.
+            # The first match in document order is the article's own result block.
+            matches = tree.css(verdict_selector)
+            headings = tree.css(heading_selector)
+            for heading in headings:
+                if normalize_rating(heading.text()) in wanted:
+                    body = heading.next
+                    while body is not None and not (
+                        body.tag != "-text" and body.css_matches(body_selector)
+                    ):
+                        body = body.next
+                    claim = _WS.sub(" ", clean_text(body.text())).strip() if body else ""
+                    break
+            else:
+                claim = ""
+        except Exception as exc:
+            self.drop(DropReason.DOM_BLOCK_BAD_CONFIG, f"{domain}: {type(exc).__name__}: {exc}")
+            return None
+        if not matches:
+            self.drop(DropReason.DOM_BLOCK_NOT_FOUND, url)
+            return None
+        rating = clean_text(matches[0].text())
+        if not rating:
+            self.drop(DropReason.NO_RATING, url)
+            return None
+        if not claim:
+            self.drop(DropReason.NO_CLAIM_TEXT, url)
+            return None
+        label = self.label_for(rating)
+        if label is None:
+            return None
+        return self._build(record, claim, rating, label, Tier.DOM_BLOCK)
 
     def _build(
         self,
@@ -691,6 +770,9 @@ class FactCheckExtractor:
                 # a page that came back (even an empty one) is parsed here, and
                 # an empty page is counted by from_html as having no markup.
                 result = self.from_html(record, html) if html is not None else None
+            elif tier == Tier.DOM_BLOCK.value:
+                html = self.fetch_html(url)
+                result = self.from_dom_block(record, html) if html is not None else None
             else:
                 self.drop(DropReason.NO_PUBLISHER_CONFIG, f"{domain}: tier={tier!r}")
                 continue

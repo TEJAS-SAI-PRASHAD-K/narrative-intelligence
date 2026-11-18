@@ -75,8 +75,9 @@ jobs:
           python -m pip install \
             "trafilatura>=1.9" \
             "gdeltdoc>=1.5" \
-            "google-api-python-client>=2.130" \
-            "Mastodon.py>=1.8"
+            "yt-dlp>=2024.8.6" \
+            "Mastodon.py>=1.8" \
+            "telethon>=1.36"
 
       - name: Test
         # No ignores. `app/models/` landed in 26d3ef0, so the 28 contract tests

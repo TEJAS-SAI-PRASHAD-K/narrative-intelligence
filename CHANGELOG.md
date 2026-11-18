@@ -13,6 +13,47 @@ decision.
 
 ### Added
 
+- **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
+  visible result block and the claim from the `Claim` block, in English and Hindi, with
+  the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
+  selector matches nothing is counted as `dom_block_not_found`, so a reskin shows up as a
+  count. Other new reason codes: `dom_block_bad_config`, `html_parser_unavailable`. The
+  rating map gains `Altered Photo/Video` and `Altered Media` (both `false`). The
+  evaluation report now lists fact-check rows per extraction tier, including a tier that
+  only appears after the evaluation set was frozen. Markup fixtures are in
+  `fixtures/newschecker/`.
+- **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
+  `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
+  subtitle text, so a video carries thousands of characters instead of a few hundred.
+  A manual track in the video's language is preferred, then the original auto caption
+  track; machine translations are never used. `raw` records `subtitle_lang` and
+  `subtitle_kind` (`manual`, `auto` or `none`). The run summary counts
+  `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`, and every
+  skip has a reason code (`extract_failed`, `search_failed`, `subtitle_fetch_failed`,
+  `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
+  a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
+  `fixtures/youtube_ytdlp_info.json`.
+- **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
+  a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
+  reaction total to `likes` and the reply count to `replies`; each is `None` when the
+  channel does not expose it. Needs `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and
+  `TELEGRAM_SESSION` (a `StringSession`), all optional: without them the source is skipped
+  with `missing_credentials`. Channels are listed under `telegram` in
+  `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
+  API source enums and `openapi.json`.
+- **`GET /keys/me`** returns the calling key's id, name, prefix and scopes
+  (granted and effective, plus `can_read`/`can_write`/`can_admin`), never the
+  secret or hash. It needs only `read`, so a read-only client can disable write
+  actions up front. Under `DEMO_MODE` it answers as the `demo` principal
+  (`read` and `write`, null prefix).
+- **`GET /authors/{author_id}/cohorts` and `GET /authors/{author_id}/narratives`**,
+  cursor paginated, returning `CohortOut` and `NarrativeSummary`. An unknown
+  author is a 404 `author_not_found`. Both are declared ahead of the
+  `:path` author detail route, which would otherwise match them.
+- **Name lookups for filter chips.** `GET /cohorts/{cohort_id}` and
+  `GET /author-groups/{group_id}` return `{id, name}` and a 404 (`cohort_not_found`,
+  `author_group_not_found`) for an unknown id. Narratives already resolve through
+  `GET /narratives/{narrative_id}`.
 - **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
   in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
   Vishvas News, DigitEye) carry a claim *and a verdict* and are the only
@@ -49,9 +90,38 @@ decision.
   ClaimReview is appearing on its recent posts. Pages without one are counted as
   `no_claimreview`. The frozen-set summary and the comparison report now print the Hindi
   claim share per publisher, so a set that still rests on one publisher is visible.
+- **`coordinated_author_ratio` on the narrative scorecard and the authors KPI.** Fusion
+  reads this ratio and not `bot_like`, so the API now serves the one it uses. The scorecard
+  stores the value fusion read at score time (new nullable column, migration `c4d8a2f6e193`),
+  and `/overview/kpis/authors` reports the same ratio over the filtered authors with the same
+  threshold. Null means no author was scored by the coordination stage, never 0. Rows scored
+  before the migration stay null until the next `score.fusion` run. `bot_like` is kept and
+  documented as an input fusion does not read.
+- **Cursor pagination on `/drivers/authors`, `/drivers/hashtags` and `/drivers/urls`.**
+  `DriversResponse` gains `next_cursor`, `total` and `filters_applied`, with the same
+  opaque cursor as the other list routes. Rows sort by post count and then by entity, so
+  tied counts keep one order across pages.
 
 ### Fixed
 
+- **Two `risk_score` fields declared no range.** `HighRiskPost.risk_score` and
+  `AuthorScoreExplanation.risk_score` now carry `minimum: 0` and `maximum: 100` in
+  `openapi.json`, like `AuthorOut.risk_score`. A client could only learn the 0 to 100
+  scale from a sample response, and a dashboard once read 33.2 as 3320 percent. A
+  contract test fails if any `risk_score` field loses its bounds. `GraphNode.bot_score`
+  and `DomainOut.sharing_author_bot_ratio` now declare their 0 to 1 range the same way.
+
+- **Fact-check articles had a misinformation score, and fusion counted it.** A debunk
+  quotes the false claim, and `misinfo` v0.2.0 flagged all 20 debunks in the English
+  sample. The `misinfo` and `laya` stages now give records from a fact-checker no value
+  and the reason `fact_check_publisher`. The `misinfo` stage also clears a value it wrote
+  on an earlier run when it now skips the record, and retracts its stamp.
+- **The fact-check comparison left only four fact-checkers out of the flag rate.** It
+  read the `publishers` block, which holds the publishers with an extraction tier. Alt
+  News, Factly, Newschecker and DigitEye are in the corpus too. `other_fact_checkers` in
+  `configs/factcheck.yaml` lists them, and `modeling.config.fact_check_domains` returns
+  all eight for the comparison and the scoring stages. The committed report predates
+  this and needs a rerun.
 - **The fact-check backfill spent its URL budget on pages that it had already dropped.**
   Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
   verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
@@ -141,6 +211,10 @@ decision.
 
 ### Removed
 
+- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
+  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
+  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
+  Data API's `regionCode` did.
 - **The deepfake module.** The code, the API, the table, the dependency tree, the
   training path and the evaluation artifacts are gone.
   - `POST /api/v1/media/check`, `GET /api/v1/media/check/{job_id}` and
@@ -159,9 +233,9 @@ decision.
   - The `media` extra, `modeling/media/`, the DFDC and FaceForensics++ loaders,
     the `deepfake` trainer, the `media` scoring stage and the `media_scores` table
     are removed. A leftover `data/scored/media_scores` directory is ignored.
-  - `maint.purge_uploads` stays as a file-system-only sweep. It deletes every entry
-    under `uploads_dir` that is older than `media_retention_hours`. It clears files
-    that a deployment uploaded before this removal.
+  - The `maint.purge_uploads` task, its beat schedule entry, the `uploads_dir` and
+    `media_retention_hours` settings (`UPLOADS_DIR`, `MEDIA_RETENTION_HOURS`) and the
+    compose `uploads` volume are removed. No deployment holds stored uploads.
 
 ### Known gaps
 

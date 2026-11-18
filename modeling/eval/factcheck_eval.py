@@ -555,6 +555,8 @@ def publisher_shares_from_data(data_dir: Path) -> dict[str, Any]:
 
     result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
     return hindi_publisher_shares(claims_by_publisher(result.kept))
+#: Tier label for a fact-check row whose `tier` column is empty.
+TIER_UNKNOWN = "unknown"
 
 
 @dataclass
@@ -572,6 +574,12 @@ class ClaimUniverse:
     dedup_counts: dict[str, int] = field(default_factory=dict)
     #: Evaluation claims per publisher domain and detected claim language.
     claims_by_publisher: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: Deduplicated fact-check rows per extraction tier, including rows outside the
+    #: frozen set, so a tier that only appears after freezing is still counted.
+    tier_counts: dict[str, int] = field(default_factory=dict)
+    #: Evaluation claims per extraction tier. A row with no tier is counted under
+    #: `unknown`, never dropped from the count.
+    eval_tier_counts: dict[str, int] = field(default_factory=dict)
 
     def reason_for_exclusion(self, claim_id: str) -> str | None:
         """The reason code if ``claim_id`` is not an evaluation claim, else ``None``."""
@@ -601,16 +609,21 @@ def build_claim_universe(
 
     eval_ids: set[str] = set()
     excluded: dict[str, str] = {}
+    tier_counts: dict[str, int] = {}
+    eval_tier_counts: dict[str, int] = {}
     for record_id, _, _ in collapsed:
         excluded[record_id] = CLAIM_COLLAPSED_DUPLICATE
     for item in kept_rows:
         record_id = str(item["record_id"])
+        tier = str(item.get("tier") or "").strip() or TIER_UNKNOWN
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
         if not _is_false(item):
             excluded[record_id] = CLAIM_NOT_KNOWN_FALSE
         elif frozen_ids is not None and record_id not in frozen_ids:
             excluded[record_id] = CLAIM_NOT_IN_FROZEN_SET
         else:
             eval_ids.add(record_id)
+            eval_tier_counts[tier] = eval_tier_counts.get(tier, 0) + 1
     return ClaimUniverse(
         eval_ids=frozenset(eval_ids),
         excluded=excluded,
@@ -619,6 +632,8 @@ def build_claim_universe(
         manifest_rows=len(manifest) if manifest is not None else 0,
         dedup_counts=dict(dedup_counts or {}),
         claims_by_publisher=claims_by_publisher(kept_rows, eval_ids),
+        tier_counts=dict(sorted(tier_counts.items())),
+        eval_tier_counts=dict(sorted(eval_tier_counts.items())),
     )
 
 
@@ -1022,28 +1037,24 @@ def lift_estimate(
 # Claims, corpus and the cells of the report
 # ---------------------------------------------------------------------------
 def load_factcheck_publishers(path: Path | None = None) -> frozenset[str]:
-    """Publisher domains from ``configs/factcheck.yaml``. An empty list refuses.
+    """Every fact-checker domain from ``configs/factcheck.yaml``. An empty list refuses.
 
     With no publishers to exclude, the flag rate would include the articles the
-    claims came from, which measures the model on its own answer key.
+    claims came from, which measures the model on its own answer key. Fact-checkers
+    with no extraction tier count too: their articles are debunks all the same.
     """
-    import yaml
+    from modeling.config import FactCheckDomainsMissing, fact_check_domains
 
-    from modeling.config import CONFIG_DIR
-
-    path = Path(path) if path else CONFIG_DIR / "factcheck.yaml"
-    if not path.exists():
-        raise EvalInputError(f"{path} not found; cannot tell which corpus rows are fact-checkers")
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    domains = frozenset(_normalise_domain(d) for d in (data.get("publishers") or {}))
-    if not domains:
-        raise EvalInputError(f"{path} lists no publishers; refusing to compute a flag rate")
-    return domains
+    try:
+        return fact_check_domains(path)
+    except FactCheckDomainsMissing as exc:
+        raise EvalInputError(f"{exc}; refusing to compute a flag rate") from exc
 
 
 def _normalise_domain(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    return text[4:] if text.startswith("www.") else text
+    from modeling.config import normalise_domain
+
+    return normalise_domain(value)
 
 
 def _split_claims(
@@ -1435,6 +1446,8 @@ def evaluate(
             "claims_by_publisher": universe.claims_by_publisher,
             "hindi_publisher_shares": hindi_shares,
             "dedup_counts": universe.dedup_counts,
+            "rows_per_tier": universe.tier_counts,
+            "claims_per_tier": universe.eval_tier_counts,
             "statement": EVALUATION_SET_STATEMENT,
             "corpus_text_notice": CORPUS_TEXT_NOTICE,
         },
@@ -1505,6 +1518,20 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
         ),
         "",
     ]
+    rows_per_tier = evaluation_set.get("rows_per_tier") or {}
+    if rows_per_tier:
+        lines += [
+            "- Fact-check rows per extraction tier: "
+            + ", ".join(f"`{tier}` {count}" for tier, count in rows_per_tier.items()),
+            "",
+        ]
+    claims_per_tier = evaluation_set.get("claims_per_tier") or {}
+    if claims_per_tier and claims_per_tier != rows_per_tier:
+        lines += [
+            "- Evaluation claims per extraction tier: "
+            + ", ".join(f"`{tier}` {count}" for tier, count in claims_per_tier.items()),
+            "",
+        ]
 
     notices = [n for n in result["notices"] if n != NOT_FROZEN_NOTICE]
     if notices:

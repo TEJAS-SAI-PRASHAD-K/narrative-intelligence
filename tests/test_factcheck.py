@@ -237,6 +237,139 @@ class TestClaimReviewTier:
         assert extractor.dropped[DropReason.NO_RATING.value] == 1
 
 
+NEWSCHECKER_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "newschecker"
+NC_URL = "https://newschecker.in/fact-check/x/"
+NC_RECORD = {"id": "news:newschecker.in/x", "url": NC_URL, "source_detail": "newschecker.in"}
+
+
+def _newschecker_fixture(name: str) -> str:
+    return (NEWSCHECKER_DIR / name).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def dom_extractor(tmp_path):
+    """The extractor with the real newschecker.in entry from configs/factcheck.yaml."""
+    from ingest.config import Settings, load_yaml
+
+    config = load_yaml("factcheck")
+    config["fetch"] = {"max_articles": 5, "request_delay_seconds": 0, "cache": True}
+    return FactCheckExtractor(settings=Settings(data_dir=tmp_path), config=config)
+
+
+class TestDomBlockTier:
+    """Markup recorded from newschecker.in on 2026-11-18, English and Hindi."""
+
+    def test_claim_box_layout_in_english(self, dom_extractor):
+        row = dom_extractor.from_dom_block(NC_RECORD, _newschecker_fixture("en_claim_box.html"))
+        assert row is not None
+        assert row.tier == Tier.DOM_BLOCK.value
+        assert row.rating_raw == "Altered Photo/Video"
+        assert row.label == "false"
+        assert row.publisher == "Newschecker"
+        assert row.claim == (
+            "A photograph shows Congress leader Sonia Gandhi sitting inappropriately on the "
+            "lap of a man."
+        )
+        assert dom_extractor.dropped == {}
+
+    def test_claim_in_the_article_body_layout(self, dom_extractor):
+        row = dom_extractor.from_dom_block(
+            NC_RECORD, _newschecker_fixture("en_claim_in_body.html")
+        )
+        assert row is not None
+        assert row.rating_raw == "False"
+        assert row.label == "false"
+        assert row.claim == "The viral video shows an Iranian attack on Dubai."
+
+    def test_hindi_claim_box_keeps_the_hindi_claim(self, dom_extractor):
+        row = dom_extractor.from_dom_block(NC_RECORD, _newschecker_fixture("hi_claim_box.html"))
+        assert row is not None
+        assert row.rating_raw == "Altered Media"
+        assert row.label == "false"
+        assert row.claim == "नोएडा की बहुमंजिला इमारत में लगी आग का वीडियो।"
+        assert row.claim_lang == "hi"
+
+    def test_a_middle_rating_is_dropped_and_counted_in_both_languages(self, dom_extractor):
+        for name in ("en_misleading.html", "hi_claim_in_body.html"):
+            assert dom_extractor.from_dom_block(NC_RECORD, _newschecker_fixture(name)) is None
+        assert dom_extractor.dropped == {DropReason.RATING_IS_MIDDLE.value: 2}
+
+    def test_a_page_where_the_selector_finds_nothing_has_its_own_reason_code(
+        self, dom_extractor
+    ):
+        html = _newschecker_fixture("en_weekly_wrap.html")
+        assert dom_extractor.from_dom_block(NC_RECORD, html) is None
+        assert dom_extractor.from_dom_block(NC_RECORD, "") is None
+        assert dom_extractor.dropped == {DropReason.DOM_BLOCK_NOT_FOUND.value: 2}
+
+    def test_a_reskin_is_a_count_and_not_a_silent_drop(self, dom_extractor):
+        """The result icon moves to another path: every page becomes not-found."""
+        html = _newschecker_fixture("en_claim_box.html").replace("/post-result/", "/verdicts/")
+        assert dom_extractor.from_dom_block(NC_RECORD, html) is None
+        assert dom_extractor.dropped == {DropReason.DOM_BLOCK_NOT_FOUND.value: 1}
+
+    def test_a_result_with_no_text_is_no_rating(self, dom_extractor):
+        html = (
+            '<h2>Claim</h2><p>A claim.</p>'
+            '<img srcset="https://x/post-result/false.svg 1x"><span> </span>'
+        )
+        assert dom_extractor.from_dom_block(NC_RECORD, html) is None
+        assert dom_extractor.dropped == {DropReason.NO_RATING.value: 1}
+
+    def test_a_result_with_no_claim_heading_is_no_claim_text(self, dom_extractor):
+        html = '<img srcset="https://x/post-result/false.svg 1x"><span>False</span>'
+        assert dom_extractor.from_dom_block(NC_RECORD, html) is None
+        assert dom_extractor.dropped == {DropReason.NO_CLAIM_TEXT.value: 1}
+
+    def test_an_unseen_rating_is_reported_as_unknown(self, dom_extractor):
+        html = (
+            '<h2>Claim</h2><p>A claim.</p>'
+            '<img srcset="https://x/post-result/q.svg 1x"><span>Unproven Thing</span>'
+        )
+        assert dom_extractor.from_dom_block(NC_RECORD, html) is None
+        assert dom_extractor.dropped == {DropReason.RATING_UNKNOWN.value: 1}
+        assert dom_extractor.unknown_ratings == {"unproven thing": 1}
+
+    def test_a_publisher_without_selectors_is_counted_as_bad_config(self, extractor):
+        extractor.publishers["newschecker.in"] = {"name": "Newschecker", "tier": "dom_block"}
+        assert extractor.from_dom_block(NC_RECORD, "<p>x</p>") is None
+        assert extractor.dropped == {DropReason.DOM_BLOCK_BAD_CONFIG.value: 1}
+
+    def test_the_selectors_come_from_config_not_code(self, dom_extractor):
+        dom_extractor.publishers["newschecker.in"]["dom_block"]["verdict"] = "b.result"
+        html = '<h2>Claim</h2><p>A claim.</p><b class="result">Fake</b>'
+        row = dom_extractor.from_dom_block(NC_RECORD, html)
+        assert row is not None and row.rating_raw == "Fake" and row.label == "false"
+
+    def test_an_unparseable_selector_is_counted_as_bad_config(self, dom_extractor):
+        dom_extractor.publishers["newschecker.in"]["dom_block"]["verdict"] = "img[["
+        assert dom_extractor.from_dom_block(NC_RECORD, "<p>x</p>") is None
+        assert dom_extractor.dropped == {DropReason.DOM_BLOCK_BAD_CONFIG.value: 1}
+
+    def test_an_unavailable_html_parser_is_counted_not_silent(self, dom_extractor, monkeypatch):
+        monkeypatch.setattr("ingest.factcheck.html_parser_class", lambda: None)
+        assert dom_extractor.from_dom_block(NC_RECORD, "<p>x</p>") is None
+        assert dom_extractor.dropped == {DropReason.HTML_PARSER_UNAVAILABLE.value: 1}
+
+    def test_run_routes_the_tier_and_writes_it_on_the_row(self, dom_extractor, monkeypatch):
+        _no_network(monkeypatch)
+        cache = dom_extractor._cache_path(NC_URL)
+        cache.parent.mkdir(parents=True)
+        cache.write_text(_newschecker_fixture("en_claim_box.html"), encoding="utf-8")
+        rows = list(dom_extractor.run([NC_RECORD]))
+        assert [(v.tier, v.label, v.domain) for v in rows] == [
+            ("dom_block", "false", "newschecker.in")
+        ]
+        assert rows[0].as_row()["tier"] == "dom_block"
+
+    def test_the_stored_rows_keep_the_tier(self, dom_extractor, tmp_path):
+        row = dom_extractor.from_dom_block(NC_RECORD, _newschecker_fixture("en_claim_box.html"))
+        path = write_factchecks([row], dom_extractor.settings)
+        import pyarrow.parquet as pq
+
+        assert pq.read_table(path).to_pylist()[0]["tier"] == "dom_block"
+
+
 class TestRssTagTier:
     def test_a_verdict_hiding_among_topic_tags_is_found(self, extractor):
         """Fact Crescendo ships ['False', 'International', 'इजरायल', ...]."""

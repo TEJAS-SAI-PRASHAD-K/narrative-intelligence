@@ -245,11 +245,11 @@ class TestRunLoop:
             source = "youtube"
 
             def preflight(self):
-                raise SourceUnavailable("youtube: YOUTUBE_API_KEY absent")
+                raise SourceUnavailable("youtube: yt-dlp is not installed")
 
         result = Gated(payloads(2), settings=settings, store=store).run()
         assert result.ok and result.written == 0
-        assert "YOUTUBE_API_KEY absent" in result.skipped_reason
+        assert "yt-dlp is not installed" in result.skipped_reason
         assert result.as_row()["status"] == "skipped"
 
     def test_missing_optional_package_skips_cleanly(self, settings, store):

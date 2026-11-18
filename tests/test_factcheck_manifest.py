@@ -161,6 +161,39 @@ def test_universe_without_manifest_is_the_deduplicated_false_rows():
     assert universe.reason_for_exclusion("never-seen") == CLAIM_UNKNOWN_ID
 
 
+def test_universe_counts_rows_and_evaluation_claims_per_tier():
+    rows = [
+        {**kept("a", "x"), "tier": "claimreview"},
+        {**kept("b", "y"), "tier": "dom_block"},
+        {**kept("c", "z"), "tier": "dom_block"},
+        {**kept("d", "w"), "tier": None},
+        kept("e", "v"),
+        {**kept("f", "u", label="true"), "tier": "rss_tag"},
+    ]
+    universe = build_claim_universe(rows, [("g", "a", 0)])
+    # Rows: every kept row, including the true row and the unhashed one.
+    assert universe.tier_counts == {
+        "claimreview": 1,
+        "dom_block": 2,
+        "rss_tag": 1,
+        "unknown": 2,
+    }
+    # Evaluation claims: the true row and the collapsed duplicate are not counted.
+    assert universe.eval_tier_counts == {"claimreview": 1, "dom_block": 2, "unknown": 2}
+    assert sum(universe.eval_tier_counts.values()) == len(universe.eval_ids)
+
+
+def test_a_tier_added_after_freezing_is_counted_as_a_row_but_not_as_a_claim():
+    manifest = build_manifest([kept("a", "x")])
+    rows = [
+        {**kept("a", "x"), "tier": "claimreview"},
+        {**kept("b", "y"), "tier": "dom_block"},
+    ]
+    universe = build_claim_universe(rows, [], manifest=manifest)
+    assert universe.tier_counts == {"claimreview": 1, "dom_block": 1}
+    assert universe.eval_tier_counts == {"claimreview": 1}
+
+
 def test_frozen_universe_is_exactly_the_manifest_ids():
     manifest = build_manifest([kept("a", "abc")])
     universe = build_claim_universe(
