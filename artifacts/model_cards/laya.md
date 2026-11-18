@@ -71,6 +71,64 @@ records this issue. Expected calibration error on validation is 0.152 for the En
 fine-tune. For the multilingual fine-tune, it increased from 0.068 to 0.159. Do not
 read a Laya score as a calibrated probability.
 
+The temperature fit is part of `laya.train.finetune`. This repository does not own it. The
+fit uses the negative log likelihood of the two-option softmax, which is the right
+objective for a `noul`. The clamp is `[0.5, 5]`, and the fit uses a calibration slice of at
+most 400 rows. A fit that ends on the clamp has not converged.
+
+`scripts/diagnose_laya_calibration.py` measures where the optimum lies on the validation
+rows. It searches 0.05 to 100 and reports the argmin, the NLL curve, a fit with an
+intercept, and the spread of fits on 400-row slices. It leaves out texts that the scorer
+reads with `predict_long`, and it counts them. The report is marked invalid when the agent
+has a binning map or a language temperature, or when more than 2 percent of the rebuilt
+scores differ from the score file.
+
+Two ECE definitions appear in the report. "ECE prob" is the 10-bin ECE of P(true). "ECE top1"
+is the 15-bin ECE of the top-1 confidence, which is the number in the vendor report. Every row
+below has both, with a 95 percent group bootstrap interval (seed 20260813). Rows that use a
+fit are out of fold.
+
+| row | what it is | ECE prob (10 bins) | ECE top1 (15 bins) |
+|---|---|---|---|
+| raw, checkpoint temperature | P(true) as the checkpoint serves it | ECE: not measured yet | ECE: not measured yet |
+| temperature only | wide-range temperature, no isotonic | ECE: not measured yet | ECE: not measured yet |
+| isotonic only | isotonic map on the gap | ECE: not measured yet | ECE: not measured yet |
+| temperature and isotonic | same map as the row above in exact arithmetic | ECE: not measured yet | ECE: not measured yet |
+| `isotonic_served` (the relevant row) | isotonic map on the 4-decimal score that the scorer serves now | ECE: not measured yet | ECE: not measured yet |
+
+The optimum temperature on validation is not measured yet for both fine-tunes.
+
+### Does the clamp change the served score
+
+Yes. The vendor rounds P(true) to 4 decimals. At a temperature of 5, a logit gap above about
+46 gives exactly 1.0, and a gap below about -46 gives exactly 0.0. Every such row ties with
+the rows beyond it. An isotonic map cannot split a tie, so it cannot restore the rank. A
+larger temperature moves fewer rows into a tie. The `isotonic_served` row measures the effect
+on real data.
+
+### The temperature refit
+
+The config key `laya.temperature_refit` is `false`, so served scores do not change. When it
+is `true`, `calibrate-laya --logits <gap file>` refits the temperature on validation gaps
+over 0.05 to 100 and refuses a fit on a bound. It stores the value in the calibrator state.
+The scorer then sets that temperature on the agent. The agent divides the logits by it
+before the vendor rounds, so no rounded value is re-scaled. The isotonic map is fitted on
+the scores that the scorer gives at that temperature. The calibrator stamp in
+`model_versions` then holds `+t<value>`. A calibrator without a refit is refused while the
+key is on, and a calibrator with a refit is refused while the key is off.
+
+The English fine-tune has no isotonic calibrator in the served path. Its raw score is
+uncalibrated. If the refit is on, it applies to the English fine-tune too, when
+`calibrate-laya --model laya_en` wrote the state beside its checkpoint.
+
+### The calibrator guard
+
+The fit refuses an isotonic map when it makes the scores worse on rows it did not see. The
+check averages `ECE(out of fold) - ECE(raw)` over five fold seeds, with a group bootstrap
+(seed 20260813). It refuses only when the lower end of the 95 percent interval is above
+zero. A fixed margin was removed because it rejected calibrated scores by chance at 400 rows.
+A real fit needs a group id for every validation row, and the stage fails without them.
+
 ## Out-of-scope use
 
 Laya scores are not a determination that a claim is false. Do not use them for
