@@ -38,6 +38,14 @@ decision.
   fails if they do not add up to `n_excluded_fact_check_publisher`. A corpus row on a
   subdomain of a fact-checker, such as `hindi.boomlive.in`, stays in the flag rate. The report
   counts it under `fact_check_subdomain_not_excluded` and shows the count under the table.
+- **`relabel-eval` reports what a sample with one class can still measure.** With only
+  negatives, it keeps the refusal of ROC-AUC, precision and recall (reason code
+  `one_class_only`, exit code 1). It now also reports the observed positive rate with a
+  Wilson interval, the flag rate at the decision threshold (unweighted, with Wilson and
+  bootstrap intervals, and reweighted), the flag rate per stratum, the mean predicted
+  probability and the ECE. The flag rate on rows that report on a false claim against the
+  other rows now carries Wilson intervals and a bootstrap interval of the difference, also
+  when both classes exist. A null Laya threshold prints "no threshold configured".
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
   `configs/factcheck.yaml`. A guard cancels a negated verdict, a headline that calls the

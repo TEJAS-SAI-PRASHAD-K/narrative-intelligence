@@ -25,6 +25,8 @@ import numpy as np
 import pandas as pd
 
 from modeling.eval.metrics import classification_report
+from modeling.eval.one_class import REFUSAL as ONE_CLASS_REFUSAL
+from modeling.eval.one_class import one_class_report, render_one_class
 from modeling.eval.weighted import (
     DEFAULT_SEED,
     StratumWeights,
@@ -121,6 +123,8 @@ class TransferResult:
     reporting: dict[str, Any] | None = None
     #: Why there is no reweighted figure, or ``None`` when there is one.
     weighted_reason: str | None = None
+    #: Figures that a sample with one class still gives. Set with the refusal of the AUC.
+    one_class: dict[str, Any] | None = None
     seed: int = 0
 
     def render(self, benchmark_macro_f1: float | None = None) -> list[str]:
@@ -144,6 +148,8 @@ class TransferResult:
         ]
         if not self.computed:
             lines.append(f"  REFUSED: {self.refusal}")
+            if self.one_class is not None:
+                lines += render_one_class(self.one_class)
             return lines
         m = self.metrics
         lines += [
@@ -291,11 +297,22 @@ def evaluate_transfer(
             f"(MIN_LABELLED_ROWS). Excluded rows are listed above."
         )
         return out
+    y_score = np.array([score_by_id[str(i)] for i in used["id"]], dtype=float)
     if len(set(y_true.tolist())) < 2:
-        out.refusal = "the usable labelled rows hold one class only; AUC is undefined"
+        out.refusal = ONE_CLASS_REFUSAL
+        out.one_class = one_class_report(
+            frame,
+            used,
+            y_true,
+            y_score,
+            threshold=threshold,
+            threshold_source="misinfo.decision_threshold",
+            has_design=sheet.has_design,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+        )
         return out
 
-    y_score = np.array([score_by_id[str(i)] for i in used["id"]], dtype=float)
     y_pred = (y_score >= threshold).astype(int)
     report = classification_report(
         y_true,
