@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -377,6 +378,116 @@ def factchecks(
     path = write_factchecks(verdicts, settings)
     if path:
         console.print(f"wrote {len(verdicts):,} verdicts -> {path}")
+
+
+@app.command(name="title-predicate-sample")
+def title_predicate_sample(
+    out: Path = typer.Option(..., "--out", help="label sheet CSV, outside git"),
+    key: Path | None = typer.Option(
+        None, "--key", help="key JSON with the predictions. Default: beside the sheet"
+    ),
+    n: int = typer.Option(100, "--n", min=1, help="headlines to draw"),
+    seed: int = typer.Option(20260813, "--seed"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="replace an existing sheet or key"),
+) -> None:
+    """Draw headlines of the tier 4 publishers into a blind label sheet and a key file.
+
+    The draw is seeded and stratified by language and by match or no match. The sheet
+    holds the headline and the label columns, and nothing that the reader predicted.
+    The key file holds the prediction, the pattern id, the pattern-set hash and the
+    weight of each headline. Give the sheet to the labellers and keep the key. Fill
+    `label_1`, `label_2`, `labeller_1`, `labeller_2`, `labeller_kind` and, where the two
+    labels differ, `adjudicated_label`. Then run `title-predicate-score`. Both files
+    hold headline text, so a path inside the repository is refused unless git ignores it.
+    After any edit of a pattern, draw again with a different seed.
+    """
+    from ingest.factcheck import DropReason, FactCheckExtractor, Tier, records_from_corpus
+    from ingest.title_predicate_eval import (
+        SheetError,
+        check_sheet_path,
+        default_key_path,
+        draw_sample,
+        write_sheet,
+    )
+
+    try:
+        check_sheet_path(out)
+        check_sheet_path(key or default_key_path(out))
+    except SheetError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    settings = get_settings()
+    extractor = FactCheckExtractor(settings)
+    domains = sorted(
+        d for d, p in extractor.publishers.items() if p.get("tier") == Tier.TITLE_PREDICATE.value
+    )
+    if not domains:
+        console.print("[red]no publisher in configs/factcheck.yaml has tier title_predicate.")
+        raise typer.Exit(code=1)
+    frame = ParquetStore(settings).read_all("news")
+    if frame is None or not len(frame):
+        console.print("[yellow]no news records on disk. run `python -m ingest.cli fetch news_rss`.")
+        raise typer.Exit(code=1)
+    records = list(
+        records_from_corpus(
+            frame,
+            domains,
+            on_duplicate=lambda record_id: extractor.drop(DropReason.DUPLICATE_RECORD, record_id),
+        )
+    )
+    rows, key_data = draw_sample(records, extractor, n=n, seed=seed)
+    if len(rows) < n:
+        console.print(f"[yellow]WARNING: only {len(rows)} headlines drawn, {n} asked for.")
+    try:
+        sheet_path, key_path = write_sheet(rows, key_data, out, key, overwrite=overwrite)
+    except SheetError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"wrote {len(rows)} headlines from {domains}")
+    console.print(f"sheet (give to the labellers): {sheet_path}")
+    console.print(f"key (keep it from the labellers): {key_path}")
+    console.print(f"strata: {key_data['strata']}")
+    console.print(f"dropped while reading: {extractor.summary()['dropped']}")
+
+
+@app.command(name="title-predicate-score")
+def title_predicate_score(
+    sheet: Path = typer.Argument(..., help="the filled label sheet CSV"),
+    key: Path | None = typer.Option(
+        None, "--key", help="key JSON from the sampler. Default: beside the sheet"
+    ),
+    out: Path = typer.Option(..., "--out", help="JSON file for precision and recall"),
+) -> None:
+    """Score the tier 4 headline reader against a filled label sheet and its key.
+
+    Writes weighted precision and recall with 95% Wilson intervals, per language and
+    per publisher, against the adjudicated label, against each labeller, and in a
+    worst case that counts every unresolved disagreement as an error. Reports the
+    kappa and the labeller kind. Refuses a sheet with an empty label.
+    """
+    from ingest.title_predicate_eval import SheetError, default_key_path, score_sheet
+
+    try:
+        result = score_sheet(sheet, key or default_key_path(sheet), out)
+    except SheetError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"labeller kind: {result['labeller_kind']}. rows {result['n_rows']}, "
+        f"adjudicated {result['n_adjudicated']}, kappa {result['cohen_kappa']}"
+    )
+    for name, metrics in result["metrics"].items():
+        for which, value in metrics.items():
+            console.print(
+                f"{name} {which}: {value['value']} [{value['ci_low']}, {value['ci_high']}] "
+                f"({value['denominator_rows']} rows)"
+            )
+    if not result["is_measured_error_rate"]:
+        console.print(
+            "[yellow]NOT a measured error rate: "
+            + "; ".join(result["not_measured_reasons"])
+        )
+    console.print(f"wrote {out}")
 
 
 @app.command()

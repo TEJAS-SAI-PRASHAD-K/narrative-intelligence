@@ -40,12 +40,13 @@
 #                where the verdict selector matches nothing is counted as
 #                `dom_block_not_found` and never guessed at.
 #
-# NOT IMPLEMENTED HERE, and listed so the gap is explicit rather than implied:
-#   title_predicate altnews.in and factly.in publish neither. Their verdict
-#                   lives in the headline's predicate ("... Is AI-Generated",
-#                   "Old Video Falsely Shared as ..."), which is inference, not
-#                   extraction, and deserves its own measured error rate rather
-#                   than being bolted on next to structured data.
+#   title_predicate  the verdict is read from the predicate of the headline with
+#                the regular expressions under `title_predicate` below. Alt News and
+#                Factly publish neither ClaimReview nor a verdict block. This is
+#                inference, not extraction. Rows carry the tier `title_predicate`,
+#                the evaluation keeps them out of the primary set while
+#                `title_predicate.include_in_primary_evaluation` is false, and the
+#                report shows them as a separate cell.
 publishers:
   boomlive.in:
     name: BOOM
@@ -176,6 +177,17 @@ publishers:
       claim_heading: "h2"
       claim_heading_text: ["claim"]
       claim_body: "p"
+  altnews.in:
+    name: Alt News
+    tier: title_predicate
+    # English pages are under the site root and Hindi pages under /hindi/. The
+    # headline language is taken from its script, so one pattern list per language
+    # covers both feeds. Feeds: configs/sources.yaml.
+    languages: [en, hi]
+  factly.in:
+    name: Factly
+    tier: title_predicate
+    languages: [en]
 
 # Fact-checkers that the news feeds collect but that have no extraction tier
 # here. Together with `publishers` above, this is every fact-checker domain in
@@ -186,10 +198,159 @@ publishers:
 # records no score (reason `fact_check_publisher`). A fact-checker added to
 # `configs/sources.yaml` belongs here or under `publishers`.
 other_fact_checkers:
-  - altnews.in
-  - factly.in
   - newschecker.in
   - digiteye.in
+
+# ---------------------------------------------------------------------------
+# Tier 4: verdict from the headline predicate
+# ---------------------------------------------------------------------------
+# Read by `ingest/title_predicate.py`. The reader prepares the headline with
+# `clean_text`, so invisible characters are gone before a pattern runs. It then
+# tries the list for the script of the headline. A headline with Devanagari and
+# Latin letters is tried against the Hindi list first and the English list second.
+#
+# `patterns` find a verdict. They are tried in the order written and the first match
+# wins, so the order is part of the config. The order is: the context patterns
+# first (`Missing Context` is a dropped middle rating, and "old video shared as" must
+# win over a later `Fake`), then the media-specific verdicts (AI, morphed, scripted,
+# fabricated, satire), then `Misleading`, then the generic `False`, `No Evidence` and
+# `Fake` forms, and the bare `No,` prefix last. A verdict word is read only in
+# predicate position ("... Is Fake", "फर्जी है") or in a fixed verdict phrase, so a
+# topic headline ("Fake News Law Passed", "AI-Generated Images Flood Social Media")
+# gives no match.
+#
+# `guards` block a verdict. A guard that matches anywhere in the headline cancels the
+# match, counted as `title_predicate_guarded`. They cover a negated verdict ("Is Not
+# Fake", "फर्जी नहीं है"), a headline that says the media is genuine, a verdict word
+# inside quotation marks, and a question. The reader fails closed: a guarded headline
+# gets no verdict, so a missed verdict is preferred to a wrong one.
+#
+# `rating` is a string that goes through the `ratings` map below, so a middle rating
+# (for example `Missing Context`) is dropped and counted like every other tier. A
+# headline with no match is counted as `title_predicate_no_match`.
+#
+# Patterns are case-insensitive regular expressions. Hindi patterns are compared after
+# Unicode normalization. Do not use `\b` next to a Devanagari letter, because a vowel
+# sign is not a word character in Python. Use the `(?=$|[\s,.!?;:।])` lookahead.
+#
+# The patterns are a first draft, written from the usual headline forms of the two
+# publishers and not from a measured sample. A measured error rate describes one
+# pattern set: `measured_error_rate.pattern_hash` must equal the SHA-256 of the
+# `patterns` and `guards` below, and the reader of this file refuses a measured block
+# whose hash differs. After any edit to a pattern or a guard, draw a fresh sample with
+# a different seed and measure again. Do not reuse the sheet that guided the edit.
+title_predicate:
+  # false: tier 4 rows are left out of the primary evaluation. They appear as a
+  # separate cell in the comparison report. Change this to true only after the
+  # measured error rate below is low enough, and write the decision in the commit.
+  # Freezing the manifest and reading it honour the same switch, a manifest that holds
+  # a tier 4 row while the switch is false is refused, and with the switch on a tier 4
+  # row that repeats a stated verdict collapses into that verdict. After a change of
+  # the switch, run `python -m modeling.cli dedup-claims` again.
+  include_in_primary_evaluation: false
+  # Floors for a measured error rate. `measured_error_rate.status: measured` is
+  # refused unless all of them hold: the labeller kind is `human`, at least
+  # `min_adjudicated_rows` rows have an adjudicated label, the Cohen kappa of the two
+  # labellers is at least `min_kappa`, and every language holds at least
+  # `min_language_rows` sampled rows.
+  min_adjudicated_rows: 100
+  min_kappa: 0.6
+  min_language_rows: 30
+  # Filled from `python -m ingest.cli title-predicate-score`. Every number comes from
+  # a run on a label sheet. Only labels from `human` labellers give a measured error
+  # rate. Labels from a model, reviewed or not, are a first pass and never `measured`.
+  measured_error_rate:
+    status: not_measured
+    reason: the label sheet is not labelled yet
+    labeller_kind: null
+    pattern_hash: null
+    n_headlines: null
+    n_by_language: null
+    precision: null
+    recall: null
+  guards:
+    en:
+      - id: en_guard_negated
+        pattern: '(?:\bnot|\bnever|n[\x27’]t)(?:\s+[\w\x27’\-]+){0,2}?\s+(?:ai[\s\-‐‑–—]*(?:generated|created|made|manipulated)|fake|morphed|doctored|photoshopped|edited|altered|fabricated|scripted|staged|false|misleading|hoax|bogus|deep-?fakes?|satir\w*)\b'
+      - id: en_guard_genuine
+        pattern: '\b(?:is|are|was|were|looks?|appears?)\s+(?:\w+ly\s+)?(?:real|genuine|authentic|true|correct|accurate|original|unedited)\b'
+      - id: en_guard_quoted
+        pattern: '[\x22\x27‘“]\s*(?:ai[\s\-‐‑–—]*(?:generated|created|made|manipulated)|fake|morphed|doctored|photoshopped|edited|altered|fabricated|scripted|staged|false|misleading|hoax|bogus|deep-?fakes?|satir\w*)\s*[\x22\x27’”]'
+      - id: en_guard_question
+        pattern: '\?\s*$|^(?:fact[\s\-‐‑]*check\s*[:\-‐‑–—]\s*)?(?:is|are|was|were|did|does|do|can|could|will|has|have)\b'
+    hi:
+      - id: hi_guard_negated
+        pattern: '(?:फर्जी|फेक|नकली|झूठ[ाीे]?|गलत|भ्रामक|एडिटेड|मॉर्फ्ड|मॉर्फ|एआई\s*जनरेटेड|जनरेटेड|असत्य)\s*(?:है\s*|हैं\s*)?,?\s*नहीं|नहीं\s+(?:है\s+)?(?:फर्जी|फेक|नकली|झूठ[ाीे]?|गलत|भ्रामक|एडिटेड|मॉर्फ्ड|मॉर्फ|एआई\s*जनरेटेड|जनरेटेड|असत्य)'
+      - id: hi_guard_genuine
+        pattern: '(?:असली|सही|वास्तविक|प्रामाणिक|सच्चा|सच्ची|सच्चे|ओरिजिनल)\s*(?:है|हैं|निकला|निकली|निकले|पाया)'
+      - id: hi_guard_question
+        pattern: '\?\s*$|^(?:फ़?ैक्ट[\s\-]*चेक\s*[:\-‐‑–—]\s*)?क्या\s'
+  patterns:
+    en:
+      - id: en_old_media_shared
+        rating: "Missing Context"
+        pattern: '\b(?:old|older|unrelated|archival|years?[\s\-]old|different|previous)\b.{0,60}?\b(?:video|image|photo|picture|clip|footage|screenshot)s?\b.{0,60}?\b(?:(?:falsely|wrongly|misleadingly|incorrectly)\s+)?(?:shared|linked|claimed|attributed|presented|circulated|posted|passed\s+off|viral)\b'
+      - id: en_ai_generated
+        rating: "AI Generated"
+        pattern: '\b(?:is|are|was|were)\s+(?:\w+ly\s+)?(?:an?\s+)?ai[\s\-‐‑–—]*(?:generated|created|made|manipulated)\b|\b(?:is|are|was|were)\s+(?:\w+\s+){0,2}?(?:created|made|generated)\s+(?:using|with|by)\s+(?:an\s+)?ai\b|\b(?:is|are|was|were)\s+(?:an?\s+)?deep-?fakes?\b'
+      - id: en_morphed_or_edited
+        rating: "Morphed"
+        pattern: '\b(?:is|are|was|were)\s+(?:\w+ly\s+)?(?:an?\s+)?(?:morphed|doctored|photoshopped|digitally\s+(?:altered|edited|manipulated)|edited|tampered)\b|^(?:fact[\s\-‐‑]*check\s*[:\-‐‑–—]\s*)?(?:morphed|doctored|photoshopped|digitally\s+(?:altered|edited|manipulated)|edited|tampered)\s+(?:\w+\s+){0,3}?(?:image|photo|picture|video|clip|screenshot|footage|audio)\b'
+      - id: en_scripted
+        rating: "Scripted"
+        pattern: '\b(?:is|are|was|were)\s+(?:a\s+)?(?:scripted|staged|enacted|choreographed)\b'
+      - id: en_fabricated
+        rating: "Fabricated"
+        pattern: '\b(?:is|are|was|were)\s+(?:a\s+)?(?:fabricated|made-up|invented|concocted)\b'
+      - id: en_satire
+        rating: "Satire"
+        pattern: '\b(?:is|are|was|were)\s+(?:a\s+)?(?:satire|satirical|parody)\b|\bsatire\b.{0,30}?\b(?:shared|viral|circulat\w+|mistaken|passed)\b'
+      - id: en_misleading
+        rating: "Misleading"
+        pattern: '\b(?:is|are|was|were)\s+(?:\w+ly\s+)?misleading\b|\bmisleadingly\s+(?:shared|claimed|linked|attributed|presented|edited)\b'
+      - id: en_falsely_shared
+        rating: "False"
+        pattern: '\b(?:falsely|wrongly|incorrectly)\s+(?:shared|claimed|linked|attributed|presented|circulated)\b'
+      - id: en_no_evidence
+        rating: "No Evidence"
+        pattern: '\bno\s+(?:evidence|proof)\s+(?:for|to\s+support|behind)\s+(?:the\s+|this\s+|these\s+)?(?:viral\s+)?(?:claims?|posts?|messages?|videos?|images?|photos?|reports?|rumou?rs?)\b|\bno\s+(?:evidence|proof)\s+that\s+(?:the\s+)?(?:viral|video|image|photo|post|message|claim)\b'
+      - id: en_fake
+        rating: "Fake"
+        pattern: '\b(?:is|are|was|were)\s+(?:(?:a|an|the|totally|completely|entirely|clearly|just)\s+)*(?:fake|hoax|bogus)\b(?!\s+news)'
+      - id: en_is_false
+        rating: "False"
+        pattern: '\b(?:is|are|was|were)\s+(?:(?:completely|totally|entirely)\s+)?(?:false|untrue|baseless)\b|\bnot\s+true\b'
+      - id: en_no_prefix
+        rating: "False"
+        pattern: '^(?:fact[\s\-‐‑]*check\s*[:\-‐‑–—]\s*)?no[,:]\s'
+    hi:
+      - id: hi_old_media_viral
+        rating: "Missing Context"
+        pattern: '(?:पुराना|पुरानी|पुराने|अलग|असंबंधित).{0,60}?(?:वीडियो|फोटो|तस्वीर|क्लिप|फुटेज).{0,80}?(?:वायरल|शेयर|साझा)'
+      - id: hi_ai_generated
+        rating: "AI Generated"
+        pattern: '(?:एआई|ए\.आई\.|\bAI)[\s\-‐‑–—]*(?:जनरेटेड|generated|क्रिएटेड|से\s+(?:बना|बनी|बने|तैयार)|निर्मित)\s*(?:है|हैं|था|थी)(?=$|[\s,.!?;:।])'
+      - id: hi_morphed
+        rating: "Morphed"
+        pattern: '(?:एडिटेड|मॉर्फ्ड|मॉर्फ|फोटोशॉप|डॉक्टर्ड)\s*(?:है|हैं|था|थी)(?=$|[\s,.!?;:।])|^(?:फ़?ैक्ट[\s\-]*चेक\s*[:\-‐‑–—]\s*)?(?:एडिटेड|मॉर्फ्ड|फोटोशॉप्ड|डॉक्टर्ड)\s+(?:वीडियो|फोटो|तस्वीर|क्लिप|फुटेज)'
+      - id: hi_satire
+        rating: "Satire"
+        pattern: '(?:व्यंग्य|सटायर|पैरोडी)\s*(?:है|हैं|था|थी)(?=$|[\s,.!?;:।])'
+      - id: hi_misleading
+        rating: "Misleading"
+        pattern: 'भ्रामक\s*(?:है|हैं|था|थी)(?=$|[\s,.!?;:।])|(?:दावा|पोस्ट|वीडियो|तस्वीर|खबर|फोटो)\s+भ्रामक(?=$|[\s,.!?;:।])'
+      - id: hi_no_evidence
+        rating: "No Evidence"
+        pattern: '(?:दावे|दावा|वीडियो|पोस्ट|तस्वीर).{0,30}?कोई\s+(?:सबूत|प्रमाण)\s+नहीं'
+      - id: hi_fake
+        rating: "Fake"
+        pattern: '(?:फर्जी|फेक|नकली|झूठा|झूठी|झूठे)\s*(?:(?:है|हैं|था|थी)|निकला|निकली|निकले|साबित\s+हुआ|साबित\s+हुई)(?=$|[\s,.!?;:।])'
+      - id: hi_claim_false
+        rating: "False"
+        pattern: '(?:दावा|पोस्ट|वीडियो|तस्वीर|खबर|फोटो|मैसेज)\s+(?:गलत|झूठा|झूठी|असत्य|फर्जी|बेबुनियाद)(?=$|[\s,.!?;:।])|(?:गलत|झूठे|फर्जी)\s+दावे?\s+के\s+साथ'
+      - id: hi_no_prefix
+        rating: "False"
+        pattern: '^(?:फ़?ैक्ट[\s\-]*चेक\s*[:\-‐‑–—]\s*)?नहीं[,:]\s'
 
 # ---------------------------------------------------------------------------
 # Archive backfill

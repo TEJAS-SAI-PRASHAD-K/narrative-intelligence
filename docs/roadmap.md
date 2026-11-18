@@ -184,11 +184,14 @@ the honest entry in that cell, not a zero.
   remain a data host task.
 - **Fact-check extraction tier 4, and a tier 3 run on the data host.** Tier 3 reads
   the Newschecker result and claim blocks with selectors from `configs/factcheck.yaml`.
-  Run `python -m ingest.cli factchecks` on the data host to add its rows to
-  `factchecks.parquet`, then refreeze the evaluation manifest on purpose. Alt News and
-  Factly publish neither JSON-LD nor a verdict block, and their verdict lives in the
-  headline predicate. Tier 4 is inference rather than extraction and needs its own
-  measured error rate before it sits next to structured data.
+  Tier 4 reads the verdict from the Alt News and Factly headline. Both are implemented.
+  Run `python -m ingest.cli factchecks` on the data host to add their rows to
+  `factchecks.parquet`, then run `python -m modeling.cli dedup-claims` again. Tier 4
+  rows stay out of the frozen manifest. Draw and label the
+  100 headline sheet, score it, and write the result into
+  `title_predicate.measured_error_rate`. The commands are in `docs/factcheck-tiers.md`. The error
+  rate is not measured yet. Tier 4 stays out of the primary evaluation until a person
+  decides otherwise and writes the decision down.
 - **A person must label the claim dedup sample before the threshold is a measured
   choice.** `python -m modeling.cli dedup-claims` links claims by simhash and by the
   cosine similarity of multilingual claim embeddings, and writes

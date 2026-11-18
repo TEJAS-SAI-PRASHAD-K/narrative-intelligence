@@ -54,6 +54,11 @@ from ingest.normalize import (
     resolve_domain,
     simhash,
 )
+from ingest.title_predicate import (
+    TitlePredicateConfigError,
+    TitlePredicateReader,
+    prepare_headline,
+)
 
 log = logging.getLogger("ingest.factcheck")
 
@@ -69,6 +74,10 @@ class Tier(str, Enum):
     #: selector from configs/factcheck.yaml. The publisher states the rating, but
     #: the markup is not a published interface and changes when the site is reskinned.
     DOM_BLOCK = "dom_block"
+    #: The verdict is read from the predicate of the headline with regular
+    #: expressions from configs/factcheck.yaml. This is inference, not extraction,
+    #: and the evaluation keeps these rows out of the primary set by default.
+    TITLE_PREDICATE = "title_predicate"
 
 
 class OffDomainRedirect(Exception):
@@ -187,6 +196,16 @@ class DropReason(str, Enum):
     DOM_BLOCK_BAD_CONFIG = "dom_block_bad_config"
     #: No HTML parser could be imported, so no `dom_block` page can be read.
     HTML_PARSER_UNAVAILABLE = "html_parser_unavailable"
+    #: A `title_predicate` headline that matches no configured pattern. Most
+    #: headlines of a fact-checker are not verdict sentences, so this is the
+    #: expected common case. A rise after a site change is the signal to read.
+    TITLE_PREDICATE_NO_MATCH = "title_predicate_no_match"
+    #: A `title_predicate` pattern matched and a guard cancelled it: a negated
+    #: verdict, a headline that calls the media genuine, a quoted verdict word or a
+    #: question. The headline gets no verdict.
+    TITLE_PREDICATE_GUARDED = "title_predicate_guarded"
+    #: The `title_predicate` block is missing, or one pattern does not compile.
+    TITLE_PREDICATE_BAD_CONFIG = "title_predicate_bad_config"
 
 
 @dataclass
@@ -361,6 +380,7 @@ class FactCheckExtractor:
         self.unknown_ratings: dict[str, int] = {}
         #: The normalized rating that `label_for` read last.
         self.last_rating = ""
+        self._title_reader: TitlePredicateReader | None = None
         self._robots: dict[str, RobotFileParser | None] = {}
         self._fetch_failures: dict[str, int] = {}
         #: Consecutive 404 or 410 answers per domain. Any 200 resets it.
@@ -508,6 +528,39 @@ class FactCheckExtractor:
         if label is None:
             return None
         return self._build(record, claim, rating, label, Tier.DOM_BLOCK)
+
+    # --- tier 4: the verdict is in the headline ----------------------------
+    def from_title_predicate(self, record: dict) -> FactCheck | None:
+        """Read the verdict from the headline with the patterns in the config.
+
+        The first matching pattern gives the rating string. That string goes
+        through the same rating map as every other tier, so a middle rating is
+        dropped and counted as it is elsewhere. A headline with no match is
+        counted as TITLE_PREDICATE_NO_MATCH and nothing is guessed. The claim is
+        the headline, because these publishers record no other claim text.
+        """
+        url = record.get("url") or ""
+        if self._title_reader is None:
+            try:
+                self._title_reader = TitlePredicateReader(self.config)
+            except TitlePredicateConfigError as exc:
+                self.drop(DropReason.TITLE_PREDICATE_BAD_CONFIG, str(exc))
+                return None
+        claim = prepare_headline(record.get("title"))
+        if not claim:
+            self.drop(DropReason.NO_CLAIM_TEXT, url)
+            return None
+        match, guard_id = self._title_reader.classify(claim)
+        if match is None:
+            if guard_id:
+                self.drop(DropReason.TITLE_PREDICATE_GUARDED, f"{guard_id}: {claim}")
+            else:
+                self.drop(DropReason.TITLE_PREDICATE_NO_MATCH, claim)
+            return None
+        label = self.label_for(match.rating)
+        if label is None:
+            return None
+        return self._build(record, claim, match.rating, label, Tier.TITLE_PREDICATE)
 
     def _build(
         self,
@@ -773,6 +826,8 @@ class FactCheckExtractor:
             elif tier == Tier.DOM_BLOCK.value:
                 html = self.fetch_html(url)
                 result = self.from_dom_block(record, html) if html is not None else None
+            elif tier == Tier.TITLE_PREDICATE.value:
+                result = self.from_title_predicate(record)
             else:
                 self.drop(DropReason.NO_PUBLISHER_CONFIG, f"{domain}: tier={tier!r}")
                 continue
@@ -1031,8 +1086,81 @@ def _row_dict(row: Any) -> dict[str, Any]:
 
 
 def collapse_duplicate_claims(
-    rows: Iterable[Any], max_distance: int = CLAIM_HAMMING_RADIUS
+    rows: Iterable[Any],
+    max_distance: int = CLAIM_HAMMING_RADIUS,
+    *,
+    merge_tier4: bool = False,
 ) -> CollapseResult:
+    """Collapse duplicate claims, with tier 4 rows kept apart from the other tiers.
+
+    A `title_predicate` row is inferred from a headline. By default it must not
+    absorb a verdict that a publisher stated, and it must not bridge two such
+    verdicts into one group. So the rows of tier `title_predicate` are collapsed
+    among themselves and the other rows among themselves. A headline that repeats a
+    structured claim is kept, and it counts only in the tier 4 cell.
+
+    With ``merge_tier4`` true, which is the setting when tier 4 counts in the primary
+    evaluation, the same two groups are built first. Then each tier 4 row that is
+    within ``max_distance`` bits of a kept stated row collapses into the nearest one,
+    and ties go to the smaller ``record_id``. The stated verdict is always the row
+    that stays, and no tier 4 row can bridge two stated rows. Without this step the
+    switch would count one claim twice.
+
+    With no tier 4 row the result is the same as :func:`_collapse_rows`.
+    """
+    items = [_row_dict(row) for row in rows]
+    tier4 = [i for i in items if i.get("tier") == Tier.TITLE_PREDICATE.value]
+    if not tier4:
+        return _collapse_rows(items, max_distance)
+    primary = _collapse_rows(
+        [i for i in items if i.get("tier") != Tier.TITLE_PREDICATE.value], max_distance
+    )
+    inferred = _collapse_rows(tier4, max_distance)
+    kept_inferred = inferred.kept
+    collapsed = list(primary.collapsed) + list(inferred.collapsed)
+    counts = {key: primary.counts[key] + inferred.counts[key] for key in primary.counts}
+    if merge_tier4:
+        kept_inferred = []
+        for row in inferred.kept:
+            target = _nearest_stated(row, primary.kept, max_distance)
+            if target is None:
+                kept_inferred.append(row)
+            else:
+                collapsed.append((str(row.get("record_id") or ""), target[0], target[1]))
+                counts[CollapseReason.DUPLICATE_CLAIM.value] += 1
+    return CollapseResult(
+        kept=sorted(primary.kept + kept_inferred, key=lambda r: str(r.get("record_id") or "")),
+        collapsed=sorted(collapsed),
+        counts=counts,
+    )
+
+
+def _claim_hash_value(row: dict[str, Any]) -> int:
+    value = row.get("claim_simhash")
+    return 0 if value is None or value != value else int(value)
+
+
+def _nearest_stated(
+    row: dict[str, Any], stated: list[dict[str, Any]], max_distance: int
+) -> tuple[str, int] | None:
+    """The kept stated row nearest to ``row`` within ``max_distance`` bits, with its distance."""
+    value = _claim_hash_value(row)
+    if value == 0:
+        return None
+    best: tuple[int, str] | None = None
+    for other in stated:
+        other_value = _claim_hash_value(other)
+        if other_value == 0:
+            continue
+        distance = bin(value ^ other_value).count("1")
+        if distance <= max_distance:
+            candidate = (distance, str(other.get("record_id") or ""))
+            if best is None or candidate < best:
+                best = candidate
+    return (best[1], best[0]) if best else None
+
+
+def _collapse_rows(items: list[dict[str, Any]], max_distance: int) -> CollapseResult:
     """Keep one row per claim, for a reader that must not count a claim twice.
 
     The same claim is debunked by several publishers, so an evaluation set built
@@ -1057,7 +1185,6 @@ def collapse_duplicate_claims(
     A group whose rows carry more than one distinct ``label`` is still collapsed,
     and is counted once under ``label_conflict`` so the disagreement is visible.
     """
-    items = [_row_dict(row) for row in rows]
     n = len(items)
     parent = list(range(n))
 
@@ -1141,14 +1268,18 @@ def read_factcheck_rows(settings: Settings | None = None) -> list[dict[str, Any]
     return _read_rows(path) if path.exists() else []
 
 
-def read_deduplicated_factchecks(settings: Settings | None = None) -> CollapseResult:
+def read_deduplicated_factchecks(
+    settings: Settings | None = None, *, merge_tier4: bool = False
+) -> CollapseResult:
     """``factchecks.parquet`` with duplicate claims collapsed, for an evaluation harness.
 
-    An absent file gives an empty result. The file is not modified.
+    An absent file gives an empty result. The file is not modified. ``merge_tier4``
+    is true when tier 4 counts in the primary evaluation, see
+    :func:`collapse_duplicate_claims`.
     """
     settings = settings or get_settings()
     rows = read_factcheck_rows(settings)
-    result = collapse_duplicate_claims(rows)
+    result = collapse_duplicate_claims(rows, merge_tier4=merge_tier4)
     if result.collapsed:
         log.info(
             "collapsed %d verdict rows as %s",
