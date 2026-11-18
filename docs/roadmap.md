@@ -329,14 +329,6 @@ the honest entry in that cell, not a zero.
   debunk as misinformation. The list of fact-checker domains is
   `configs/factcheck.yaml`, `publishers` plus `other_fact_checkers`. The label sheet and
   the corpus text are not in git.
-- **Rerun the fact-check comparison report.** The report in
-  [results/factcheck-comparison.md](results/factcheck-comparison.md) left only the four
-  publishers with an extraction tier out of the corpus flag rate. Alt News, Factly,
-  Newschecker and DigitEye articles stayed in it. `modeling.cli evaluate-factchecks`
-  on the same score files and seed now leaves out all eight. It needs no GPU. The flag
-  rates and lifts can change. The ship decisions use macro F1 on the benchmark split and
-  do not change. The Hindi gate uses the Hindi title lift, and Alt News Hindi articles
-  were in that flag rate, so the gate result has to be read again from the new report.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination
