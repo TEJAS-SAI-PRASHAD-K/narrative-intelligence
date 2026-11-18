@@ -1091,6 +1091,8 @@
           "risk_score": {
             "anyOf": [
               {
+                "maximum": 100.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -2163,6 +2165,8 @@
           "sharing_author_bot_ratio": {
             "anyOf": [
               {
+                "maximum": 1.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -2360,12 +2364,40 @@
             "title": "Entity Type",
             "type": "string"
           },
+          "filters_applied": {
+            "additionalProperties": true,
+            "title": "Filters Applied",
+            "type": "object"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/DriverItem"
             },
             "title": "Items",
             "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Distinct entities matching the filters. Null when counting would cost more than the page itself.",
+            "title": "Total"
           }
         },
         "required": [
@@ -2689,6 +2721,8 @@
           "bot_score": {
             "anyOf": [
               {
+                "maximum": 1.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -3078,6 +3112,8 @@
             "type": "array"
           },
           "risk_score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Risk Score",
             "type": "number"
           }
@@ -3432,8 +3468,7 @@
               "compass.generate",
               "domain.enrich",
               "alerts.evaluate",
-              "reports.render",
-              "maint.purge_uploads"
+              "reports.render"
             ],
             "title": "Kind",
             "type": "string"
@@ -3759,6 +3794,25 @@
           "definition"
         ],
         "title": "Metric",
+        "type": "object"
+      },
+      "NamedRef": {
+        "description": "The smallest answer to \"what is this id called\".\n\nUsed by the single-entity lookup routes that exist so a filter chip can show\na name instead of a raw id. Anything richer belongs on the detail route.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "NamedRef",
         "type": "object"
       },
       "NarrativeCohortShare": {
@@ -7553,6 +7607,65 @@
         ]
       }
     },
+    "/api/v1/author-groups/{group_id}": {
+      "get": {
+        "description": "Minimal lookup for rendering an `author_group_id` filter as a name. Returns `{id, name}` only. An unknown id is a 404 with code `author_group_not_found`, never an empty name.",
+        "operationId": "get_author_group_api_v1_author_groups__group_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedRef"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve an author group id to its name",
+        "tags": [
+          "actors"
+        ]
+      }
+    },
     "/api/v1/author-groups/{group_id}/members": {
       "post": {
         "description": "Ids that match no author in this project are returned in `unknown` rather than silently dropped: a watchlist that quietly lost half its entries is worse than one that failed loudly.",
@@ -9801,6 +9914,65 @@
           }
         },
         "summary": "List cohorts",
+        "tags": [
+          "actors"
+        ]
+      }
+    },
+    "/api/v1/cohorts/{cohort_id}": {
+      "get": {
+        "description": "Minimal lookup for rendering a `cohort_id` filter as a name. Returns `{id, name}` only. An unknown id is a 404 with code `cohort_not_found`, never an empty name. The equivalent for narratives is `GET /narratives/{narrative_id}` (its `title` is the display name) and for watchlists `GET /author-groups/{group_id}`.",
+        "operationId": "get_cohort_api_v1_cohorts__cohort_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cohort_id",
+            "required": true,
+            "schema": {
+              "title": "Cohort Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-API-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedRef"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve a cohort id to its name",
         "tags": [
           "actors"
         ]

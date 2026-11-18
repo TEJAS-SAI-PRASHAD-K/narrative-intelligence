@@ -48,7 +48,10 @@ class DomainOut(Camel):
         default=None, description="Posts per hour carrying this domain at peak."
     )
     sharing_author_bot_ratio: float | None = Field(
-        default=None, description="Share of the authors linking it that score bot-like."
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Share of the authors linking it that score bot-like.",
     )
     scoring_version: str | None = None
     components: list[ScoreComponent] = Field(default_factory=list)

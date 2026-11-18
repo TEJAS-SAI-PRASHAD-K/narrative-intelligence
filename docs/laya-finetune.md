@@ -296,8 +296,9 @@ Take the flag rate over `data/normalized/**` at the same threshold. Two
 requirements for it:
 
 - **Exclude the fact-check publishers from that corpus.** Their articles are the
-  source of the 96 claims. A flag rate that includes them measures the model on
-  its own answer key and is inflated.
+  source of the claims. A flag rate that includes them measures the model on
+  its own answer key and is inflated. The list is every fact-checker in
+  `configs/factcheck.yaml`, `publishers` plus `other_fact_checkers`.
 - **Use titles for the primary flag rate.** The claims are short, so a
   title is the like-for-like input. Full text is a second value, reported next
   to it, not in place of it. 90% recall

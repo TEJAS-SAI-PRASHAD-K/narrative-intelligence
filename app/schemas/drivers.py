@@ -8,7 +8,7 @@ component three times. They differ only in the ``entity`` field's meaning, which
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -44,3 +44,13 @@ class DriversResponse(Camel):
     entity_type: EntityType
     items: list[DriverItem]
     definition: str
+    #: Same cursor scheme as every PageResponse list. Null on the last page.
+    next_cursor: str | None = None
+    total: int | None = Field(
+        default=None,
+        description=(
+            "Distinct entities matching the filters. Null when counting would cost more "
+            "than the page itself."
+        ),
+    )
+    filters_applied: dict[str, Any] = Field(default_factory=dict)

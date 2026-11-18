@@ -1476,12 +1476,17 @@ def drivers(spec: FilterSpec, page: Page, entity_type: str):
         )
         for key, data in tallies.items()
     ]
-    items.sort(key=lambda item: -item.post_count)
+    # Entity as the tiebreaker: equal post counts are common, and an unstable order
+    # repeats or skips rows at a page boundary.
+    items.sort(key=lambda item: (-item.post_count, item.entity))
     paged = paginate(items, page, spec.as_response_dict())
     return DriversResponse(
         entity_type=entity_type,  # type: ignore[arg-type]
         items=paged.items,
         definition=DEFINITIONS[f"drivers_{entity_type}s"],
+        next_cursor=paged.next_cursor,
+        total=paged.total,
+        filters_applied=paged.filters_applied,
     ), paged
 
 

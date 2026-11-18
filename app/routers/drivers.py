@@ -22,13 +22,8 @@ router = APIRouter(prefix="/drivers", tags=["drivers"], dependencies=[Depends(ra
 
 async def _drivers(session, filters, page, entity_type: str) -> DriversResponse:
     if mock.demo_mode():
-        response, paged = mock.drivers(filters, page, entity_type)
-        # The DriversResponse carries the definition; the page envelope carries
-        # the cursor. Both matter, so the cursor fields are copied onto the
-        # response rather than the caller being handed two objects.
-        response_dict = response.model_dump()
-        response_dict["items"] = [item.model_dump() for item in paged.items]
-        return DriversResponse.model_validate(response_dict)
+        response, _ = mock.drivers(filters, page, entity_type)
+        return response
     from app.repositories.drivers import drivers as query_drivers
 
     return await query_drivers(session, filters, page, entity_type)

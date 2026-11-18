@@ -205,6 +205,34 @@ def test_real_config_lists_the_fact_check_publishers():
     assert {"boomlive.in", "thequint.com", "vishvasnews.com", "factcrescendo.com"} <= publishers
 
 
+def test_fact_checkers_without_an_extraction_tier_are_excluded_too():
+    publishers = load_factcheck_publishers()
+    assert {"altnews.in", "factly.in", "newschecker.in", "digiteye.in"} <= publishers
+
+
+def test_every_fact_checker_feed_in_sources_is_listed():
+    import yaml
+
+    from modeling.config import CONFIG_DIR, normalise_domain
+
+    # sources.yaml lists the fact-checker feeds first, under "--- fact-checkers"
+    # headings, and the mainstream outlets after the first "--- Indian mainstream".
+    text = (CONFIG_DIR / "sources.yaml").read_text()
+    marker = "# --- Indian mainstream"
+    assert marker in text, "sources.yaml no longer separates fact-checkers from mainstream feeds"
+    head = text.split(marker)[0]
+    feeds = yaml.safe_load(text)["news_rss"]["feeds"]
+    fact_checker_feeds = [f for f in feeds if f in head]
+    hosts = {normalise_domain(f.split("/")[2]) for f in fact_checker_feeds}
+    assert hosts and hosts <= load_factcheck_publishers()
+
+
+def test_other_fact_checkers_alone_are_enough(tmp_path):
+    path = tmp_path / "factcheck.yaml"
+    path.write_text("publishers: {}\nother_fact_checkers: [www.Example.in]\n")
+    assert load_factcheck_publishers(path) == frozenset({"example.in"})
+
+
 def test_empty_publisher_list_refuses(tmp_path):
     path = tmp_path / "factcheck.yaml"
     path.write_text("publishers: {}\n")

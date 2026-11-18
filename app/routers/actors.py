@@ -27,7 +27,7 @@ from app.schemas.actors import (
     AuthorTimeline,
     CohortOut,
 )
-from app.schemas.common import PageResponse
+from app.schemas.common import NamedRef, PageResponse
 from app.schemas.narratives import NarrativeSummary
 from app.schemas.posts import PostOut
 
@@ -39,6 +39,36 @@ def _demo_author(author_id: str):
     if author is None:
         raise NotFound(f"No author with id {author_id}.", code="author_not_found")
     return author
+
+
+def _demo_author_groups() -> list[AuthorGroupOut]:
+    from datetime import timedelta
+
+    from app.mock.corpus import DEMO_NOW, _stable_uuid
+
+    return [
+        AuthorGroupOut(
+            id=_stable_uuid("author_group", name),
+            project_id=mock.corpus().project_id,
+            name=name,
+            description=description,
+            is_curated=True,
+            member_count=count,
+            created_at=DEMO_NOW - timedelta(days=20),
+        )
+        for name, description, count in (
+            (
+                "Russian State Affiliated Accounts",
+                "Analyst-maintained. Membership is an assertion, not a model output.",
+                14,
+            ),
+            (
+                "Known Hostile Telegram Channels",
+                "Cross-referenced against published research; reviewed monthly.",
+                9,
+            ),
+        )
+    ]
 
 
 @router.get("/authors", response_model=PageResponse[AuthorOut], summary="List authors")
@@ -204,6 +234,32 @@ async def list_cohorts(
 
 
 @router.get(
+    "/cohorts/{cohort_id}",
+    response_model=NamedRef,
+    summary="Resolve a cohort id to its name",
+    description=(
+        "Minimal lookup for rendering a `cohort_id` filter as a name. Returns `{id, name}` "
+        "only. An unknown id is a 404 with code `cohort_not_found`, never an empty name. "
+        "The equivalent for narratives is `GET /narratives/{narrative_id}` (its `title` is "
+        "the display name) and for watchlists `GET /author-groups/{group_id}`."
+    ),
+)
+async def get_cohort(
+    cohort_id: str,
+    principal: RequireRead,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> NamedRef:
+    if mock.demo_mode():
+        cohort = mock.corpus().by_cohort.get(cohort_id)
+        if cohort is None:
+            raise NotFound(f"No cohort with id {cohort_id}.", code="cohort_not_found")
+        return NamedRef(id=cohort["id"], name=cohort["name"])
+    from app.repositories.actors import get_cohort_name
+
+    return await get_cohort_name(session, cohort_id)
+
+
+@router.get(
     "/cohorts/{cohort_id}/authors",
     response_model=PageResponse[AuthorOut],
     summary="Authors in a cohort",
@@ -236,37 +292,36 @@ async def list_author_groups(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> PageResponse[AuthorGroupOut]:
     if mock.demo_mode():
-        from datetime import timedelta
-
-        from app.mock.corpus import DEMO_NOW, _stable_uuid
-
-        items = [
-            AuthorGroupOut(
-                id=_stable_uuid("author_group", name),
-                project_id=mock.corpus().project_id,
-                name=name,
-                description=description,
-                is_curated=True,
-                member_count=count,
-                created_at=DEMO_NOW - timedelta(days=20),
-            )
-            for name, description, count in (
-                (
-                    "Russian State Affiliated Accounts",
-                    "Analyst-maintained. Membership is an assertion, not a model output.",
-                    14,
-                ),
-                (
-                    "Known Hostile Telegram Channels",
-                    "Cross-referenced against published research; reviewed monthly.",
-                    9,
-                ),
-            )
-        ]
+        items = _demo_author_groups()
         return mock.paginate(items, page, {"project_id": project_id})
     from app.repositories.actors import list_author_groups as query_groups
 
     return await query_groups(session, project_id, page)
+
+
+@router.get(
+    "/author-groups/{group_id}",
+    response_model=NamedRef,
+    summary="Resolve an author group id to its name",
+    description=(
+        "Minimal lookup for rendering an `author_group_id` filter as a name. Returns "
+        "`{id, name}` only. An unknown id is a 404 with code `author_group_not_found`, never "
+        "an empty name."
+    ),
+)
+async def get_author_group(
+    group_id: str,
+    principal: RequireRead,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> NamedRef:
+    if mock.demo_mode():
+        for group in _demo_author_groups():
+            if group.id == group_id:
+                return NamedRef(id=group.id, name=group.name)
+        raise NotFound(f"No author group with id {group_id}.", code="author_group_not_found")
+    from app.repositories.actors import get_author_group_name
+
+    return await get_author_group_name(session, group_id)
 
 
 @router.post(

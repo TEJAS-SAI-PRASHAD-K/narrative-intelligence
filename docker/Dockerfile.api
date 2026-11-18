@@ -24,10 +24,9 @@ RUN pip install --upgrade pip setuptools wheel \
 COPY . .
 RUN pip install --no-deps -e .
 
-# Non-root. The uploads volume is chowned in the entrypoint because compose
-# creates it root-owned on first run.
+# Non-root.
 RUN useradd --create-home --uid 10001 app \
- && mkdir -p /srv/uploads /srv/reports /srv/data \
+ && mkdir -p /srv/reports /srv/data \
  && chown -R app:app /srv
 USER app
 

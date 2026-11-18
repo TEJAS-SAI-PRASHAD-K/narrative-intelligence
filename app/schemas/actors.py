@@ -89,7 +89,7 @@ class AuthorScoreExplanation(Camel):
 
     author_id: str
     bot_score: float | None
-    risk_score: float | None
+    risk_score: float | None = Field(ge=0.0, le=100.0)
     model: str
     scoring_version: str
     top_features: list[ScoreComponent] = Field(
