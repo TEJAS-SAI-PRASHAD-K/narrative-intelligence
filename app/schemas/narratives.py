@@ -28,7 +28,26 @@ class NarrativeScorecard(Camel):
     """
 
     priority: Priority
-    bot_like: float | None = Field(default=None, ge=0.0, le=1.0)
+    bot_like: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Share of the narrative's classifiable authors the account classifier scores as "
+            "bot-like. Fusion does not read this: the classifier does not generalize across "
+            "folds, so it is shown for context only. Null means not measured."
+        ),
+    )
+    coordinated_author_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Share of the narrative's coordination-scored authors whose coordination score is "
+            "above the fusion threshold. This is the author signal fusion reads. Null means no "
+            "member author was scored by the coordination stage; it is never 0 for not measured."
+        ),
+    )
     anomalous: float | None = Field(default=None, ge=0.0, le=1.0)
     toxicity: float | None = Field(default=None, ge=0.0, le=1.0)
     compass_risk: RiskBand | None = None

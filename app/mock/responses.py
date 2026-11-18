@@ -492,6 +492,12 @@ DEFINITIONS = {
         "so the same person on two platforms counts twice -- cross-platform identity "
         "resolution is out of scope."
     ),
+    "coordinated_author_ratio": (
+        "Share of authors scored by the coordination stage whose coordination score is "
+        "above the fusion threshold, in [0, 1]. Fusion reads this signal. Authors the "
+        "stage never saw are excluded rather than counted as uncoordinated; with none "
+        "scored the value is null, not 0."
+    ),
     "sentiment": (
         "Net sentiment: the share of scored posts classified positive minus the "
         "share classified negative, in [-100, 100]. Positive means the corpus "
@@ -872,6 +878,9 @@ def overview_authors_breakdown(spec: FilterSpec):
     author_ids = {p.author_id for p in posts}
     authors = [a for a in corpus().authors if a.author_id in author_ids]
     bot_like = [a for a in authors if a.bot_score is not None and a.bot_score > 0.6]
+    coordination_scored = [
+        a.coordination_score for a in authors if a.coordination_score is not None
+    ]
 
     cohort_counts: dict[str, int] = {}
     for author in authors:
@@ -887,6 +896,18 @@ def overview_authors_breakdown(spec: FilterSpec):
             "Bot-like authors",
             sample_size=sum(1 for a in authors if a.bot_score is not None),
             nullable_fields=["bot_score"],
+        ),
+        coordinated_author_ratio=_metric(
+            "coordinated_author_ratio",
+            (
+                round(sum(1 for s in coordination_scored if s > 0.5) / len(coordination_scored), 4)
+                if coordination_scored
+                else None
+            ),
+            "Coordinated authors",
+            unit="ratio",
+            nullable_fields=["coordination_score"],
+            sample_size=len(coordination_scored),
         ),
         author_groups=_metric("authors", 2, "Watchlisted authors", sample_size=len(authors)),
         top_cohorts=[
@@ -1476,12 +1497,17 @@ def drivers(spec: FilterSpec, page: Page, entity_type: str):
         )
         for key, data in tallies.items()
     ]
-    items.sort(key=lambda item: -item.post_count)
+    # Entity as the tiebreaker: equal post counts are common, and an unstable order
+    # repeats or skips rows at a page boundary.
+    items.sort(key=lambda item: (-item.post_count, item.entity))
     paged = paginate(items, page, spec.as_response_dict())
     return DriversResponse(
         entity_type=entity_type,  # type: ignore[arg-type]
         items=paged.items,
         definition=DEFINITIONS[f"drivers_{entity_type}s"],
+        next_cursor=paged.next_cursor,
+        total=paged.total,
+        filters_applied=paged.filters_applied,
     ), paged
 
 

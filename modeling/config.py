@@ -376,6 +376,39 @@ def module_config(module: str) -> dict[str, Any]:
     return merged
 
 
+class FactCheckDomainsMissing(ValueError):
+    """``configs/factcheck.yaml`` is absent or names no fact-checker."""
+
+
+def normalise_domain(value: Any) -> str:
+    """Lower-case a ``source_detail`` domain and drop a leading ``www.``."""
+    text = str(value or "").strip().lower()
+    return text[4:] if text.startswith("www.") else text
+
+
+def fact_check_domains(path: Path | None = None) -> frozenset[str]:
+    """Every fact-checker domain in ``configs/factcheck.yaml``, normalised.
+
+    The union of ``publishers``, whose verdicts are extracted, and
+    ``other_fact_checkers``, whose are not. A missing file or an empty union
+    raises: with no list, every debunk article would pass as ordinary coverage
+    and nothing would say so.
+    """
+    import yaml
+
+    path = Path(path) if path else CONFIG_DIR / "factcheck.yaml"
+    if not path.exists():
+        raise FactCheckDomainsMissing(
+            f"{path} not found; cannot tell which corpus rows are fact-checkers"
+        )
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    names = [*(data.get("publishers") or {}), *(data.get("other_fact_checkers") or [])]
+    domains = frozenset(normalise_domain(d) for d in names) - {""}
+    if not domains:
+        raise FactCheckDomainsMissing(f"{path} lists no publishers")
+    return domains
+
+
 def model_version(module: str) -> str:
     """The version string that lands in every scored row's ``model_versions``.
 

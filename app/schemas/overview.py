@@ -102,7 +102,16 @@ class EngagementsBreakdown(Camel):
 
 class AuthorsBreakdown(Camel):
     total: Metric
+    #: Context only. Fusion does not read the bot classifier, which does not
+    #: generalize across folds.
     bot_like: Metric
+    coordinated_author_ratio: Metric = Field(
+        description=(
+            "Share of coordination-scored authors above the fusion coordination threshold, "
+            "as a value in [0, 1]. This is the author signal fusion reads. The value is null "
+            "when no author in scope was scored by the coordination stage, never 0."
+        )
+    )
     author_groups: Metric
     top_cohorts: list[HierarchyNode] = Field(default_factory=list)
     total_cohort_count: int = 0

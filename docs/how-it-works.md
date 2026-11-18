@@ -953,7 +953,6 @@ There are four queues, split by *what the work competes for*, not by feature.
 |---|---|---|
 | 15 min | Alert evaluation | Check alert rules against current scores |
 | 1 hour | Domain enrichment | Look up registration and certificate info. Never blocks — a domain page must render regardless |
-| 1 hour | Purge uploads | Delete files older than the retention window from the uploads folder. An earlier version of the service accepted uploads of images of real people. This task clears files that remain |
 | 6 hours | Rebuild graph edges | Then automatically re-detect communities |
 | 24 hours | Rescore narratives | Recompute every fusion score |
 | 7 days | Re-cluster | Find narratives again, carrying IDs forward |
