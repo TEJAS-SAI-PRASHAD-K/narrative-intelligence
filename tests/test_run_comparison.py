@@ -1517,6 +1517,20 @@ def _synthetic_laya_scores(
             if r["part"] == "test":
                 r["score"] = test_scores
     rc.write_score_file(path, rows)
+    # The calibrator needs a group id for every validation row, as the split gives one.
+    eval_path = out / "eval_rows.parquet"
+    eval_rows = pd.read_parquet(eval_path)
+    synthetic = pd.DataFrame(
+        {
+            "split": "val",
+            "id": [f"syn{i}" for i in range(len(scores))],
+            "text": "synthetic",
+            "label": labels.astype(int),
+            "source_dataset": "liar",
+            "group_id": [f"syn-group-{i // 2}" for i in range(len(scores))],
+        }
+    )
+    pd.concat([eval_rows, synthetic], ignore_index=True).to_parquet(eval_path, index=False)
     sidecar = out / "scores" / "laya_multi.provenance.json"
     recorded = json.loads(sidecar.read_text())
     recorded["score_file_sha256"] = rc.file_sha256(path)
@@ -1629,6 +1643,46 @@ def test_calibrate_laya_refuses_inverted_scores_and_writes_nothing(scored, promo
     assert code != 0
     assert not (promoted / "misinfo_prob_calibrator.json").exists()
     assert not (promoted / "misinfo_prob_calibration_report.json").exists()
+
+
+def test_calibrate_laya_with_the_refit_stores_the_temperature(scored, promoted, monkeypatch):
+    import modeling.config as mconfig
+    from modeling.text import laya_temperature as lt
+
+    _synthetic_laya_scores(scored)
+    val = pd.read_parquet(scored / "eval_rows.parquet")
+    val = val[val["split"] == "val"].reset_index(drop=True)
+    ids = val["id"].astype(str).to_numpy()
+    y = val["label"].astype(int).to_numpy()
+    gap = (2 * y - 1) * 8.0 + np.random.default_rng(5).normal(0, 12, len(y))
+    own = rc.directory_identity(scored / "models" / "laya" / f"multi-{LAYA_V}")
+    cache = lt.write_gap_cache(
+        scored / "gaps.npz", gap=gap, positions=np.arange(len(y)), ids=ids.astype(str),
+        long_positions=np.array([], dtype=int), blank_rows=0, model="laya_multi",
+        checkpoint_sha256=own["sha256"], validation_ids_hash=lt.ids_hash(ids),
+    )
+    real = mconfig.module_config
+    monkeypatch.setattr(
+        mconfig, "module_config",
+        lambda name: {**real(name), "temperature_refit": True} if name == "laya" else real(name),
+    )
+    deps, _, _, text = make_deps()
+    args = ["calibrate-laya", "--demo", "--out", str(scored), "--checkpoint-dir", str(promoted)]
+    assert run(args, deps) == 2  # no --logits
+    assert run([*args, "--logits", str(cache)], deps) == 0, text.getvalue()
+    state = json.loads((promoted / "misinfo_prob_calibrator.json").read_text())
+    assert 1.0 < state["temperature_refit"]["value"] < 100.0
+    assert state["temperature_refit"]["at_bound"] is False
+
+
+def test_calibrate_laya_fails_when_a_validation_row_has_no_group(scored, promoted):
+    _synthetic_laya_scores(scored)
+    rows = pd.read_parquet(scored / "eval_rows.parquet")
+    rows = rows.drop(columns=["group_id"]).assign(group_id=None)
+    rows.to_parquet(scored / "eval_rows.parquet", index=False)
+    code, _ = _calibrate(scored, promoted)
+    assert code != 0
+    assert not (promoted / "misinfo_prob_calibrator.json").exists()
 
 
 def test_calibrate_laya_counts_the_dropped_null_rows(scored, promoted):
