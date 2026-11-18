@@ -6,6 +6,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-source coordination report.** `CoordinationDetector.detect` now returns observed
+  modularity against the time-shuffled null for all eligible records and for each source.
+  Each row has the null mean, a 95 percent interval, the empirical p value, its floor, the
+  number of shuffles, the empty shuffles and the null mean edge count. `per_source=True`
+  turns it on, and only `coordination-report` does that. A source below `min_source_authors` or `min_source_edges` gets a reason code
+  (`too_few_authors`, `no_edges`, `too_few_edges`) and stays in the report. The seed is the settings seed
+  (20260813). The new command `modeling.cli coordination-report` writes `report.md` and
+  `report.json`. It takes `--sources`, which may name a source outside the production
+  eligible set such as `telegram`, and `--null-shuffles` (default 200). It drops forwarded
+  Telegram posts as `telegram_forward` and never writes to the scored tables.
+
+- **Language purity in `compare-embedder`.** The output has the majority-language share of
+  each cluster, the member-weighted mean and the count of mixed clusters for both embedders.
+  It also gives each language's clustered and noise counts, and the share of its clustered
+  records that sit in a cluster with each other language. Both embedders cluster the same
+  sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
+  each size. The narratives manifest records `min_cluster_size`.
+
+- **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
+  `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
+  subtitle text, so a video carries thousands of characters instead of a few hundred.
+  A manual track in the video's language is preferred, then the original auto caption
+  track; machine translations are never used. `raw` records `subtitle_lang` and
+  `subtitle_kind` (`manual`, `auto` or `none`). The run summary counts
+  `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`, and every
+  skip has a reason code (`extract_failed`, `search_failed`, `subtitle_fetch_failed`,
+  `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
+  a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
+  `fixtures/youtube_ytdlp_info.json`.
+
+- **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
+  a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
+  reaction total to `likes` and the reply count to `replies`; each is `None` when the
+  channel does not expose it. Needs `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and
+  `TELEGRAM_SESSION` (a `StringSession`), all optional: without them the source is skipped
+  with `missing_credentials`. Channels are listed under `telegram` in
+  `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
+  API source enums and `openapi.json`.
+
+### Changed
+
+- **The embedder comparison result is reported and the default stays.** The multilingual model
+  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
+  English and 759 Hindi records and 72 records with other detector codes. The silhouette
+  is 0.102 against 0.45. The cluster model card has the tables.
+
+- **The coordination result is reported per source.** YouTube has an observed modularity of
+  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
+  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
+  `artifacts/model_cards/coordination.md`.
+
+- **The coordination null leaves out shuffles with no edges.** The coordination module
+  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
+  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
+  threading exemption that was fixed to Mastodon in code is now the config list
+  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
+  `eligible_sources`.
+
+### Removed
+
+- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
+  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
+  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
+  Data API's `regionCode` did.
+
+## [0.7.0] — 2026-11-18
+
 ### Fixed
 
 - **The fact-check manifest is refrozen at 4428 claims after the BOOM Hindi and Fact
@@ -71,24 +140,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   30 rows per language and an unchanged pattern set. The error rate is not measured yet.
   See `docs/factcheck-tiers.md`.
 
-- **Per-source coordination report.** `CoordinationDetector.detect` now returns observed
-  modularity against the time-shuffled null for all eligible records and for each source.
-  Each row has the null mean, a 95 percent interval, the empirical p value, its floor, the
-  number of shuffles, the empty shuffles and the null mean edge count. `per_source=True`
-  turns it on, and only `coordination-report` does that. A source below `min_source_authors` or `min_source_edges` gets a reason code
-  (`too_few_authors`, `no_edges`, `too_few_edges`) and stays in the report. The seed is the settings seed
-  (20260813). The new command `modeling.cli coordination-report` writes `report.md` and
-  `report.json`. It takes `--sources`, which may name a source outside the production
-  eligible set such as `telegram`, and `--null-shuffles` (default 200). It drops forwarded
-  Telegram posts as `telegram_forward` and never writes to the scored tables.
-
-- **Language purity in `compare-embedder`.** The output has the majority-language share of
-  each cluster, the member-weighted mean and the count of mixed clusters for both embedders.
-  It also gives each language's clustered and noise counts, and the share of its clustered
-  records that sit in a cluster with each other language. Both embedders cluster the same
-  sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
-  each size. The narratives manifest records `min_cluster_size`.
-
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
@@ -98,27 +149,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   evaluation report now lists fact-check rows per extraction tier, including a tier that
   only appears after the evaluation set was frozen. Markup fixtures are in
   `fixtures/newschecker/`.
-
-- **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
-  `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
-  subtitle text, so a video carries thousands of characters instead of a few hundred.
-  A manual track in the video's language is preferred, then the original auto caption
-  track; machine translations are never used. `raw` records `subtitle_lang` and
-  `subtitle_kind` (`manual`, `auto` or `none`). The run summary counts
-  `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`, and every
-  skip has a reason code (`extract_failed`, `search_failed`, `subtitle_fetch_failed`,
-  `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
-  a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
-  `fixtures/youtube_ytdlp_info.json`.
-
-- **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
-  a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
-  reaction total to `likes` and the reply count to `replies`; each is `None` when the
-  channel does not expose it. Needs `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and
-  `TELEGRAM_SESSION` (a `StringSession`), all optional: without them the source is skipped
-  with `missing_credentials`. Channels are listed under `telegram` in
-  `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
-  API source enums and `openapi.json`.
 
 - **Read-side claim deduplication by multilingual embedding, with counts per pass.**
   `collapse_duplicate_claims` links two verdicts when their claim simhashes are within
@@ -141,32 +171,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ClaimReview is appearing on its recent posts. Pages without one are counted as
   `no_claimreview`. The frozen-set summary and the comparison report now print the Hindi
   claim share per publisher, so a set that still rests on one publisher is visible.
-
-### Changed
-
-- **The embedder comparison result is reported and the default stays.** The multilingual model
-  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
-  English and 759 Hindi records and 72 records with other detector codes. The silhouette
-  is 0.102 against 0.45. The cluster model card has the tables.
-
-- **The coordination result is reported per source.** YouTube has an observed modularity of
-  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
-  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
-  `artifacts/model_cards/coordination.md`.
-
-- **The coordination null leaves out shuffles with no edges.** The coordination module
-  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
-  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
-  threading exemption that was fixed to Mastodon in code is now the config list
-  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
-  `eligible_sources`.
-
-### Removed
-
-- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
-  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
-  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
-  Data API's `regionCode` did.
 
 ## [0.6.0] — 2026-11-18
 
