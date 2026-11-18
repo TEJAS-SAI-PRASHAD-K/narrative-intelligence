@@ -364,7 +364,8 @@ def wilson(p: float, n_eff: float) -> tuple[float, float]:
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-def _cohen_kappa(a: list[str], b: list[str]) -> float | None:
+def cohen_kappa(a: list[str], b: list[str]) -> float | None:
+    """Cohen's kappa of two label lists, or ``None`` when it is undefined."""
     n = len(a)
     if not n:
         return None
@@ -374,6 +375,10 @@ def _cohen_kappa(a: list[str], b: list[str]) -> float | None:
     if expected == 1.0:
         return None
     return (observed - expected) / (1.0 - expected)
+
+
+#: The old private name, kept for any caller that imports it.
+_cohen_kappa = cohen_kappa
 
 
 def _estimate(

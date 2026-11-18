@@ -200,6 +200,10 @@ the honest entry in that cell, not a zero.
   `is_same_claim`. The threshold `claim_dedup.min_similarity` is 0.85, chosen from the
   distribution of those pairs and not from a hand check, so the comparison report
   records the embedding precision as `not_measured` until the sample is labelled. The
+  sample also has the columns `labeller_kind`, `labeller_1`, `labeller_2`, `label_1` and
+  `label_2`. Only `labeller_kind` `human` gives a measured precision. A model label gives
+  status `provisional` with the reason code `labeller_not_human`, and the report prints
+  `labeller: model, unreviewed by a person` for `model-unreviewed`. The
   links cover the claims stored today; a longer collection window needs the command
   rerun before the evaluation set is frozen again. Run the command before freezing: if
   the pass turns a frozen row into a duplicate, the harness refuses the stale manifest,

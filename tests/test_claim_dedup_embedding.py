@@ -553,14 +553,17 @@ def test_precision_counts_labelled_pairs_and_a_zero_is_measured(tmp_path):
         encoding="utf-8",
     )
     precision = cd.embedding_precision(path)
-    assert precision.status == "measured"
+    # An older sample has no labeller_kind column. It reads as unknown and is not measured.
+    assert precision.status == "provisional"
+    assert precision.labeller_kind == "unknown"
+    assert precision.reason == "labeller_kind_missing"
     assert precision.precision == pytest.approx(0.5)
     assert (precision.n_same, precision.n_labelled) == (1, 2)
 
     path.write_text(header + "a,b,0.9,false,x,false,y,no\n", encoding="utf-8")
     zero = cd.embedding_precision(path)
-    assert zero.status == "measured"
     assert zero.precision == 0.0
+    assert zero.status == "provisional"
 
 
 def test_an_unrecognised_hand_label_is_refused(tmp_path):
@@ -623,3 +626,377 @@ def test_the_cli_writes_links_and_a_sample_for_a_simhash_only_run(tmp_path, monk
     assert payload["passes"]["embedding"]["reason"] == "disabled_in_config"
     assert cd.hand_check_sample_path(data).exists()
     assert "embedding: not measured" in result.output
+
+
+NEW_HEADER = ",".join(cd.SAMPLE_COLUMNS) + "\n"
+
+
+def _sample_row(record_id, kind, l1, l2, a, b, same):
+    # record_id, kept_record_id, similarity, label, claim, kept_label, kept_claim,
+    # labeller_kind, labeller_1, labeller_2, label_1, label_2, is_same_claim
+    return f"{record_id},k,0.9,false,x,false,y,{kind},{l1},{l2},{a},{b},{same}\n"
+
+
+def _write_sample(tmp_path, *rows):
+    path = tmp_path / "sample.csv"
+    path.write_text(NEW_HEADER + "".join(rows), encoding="utf-8")
+    return path
+
+
+def test_the_written_sample_has_blank_labeller_columns(tmp_path):
+    path = tmp_path / "sample.csv"
+    rows = [{"record_id": "keep", "claim": "kept claim", "label": "false"}]
+    cd.write_hand_check_sample(sample_result(), rows, path, size=4)
+    with path.open(encoding="utf-8", newline="") as handle:
+        written = list(csv.DictReader(handle))
+    for column in ("labeller_kind", "labeller_1", "labeller_2", "label_1", "label_2"):
+        assert column in cd.SAMPLE_COLUMNS
+        assert all(item[column] == "" for item in written)
+
+
+def test_the_kind_list_is_the_tier_4_list():
+    from ingest import title_predicate_eval as tpe
+
+    assert cd.LABELLER_KINDS is tpe.LABELLER_KINDS
+    assert cd.MEASURED_KINDS is tpe.MEASURED_KINDS
+
+
+def test_human_labels_are_measured_with_interval_and_agreement(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sample_row("a", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("b", "human", "ana", "raj", "no", "no", "no"),
+        _sample_row("c", "human", "ana", "raj", "yes", "no", "yes"),
+        _sample_row("d", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("e", "", "", "", "", "", ""),
+    )
+    result = cd.embedding_precision(path)
+    assert result.status == "measured"
+    assert result.reason is None
+    assert result.labeller_kind == "human"
+    assert result.precision == pytest.approx(0.75)
+    assert 0.0 < result.ci_low < 0.75 < result.ci_high <= 1.0
+    assert result.n_double_labelled == 4
+    assert result.agreement == pytest.approx(0.75)
+    assert result.kappa == pytest.approx(0.5)
+    text = cd.describe_precision(result.as_dict())
+    assert "labeller: human" in text
+    assert "PROVISIONAL" not in text
+
+
+@pytest.mark.parametrize("kind", ["model-unreviewed", "model-reviewed"])
+def test_model_labels_are_provisional_not_measured(tmp_path, kind):
+    path = _write_sample(tmp_path, _sample_row("a", kind, "m1", "m2", "yes", "yes", "yes"))
+    result = cd.embedding_precision(path)
+    assert result.status == "provisional"
+    assert result.reason == cd.PrecisionReason.LABELLER_NOT_HUMAN.value
+    assert result.labeller_kind == kind
+    assert "not a measured precision" in cd.describe_precision(result.as_dict())
+
+
+def test_model_unreviewed_text_names_the_labeller(tmp_path):
+    path = _write_sample(
+        tmp_path, _sample_row("a", "model-unreviewed", "m1", "m2", "yes", "yes", "yes")
+    )
+    text = cd.describe_precision(cd.embedding_precision(path).as_dict())
+    assert "labeller: model, unreviewed by a person" in text
+    assert "PROVISIONAL" in text
+    assert "labeller_not_human" in text
+
+
+def test_a_sample_with_mixed_kinds_is_not_measured(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sample_row("a", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("b", "model-unreviewed", "m1", "m2", "no", "no", "no"),
+    )
+    result = cd.embedding_precision(path)
+    assert result.labeller_kind == "mixed"
+    assert result.status == "provisional"
+    assert result.reason == "labeller_not_human"
+    assert result.kind_counts == {"human": 1, "model-unreviewed": 1}
+    text = cd.describe_precision(result.as_dict())
+    assert "labeller: mixed (human 1, model, unreviewed by a person 1)" in text
+
+
+def test_kappa_is_none_without_double_labels(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "ana", "", "yes", "", "yes"))
+    result = cd.embedding_precision(path)
+    assert result.status == "provisional"
+    assert "no_double_labelled_pair" in result.reasons
+    assert result.kappa is None
+    assert result.agreement is None
+    assert result.n_double_labelled == 0
+
+
+@pytest.mark.parametrize(
+    "row, message",
+    [
+        (_sample_row("a", "", "ana", "raj", "yes", "yes", "yes"), "labeller_kind"),
+        (_sample_row("a", "robot", "ana", "raj", "yes", "yes", "yes"), "labeller_kind"),
+        (_sample_row("a", "human", "ana", "raj", "yes", "yes", "maybe"), "use yes or no"),
+        (_sample_row("a", "human", "ana", "raj", "maybe", "yes", "yes"), "label_1"),
+        (_sample_row("a", "human", "Ana", "ana", "yes", "yes", "yes"), "same labeller"),
+    ],
+)
+def test_an_invalid_filled_row_is_refused(tmp_path, row, message):
+    path = _write_sample(tmp_path, row)
+    with pytest.raises(cd.ClaimSampleError, match=message):
+        cd.embedding_precision(path)
+
+
+
+def test_an_old_sample_reports_labeller_kind_missing(tmp_path):
+    path = tmp_path / "sample.csv"
+    path.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,is_same_claim\n"
+        "a,b,0.9,false,x,false,y,yes\n",
+        encoding="utf-8",
+    )
+    result = cd.embedding_precision(path)
+    assert result.status == "provisional"
+    assert result.precision == pytest.approx(1.0)
+    assert result.reason == "labeller_kind_missing"
+    text = cd.describe_precision(result.as_dict())
+    assert "labeller: unknown" in text
+    assert "labeller_kind_missing" in text
+
+
+def _run_dedup_cli(tmp_path, monkeypatch, *extra):
+    import re
+
+    from typer.testing import CliRunner
+
+    from modeling import cli
+    from modeling.config import get_settings
+
+    data = tmp_path / "data"
+    if not (data / "factchecks" / "factchecks.parquet").exists():
+        _write_factchecks(
+            data,
+            [
+                {"record_id": "a", "claim": "claim one", "simhash": BASE},
+                {"record_id": "b", "claim": "claim one again", "simhash": BASE},
+            ],
+        )
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(cli.app, ["dedup-claims", "--no-embedding", *extra])
+    finally:
+        get_settings.cache_clear()
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    return data, result, " ".join(output.split())
+
+
+def _labelled_sample_text():
+    return (
+        ",".join(cd.SAMPLE_COLUMNS)
+        + "\n"
+        + "a,k,0.9,f,x,f,y,human,ana,raj,yes,yes,yes\n"
+    )
+
+
+def test_the_cli_keeps_a_labelled_sample_and_writes_the_new_one_beside_it(
+    tmp_path, monkeypatch
+):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+
+    _, result, output = _run_dedup_cli(tmp_path, monkeypatch)
+
+    assert result.exit_code == 0, output
+    assert sample.read_text(encoding="utf-8") == _labelled_sample_text()
+    side = cd.side_sample_path(sample)
+    assert side.exists()
+    assert not cd.sample_has_labels(side)
+    assert "sample_has_labels" in output
+    assert "embedding precision: 1.000" in output
+    assert "labeller: human" in output
+
+
+def test_the_cli_replaces_a_labelled_sample_only_on_request(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+
+    _, result, output = _run_dedup_cli(tmp_path, monkeypatch, "--overwrite-sample")
+
+    assert result.exit_code == 0, output
+    assert not cd.sample_has_labels(sample)
+    assert not cd.side_sample_path(sample).exists()
+    assert "sample_has_labels" not in output
+
+
+def test_a_blank_sample_is_replaced_without_a_flag(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    assert not cd.sample_has_labels(sample)
+    _, result, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    assert result.exit_code == 0
+    assert not cd.side_sample_path(sample).exists()
+
+
+def test_a_sample_with_only_a_labeller_kind_is_not_labelled(tmp_path):
+    path = tmp_path / "s.csv"
+    path.write_text(
+        ",".join(cd.SAMPLE_COLUMNS) + "\na,k,0.9,f,x,f,y,human,,,,,\n", encoding="utf-8"
+    )
+    assert not cd.sample_has_labels(path)
+    assert cd.embedding_precision(path).reason == "sample_not_labelled"
+
+
+def test_a_labelled_file_without_the_label_column_is_an_error(tmp_path):
+    path = tmp_path / "s.csv"
+    path.write_text("record_id,kept_record_id,label_1\na,k,yes\n", encoding="utf-8")
+    with pytest.raises(cd.ClaimSampleError, match="is_same_claim"):
+        cd.sample_has_labels(path)
+
+
+def test_stale_sample_pairs_are_counted_and_shown_on_the_line(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sample_row("a", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("b", "human", "ana", "raj", "no", "no", "no"),
+    )
+    current = cd.embedding_precision(path, pairs={("a", "k"), ("b", "k")})
+    assert current.status == "measured"
+    assert current.n_stale == 0
+
+    stale = cd.embedding_precision(path, pairs={("a", "k")})
+    assert stale.status == "provisional"
+    assert stale.reason == "sample_pairs_stale"
+    assert stale.n_stale == 1
+    assert "1 of 2 labelled pairs are not in the current embedding links" in (
+        cd.describe_precision(stale.as_dict())
+    )
+
+
+def test_a_half_filled_row_is_refused(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "ana", "raj", "yes", "", ""))
+    with pytest.raises(cd.ClaimSampleError, match="half-filled"):
+        cd.embedding_precision(path)
+
+
+def test_a_prefilled_kind_on_a_blank_row_is_not_half_filled(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "", "", "", "", ""))
+    assert cd.embedding_precision(path).reason == "sample_not_labelled"
+
+
+def test_a_human_row_needs_two_names_to_be_measured(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "ana", "", "yes", "yes", "yes"))
+    result = cd.embedding_precision(path)
+    assert result.status == "provisional"
+    assert "labeller_names_missing" in result.reasons
+
+
+def test_a_low_kappa_prints_a_warning_but_stays_measured(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sample_row("a", "human", "ana", "raj", "yes", "no", "yes"),
+        _sample_row("b", "human", "ana", "raj", "no", "yes", "no"),
+        _sample_row("c", "human", "ana", "raj", "yes", "yes", "yes"),
+    )
+    result = cd.embedding_precision(path)
+    assert result.status == "measured"
+    assert result.kappa < cd.KAPPA_WARN_BELOW
+    assert "Warning: kappa" in cd.describe_precision(result.as_dict())
+
+
+def test_an_adjudication_against_two_agreeing_labels_is_refused(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "ana", "raj", "yes", "yes", "no"))
+    with pytest.raises(cd.ClaimSampleError, match="disagrees"):
+        cd.embedding_precision(path)
+
+
+def test_the_report_block_holds_a_refused_sample_instead_of_raising(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "ana", "raj", "yes", "", ""))
+    block = cd.embedding_report(
+        None,
+        simhash_count=0,
+        simhash_considered=0,
+        reason=None,
+        sample_path=path,
+    )
+    assert block["precision"]["status"] == "refused"
+    assert block["precision"]["reason"] == "sample_refused"
+    assert "half-filled" in block["precision"]["error"]
+    assert "refused" in cd.describe_precision(block["precision"])
+
+
+def test_resolve_sample_path_falls_back_beside_the_links(tmp_path):
+    beside = tmp_path / "factchecks"
+    beside.mkdir()
+    links_file = beside / "claim_links.json"
+    path, note = cd.resolve_sample_path({"sample": str(tmp_path / "gone.csv")}, links_file)
+    assert path == beside / cd.HAND_CHECK_FILENAME
+    assert "does not exist" in note
+    existing = beside / "x.csv"
+    existing.write_text("", encoding="utf-8")
+    assert cd.resolve_sample_path({"sample": str(existing)}, links_file) == (existing, None)
+
+
+def test_the_kappa_function_is_public_and_the_old_name_still_works():
+    from ingest import title_predicate_eval as tpe
+
+    assert tpe.cohen_kappa(["a", "b"], ["a", "b"]) == 1.0
+    assert tpe._cohen_kappa is tpe.cohen_kappa
+
+
+def test_the_cli_refuses_a_half_filled_sample_before_any_write(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+    bad = (
+        ",".join(cd.SAMPLE_COLUMNS) + "\nz,k,0.9,f,x,f,y,human,ana,raj,yes,,yes\n"
+        "y,k,0.9,f,x,f,y,human,ana,raj,yes,,\n"
+    )
+    sample.write_text(bad, encoding="utf-8")
+    cd.claim_links_path(data).unlink()
+
+    _, result, output = _run_dedup_cli(tmp_path, monkeypatch)
+
+    assert result.exit_code == 1
+    assert "half-filled" in output
+    assert not cd.claim_links_path(data).exists()
+    assert not cd.side_sample_path(sample).exists()
+    assert sample.read_text(encoding="utf-8") == bad
+
+
+def test_overwrite_deletes_a_stale_side_sample(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    side = cd.side_sample_path(sample)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+    side.write_text(",".join(cd.SAMPLE_COLUMNS) + "\n", encoding="utf-8")
+
+    _, result, _ = _run_dedup_cli(tmp_path, monkeypatch, "--overwrite-sample")
+
+    assert result.exit_code == 0
+    assert not side.exists()
+
+
+def test_a_labelled_side_sample_is_not_overwritten_silently(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    side = cd.side_sample_path(sample)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+    side.write_text(_labelled_sample_text(), encoding="utf-8")
+
+    _, result, output = _run_dedup_cli(tmp_path, monkeypatch)
+
+    assert result.exit_code == 1
+    assert "Neither is replaced" in output
+    assert side.read_text(encoding="utf-8") == _labelled_sample_text()
+
+
+def test_the_kept_sample_warning_has_no_count_and_escapes_the_path(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    cd.hand_check_sample_path(data).write_text(_labelled_sample_text(), encoding="utf-8")
+    _, _, output = _run_dedup_cli(tmp_path, monkeypatch)
+    # Rich wraps long paths at the terminal width, which is narrow in CI.
+    flat = "".join(output.split())
+    assert "1samplekept" not in flat
+    assert "claim_dedup_sample.csvhaslabelsandiskept" in flat
