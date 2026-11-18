@@ -3440,8 +3440,7 @@
               "compass.generate",
               "domain.enrich",
               "alerts.evaluate",
-              "reports.render",
-              "maint.purge_uploads"
+              "reports.render"
             ],
             "title": "Kind",
             "type": "string"

@@ -27,7 +27,7 @@ the module being quietly described as present.
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation, coordination input is the weak coordination score, not the bot ratio |
 | API | done | 66 paths, 77 operations, contract tested under `DEMO_MODE` |
 | database | done | 26 tables, 5 migrations, round-trip asserted in CI |
-| deepfake module | removed | code, API, table and dependency tree are gone. `maint.purge_uploads` stays until every deployment has passed one retention window |
+| deepfake module | removed | code, API, table and dependency tree are gone |
 | first real load into Postgres | done | 957 news records, 3 narratives, scored by all four layers, fusion `fusion-v1.2.0` runs, see below |
 | dashboard | done | separate repo, built against the committed contract |
 | CI | done | lint, suite on 3.11 and 3.12, OpenAPI drift, Postgres suite |
@@ -233,14 +233,6 @@ the honest entry in that cell, not a zero.
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination
   path needs no labels and is validated against a time-shuffled null.
-
-### Backend and frontend
-
-- **Remove `maint.purge_uploads`.** The deepfake module is gone, together with its
-  API, its table and its dependency tree. The upload sweep stays only to delete
-  files that a deployment stored before the removal. Remove the task, its beat
-  schedule, `uploads_dir` and `media_retention_hours` after every deployment has
-  passed one retention window.
 
 ### Known gaps that are not scheduled
 
