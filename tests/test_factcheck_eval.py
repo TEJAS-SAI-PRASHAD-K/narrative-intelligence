@@ -626,3 +626,111 @@ def test_every_corpus_text_flag_rate_and_lift_carries_the_notice_and_title_does_
         assert lift_cell.endswith("(not like for like)"), row
     assert "(not like for like)" not in title_part
     assert result["evaluation_set"]["corpus_text_notice"] == CORPUS_TEXT_NOTICE
+
+
+def _domain_rows():
+    return [
+        r("corpus_title", "d1", 0.1, source="www.BoomLive.in"),
+        r("corpus_title", "d2", 0.1, source="boomlive.in"),
+        r("corpus_title", "d3", 0.1, source="thequint.com"),
+        r("corpus_text", "d4", 0.1, source="boomlive.in"),
+        r("corpus_text", "d5", 0.1, source="news.example"),
+    ]
+
+
+def test_exclusions_are_counted_per_domain_with_a_zero_domain():
+    models = pair(_domain_rows())
+    publishers = frozenset({"boomlive.in", "thequint.com", "altnews.in"})
+    result = run(models, publishers=publishers)
+    corpus = result["models"]["cand"]["corpus"]
+    assert corpus["corpus_title"]["excluded_fact_check_publisher_by_domain"] == {
+        "altnews.in": 0, "boomlive.in": 2, "thequint.com": 1,
+    }
+    assert corpus["corpus_text"]["excluded_fact_check_publisher_by_domain"] == {
+        "altnews.in": 0, "boomlive.in": 1, "thequint.com": 0,
+    }
+    for part in ("corpus_title", "corpus_text"):
+        info = corpus[part]
+        assert sum(info["excluded_fact_check_publisher_by_domain"].values()) == (
+            info["n_excluded_fact_check_publisher"]
+        )
+
+
+def test_exclusion_sum_check_fails_loudly_on_a_mismatch():
+    from modeling.eval import factcheck_eval as fe
+
+    fe._check_domain_sum("corpus_title", {"a.in": 1, "b.in": 2}, 3)
+    with pytest.raises(fe.EvalInputError, match="add up"):
+        fe._check_domain_sum("corpus_title", {"a.in": 1, "b.in": 2}, 4)
+
+
+def test_markdown_has_one_table_row_per_fact_checker_domain():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    publishers = frozenset({"boomlive.in", "thequint.com", "altnews.in"})
+    md = render_markdown(run(pair(_domain_rows()), publishers=publishers))
+    assert "### Corpus rows excluded per fact-checker domain" in md
+    assert "| domain | corpus_title | corpus_text |" in md
+    assert "| altnews.in | 0 | 0 |" in md
+    assert "| boomlive.in | 2 | 1 |" in md
+    assert "| thequint.com | 1 | 0 |" in md
+    assert "| total | 3 | 1 |" in md
+
+
+def test_publishers_are_normalised_once_so_case_and_www_still_match():
+    result = run(pair(_domain_rows()), publishers=frozenset({"WWW.BoomLive.in", "thequint.com"}))
+    by_domain = result["models"]["cand"]["corpus"]["corpus_title"][
+        "excluded_fact_check_publisher_by_domain"
+    ]
+    assert by_domain == {"boomlive.in": 2, "thequint.com": 1}
+
+
+def test_a_fact_checker_subdomain_is_not_excluded_but_is_counted():
+    rows = [r("corpus_title", "s1", 0.1, source="hindi.boomlive.in")]
+    publishers = frozenset({"boomlive.in"})
+    result = run(pair(_domain_rows() + rows), publishers=publishers)
+    title = result["models"]["cand"]["corpus"]["corpus_title"]
+    assert title["fact_check_subdomain_not_excluded"] == 1
+    assert title["excluded_fact_check_publisher_by_domain"] == {"boomlive.in": 2}
+    text = result["models"]["cand"]["corpus"]["corpus_text"]
+    assert text["fact_check_subdomain_not_excluded"] == 0
+    from modeling.eval.factcheck_eval import render_markdown
+
+    md = render_markdown(result)
+    assert "1/0 corpus_title/corpus_text rows are on a subdomain" in md
+    assert "fact_check_subdomain_not_excluded" in md
+
+
+def test_report_on_the_real_config_has_eight_domain_rows():
+    from modeling.eval.factcheck_eval import load_factcheck_publishers, render_markdown
+
+    publishers = load_factcheck_publishers()
+    assert len(publishers) == 8
+    md = render_markdown(run(pair(_domain_rows()), publishers=publishers))
+    block = md[md.index("### Corpus rows excluded") :]
+    rows = [ln for ln in block.split("\n\n")[2].splitlines()[2:] if not ln.startswith("| total")]
+    assert len(rows) == 8
+
+
+def test_models_that_differ_get_one_block_each_with_escaped_names():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    # The evaluator requires equal corpus inputs, so edit the result to reach the branch.
+    result = run(pair(_domain_rows(), name="c|d"), publishers=frozenset({"boomlive.in"}))
+    other = result["models"]["tfidf"]["corpus"]["corpus_title"]
+    other["excluded_fact_check_publisher_by_domain"] = {"boomlive.in": 0}
+    md = render_markdown(result)
+    assert "| model | domain | corpus_title | corpus_text |" in md
+    assert "| c\\|d | boomlive.in | 2 | 1 |" in md
+    assert "| tfidf | boomlive.in | 0 | 1 |" in md
+    assert "| tfidf | total | 0 | 1 |" in md
+
+
+def test_a_model_with_no_corpus_rows_is_named_under_the_table():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    rows = VAL_A + make_test_rows([0.9, 0.9, 0.1, 0.1]) + small_case_rows()
+    empty = [x for x in rows if not x["part"].startswith("corpus")]
+    models = {"tfidf": model("tfidf", empty), "cand": model("cand", empty)}
+    md = render_markdown(run(models, publishers=frozenset({"boomlive.in"})))
+    assert "cand has 0 corpus rows, so its counts are 0 by absence." in md

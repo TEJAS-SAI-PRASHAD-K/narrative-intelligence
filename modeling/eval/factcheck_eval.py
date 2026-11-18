@@ -1346,18 +1346,41 @@ def _split_claims(
     return kept, excluded, absent
 
 
+def _check_domain_sum(part: str, by_domain: dict[str, int], total: int) -> None:
+    """Fail when the per-domain exclusion counts do not add up to the total."""
+    if sum(by_domain.values()) != total:
+        raise EvalInputError(
+            f"{part}: per-domain exclusion counts add up to {sum(by_domain.values())}, "
+            f"but {total} rows were excluded"
+        )
+
+
+#: Reason code for a corpus row on a subdomain of a fact-checker domain. The exclusion rule
+#: matches whole domains only, so such a row stays in the flag rate. The count makes it visible.
+FACT_CHECK_SUBDOMAIN_NOT_EXCLUDED = "fact_check_subdomain_not_excluded"
+
+
 def _split_corpus(
     scores: ModelScores, part: str, publishers: frozenset[str]
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Corpus rows without fact-check publishers, and what was removed or unclear."""
+    publishers = frozenset(_normalise_domain(p) for p in publishers)
     frame = scores.part(part)
     domains = frame["source_detail"].map(_normalise_domain)
     is_publisher = domains.isin(publishers)
     kept = frame[~is_publisher]
+    # One entry per listed domain, so a domain with no rows reads as a measured zero.
+    by_domain = {d: int((domains == d).sum()) for d in sorted(publishers)}
+    total = int(is_publisher.sum())
+    _check_domain_sum(part, by_domain, total)
+    suffixes = tuple(f".{d}" for d in publishers if d)
+    n_subdomain = int((~is_publisher & domains.str.endswith(suffixes)).sum()) if suffixes else 0
     info = {
         "n_rows_in_file": int(len(frame)),
-        "n_excluded_fact_check_publisher": int(is_publisher.sum()),
+        "n_excluded_fact_check_publisher": total,
+        "excluded_fact_check_publisher_by_domain": by_domain,
         "n_without_source_detail": int((domains == "").sum()),
+        FACT_CHECK_SUBDOMAIN_NOT_EXCLUDED: n_subdomain,
     }
     return kept, info
 
@@ -1924,6 +1947,70 @@ def _title_predicate_lines(result: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _exclusion_by_domain_lines(result: dict[str, Any]) -> list[str]:
+    """Table of excluded corpus rows per fact-checker domain, with a total row.
+
+    The counts depend only on the corpus rows. One table serves every model when they agree.
+    When they differ, the table has one block of rows for each model.
+    """
+    per_model = {
+        name: {
+            part: info["corpus"][part]["excluded_fact_check_publisher_by_domain"]
+            for part in CORPUS_PARTS
+        }
+        for name, info in result["models"].items()
+    }
+    if not per_model:
+        return []
+    first = next(iter(per_model.values()))
+    same = all(counts == first for counts in per_model.values())
+    lines = [
+        "### Corpus rows excluded per fact-checker domain",
+        "",
+        "Every listed domain appears, also with 0 rows.",
+        "",
+    ]
+    if same:
+        lines += ["| domain | corpus_title | corpus_text |", "|---|---|---|"]
+        for domain in sorted(first["corpus_title"]):
+            lines.append(
+                f"| {_escape(domain)} | {first['corpus_title'][domain]} | "
+                f"{first['corpus_text'][domain]} |"
+            )
+        lines.append(
+            f"| total | {sum(first['corpus_title'].values())} | "
+            f"{sum(first['corpus_text'].values())} |"
+        )
+    else:
+        lines += ["| model | domain | corpus_title | corpus_text |", "|---|---|---|---|"]
+        for name, counts in per_model.items():
+            for domain in sorted(counts["corpus_title"]):
+                lines.append(
+                    f"| {_escape(name)} | {_escape(domain)} | {counts['corpus_title'][domain]} | "
+                    f"{counts['corpus_text'][domain]} |"
+                )
+            lines.append(
+                f"| {_escape(name)} | total | {sum(counts['corpus_title'].values())} | "
+                f"{sum(counts['corpus_text'].values())} |"
+            )
+    lines.append("")
+    for name, info in result["models"].items():
+        corpus = info["corpus"]
+        if all(corpus[part]["n_rows_in_file"] == 0 for part in CORPUS_PARTS):
+            lines += [f"{_escape(name)} has 0 corpus rows, so its counts are 0 by absence.", ""]
+    for name, info in result["models"].items():
+        title, text = info["corpus"]["corpus_title"], info["corpus"]["corpus_text"]
+        n_title = title[FACT_CHECK_SUBDOMAIN_NOT_EXCLUDED]
+        n_text = text[FACT_CHECK_SUBDOMAIN_NOT_EXCLUDED]
+        lines += [
+            f"{_escape(name)}: {n_title}/{n_text} corpus_title/corpus_text rows are on a "
+            f"subdomain of a fact-checker domain (`{FACT_CHECK_SUBDOMAIN_NOT_EXCLUDED}`). "
+            "The exclusion rule does not match them, so they stay in the flag rate.",
+            "",
+        ]
+    return lines
+
+
 def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None = None) -> str:
     """The report table set. Every number shown has its sample size beside it."""
     lines: list[str] = ["# Fact-check evaluation: three-way comparison", ""]
@@ -2145,6 +2232,7 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
             f" | {title['n_without_source_detail']}/{text['n_without_source_detail']} |"
         )
     lines.append("")
+    lines += _exclusion_by_domain_lines(result)
 
     lines += ["## Inputs", "", "| model | file | rows | sha256 |", "|---|---|---|---|"]
     for name, info in result["models"].items():
