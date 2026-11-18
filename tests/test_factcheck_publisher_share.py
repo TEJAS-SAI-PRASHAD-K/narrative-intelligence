@@ -22,7 +22,7 @@ from modeling.eval.factcheck_eval import (
     publisher_shares_from_data,
     run_comparison,
 )
-from tests.test_factcheck_eval import COLUMNS, VAL_A, make_test_rows, small_case_rows
+from tests._factcheck_eval_support import COLUMNS, VAL_A, make_test_rows, small_case_rows
 
 runner = CliRunner()
 

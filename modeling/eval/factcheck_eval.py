@@ -328,6 +328,10 @@ CLAIM_NOT_KNOWN_FALSE = "label_not_false"
 CLAIM_NOT_IN_FROZEN_SET = "not_in_frozen_set"
 #: The id is in no fact-check row that the reader returned, kept or collapsed.
 CLAIM_UNKNOWN_ID = "unknown_claim_id"
+#: A tier 4 (`title_predicate`) claim while the config keeps tier 4 out of the primary set.
+CLAIM_TIER4_EXCLUDED = "tier_title_predicate_excluded"
+#: The extraction tier whose verdict is read from a headline.
+TIER_TITLE_PREDICATE = "title_predicate"
 
 MANIFEST_COLUMNS = ("record_id", "url", "claim_sha256", "verdict")
 
@@ -353,15 +357,78 @@ def _is_false(row: dict[str, Any]) -> bool:
     return _verdict(row) == "false"
 
 
-def build_manifest(kept_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _is_tier4(row: dict[str, Any]) -> bool:
+    return str(row.get("tier") or "").strip() == TIER_TITLE_PREDICATE
+
+
+def title_predicate_settings(path: Path | None = None) -> dict[str, Any]:
+    """The ``title_predicate`` block of ``configs/factcheck.yaml``, or an empty block.
+
+    ``include_in_primary_evaluation`` is false unless the file says true. A value
+    that is not a boolean raises, because a quoted "false" is a true string.
+
+    A ``measured_error_rate`` with ``status: measured`` is refused unless it holds up:
+    the labeller kind is ``human``, the number of adjudicated rows and the kappa reach
+    the floors in the same block, every language has ``min_language_rows`` sampled
+    rows, and ``pattern_hash`` equals the hash of the patterns and guards in this
+    file. A figure measured on an older pattern set is stale and is not shown.
+    """
+    import yaml
+
+    from ingest.title_predicate import pattern_set_hash
+    from modeling.config import CONFIG_DIR
+
+    path = Path(path) if path else CONFIG_DIR / "factcheck.yaml"
+    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+    block = dict(data.get("title_predicate") or {})
+    include = block.get("include_in_primary_evaluation", False)
+    if not isinstance(include, bool):
+        raise EvalInputError(
+            f"{path}: title_predicate.include_in_primary_evaluation must be true or false, "
+            f"is {include!r}"
+        )
+    block["include_in_primary_evaluation"] = include
+    rate = block.get("measured_error_rate") or {}
+    if rate.get("status") == "measured":
+        problems: list[str] = []
+        if rate.get("labeller_kind") != "human":
+            problems.append(f"labeller_kind is {rate.get('labeller_kind')!r}, not 'human'")
+        if rate.get("pattern_hash") != pattern_set_hash(data):
+            problems.append("pattern_hash differs from the patterns and guards in this file")
+        min_rows = int(block.get("min_adjudicated_rows", 100))
+        if int(rate.get("n_headlines") or 0) < min_rows:
+            problems.append(f"fewer than {min_rows} adjudicated headlines")
+        min_kappa = float(block.get("min_kappa", 0.6))
+        kappa = rate.get("cohen_kappa")
+        if kappa is None or float(kappa) < min_kappa:
+            problems.append(f"cohen_kappa {kappa!r} is below {min_kappa}")
+        min_language = int(block.get("min_language_rows", 30))
+        by_language = rate.get("n_by_language") or {}
+        for language in ("en", "hi"):
+            if int(by_language.get(language) or 0) < min_language:
+                problems.append(f"fewer than {min_language} sampled {language} headlines")
+        if problems:
+            raise EvalInputError(
+                f"{path}: title_predicate.measured_error_rate says measured but "
+                + "; ".join(problems)
+            )
+    return block
+
+
+def build_manifest(
+    kept_rows: list[dict[str, Any]], include_title_predicate: bool = False
+) -> list[dict[str, str]]:
     """The manifest rows for a deduplicated read: the known-false claims, by record id.
 
     The frozen set is exactly what the harness scores recall on, so only rows
-    labelled ``false`` go in. Sorted by ``record_id`` so the file is stable.
+    labelled ``false`` go in. A tier 4 row goes in only when ``include_title_predicate``
+    is true. Sorted by ``record_id`` so the file is stable.
     """
     rows: list[dict[str, str]] = []
     for item in kept_rows:
         if not _is_false(item):
+            continue
+        if _is_tier4(item) and not include_title_predicate:
             continue
         if not item.get("claim"):
             raise EvalInputError(
@@ -562,8 +629,14 @@ def publisher_shares_from_data(data_dir: Path) -> dict[str, Any]:
     from ingest.config import Settings
     from ingest.factcheck import read_deduplicated_factchecks
 
-    result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
-    return hindi_publisher_shares(claims_by_publisher(result.kept))
+    include = title_predicate_settings()["include_in_primary_evaluation"]
+    result = read_deduplicated_factchecks(
+        Settings(data_dir=Path(data_dir), _env_file=None), merge_tier4=include
+    )
+    # The shares describe the primary evaluation set, so tier 4 rows count only when
+    # the config puts them in it.
+    rows = [row for row in result.kept if include or not _is_tier4(row)]
+    return hindi_publisher_shares(claims_by_publisher(rows))
 #: Tier label for a fact-check row whose `tier` column is empty.
 TIER_UNKNOWN = "unknown"
 
@@ -591,6 +664,13 @@ class ClaimUniverse:
     #: Evaluation claims per extraction tier. A row with no tier is counted under
     #: `unknown`, never dropped from the count.
     eval_tier_counts: dict[str, int] = field(default_factory=dict)
+    #: Known-false tier 4 claim ids. They have their own cell in the report, whether or
+    #: not they also count in the primary set.
+    title_predicate_ids: frozenset[str] = frozenset()
+    #: True when the config puts tier 4 claims into the primary set.
+    title_predicate_included: bool = False
+    #: The `measured_error_rate` block of the config, shown beside the tier 4 cell.
+    title_predicate_error_rate: dict[str, Any] = field(default_factory=dict)
 
     def reason_for_exclusion(self, claim_id: str) -> str | None:
         """The reason code if ``claim_id`` is not an evaluation claim, else ``None``."""
@@ -608,8 +688,15 @@ def build_claim_universe(
     dedup_counts: dict[str, int] | None = None,
     collapsed_embedding: dict[str, str] | None = None,
     claim_dedup: dict[str, Any] | None = None,
+    title_predicate: dict[str, Any] | None = None,
 ) -> ClaimUniverse:
     """Decide which ids are evaluation claims.
+
+    ``title_predicate`` is the config block for tier 4. A known-false tier 4 claim is
+    left out of the primary set under ``tier_title_predicate_excluded`` unless the
+    block sets ``include_in_primary_evaluation``. It stays in ``title_predicate_ids``
+    for its own cell. A manifest that holds a tier 4 claim while tier 4 is excluded is
+    refused, because the frozen set and the switch would disagree.
 
     Without a manifest the set is the deduplicated rows labelled ``false``. With
     one, the manifest is verified first (a mismatch raises) and the set is
@@ -629,6 +716,21 @@ def build_claim_universe(
             collapsed_embedding=collapsed_embedding,
         )
     frozen_ids = {entry["record_id"] for entry in manifest} if manifest is not None else None
+    tier4_block = title_predicate or {}
+    include_tier4 = bool(tier4_block.get("include_in_primary_evaluation", False))
+    tier4_ids: set[str] = set()
+    if frozen_ids is not None and not include_tier4:
+        stale = sorted(
+            str(item["record_id"])
+            for item in kept_rows
+            if _is_tier4(item) and str(item["record_id"]) in frozen_ids
+        )
+        if stale:
+            raise ManifestMismatch(
+                f"{len(stale)} manifest row(s) are tier {TIER_TITLE_PREDICATE} claims, for "
+                f"example {stale[0]}, but title_predicate.include_in_primary_evaluation is "
+                "false. Rebuild the manifest on purpose or change the switch, and record why."
+            )
 
     eval_ids: set[str] = set()
     excluded: dict[str, str] = {}
@@ -651,7 +753,13 @@ def build_claim_universe(
         tier_counts[tier] = tier_counts.get(tier, 0) + 1
         if not _is_false(item):
             excluded[record_id] = CLAIM_NOT_KNOWN_FALSE
-        elif frozen_ids is not None and record_id not in frozen_ids:
+            continue
+        if _is_tier4(item):
+            tier4_ids.add(record_id)
+            if not include_tier4:
+                excluded[record_id] = CLAIM_TIER4_EXCLUDED
+                continue
+        if frozen_ids is not None and record_id not in frozen_ids:
             excluded[record_id] = CLAIM_NOT_IN_FROZEN_SET
         else:
             eval_ids.add(record_id)
@@ -667,6 +775,9 @@ def build_claim_universe(
         claims_by_publisher=claims_by_publisher(kept_rows, eval_ids),
         tier_counts=dict(sorted(tier_counts.items())),
         eval_tier_counts=dict(sorted(eval_tier_counts.items())),
+        title_predicate_ids=frozenset(tier4_ids),
+        title_predicate_included=include_tier4,
+        title_predicate_error_rate=dict(tier4_block.get("measured_error_rate") or {}),
     )
 
 
@@ -746,7 +857,10 @@ def load_claim_universe(
     from modeling.eval import claim_dedup as cd
 
     settings = Settings(data_dir=Path(data_dir), _env_file=None)
-    result = read_deduplicated_factchecks(settings)
+    tier4 = title_predicate_settings()
+    result = read_deduplicated_factchecks(
+        settings, merge_tier4=tier4["include_in_primary_evaluation"]
+    )
     path = Path(links_path) if links_path else cd.claim_links_path(settings.data_dir)
     try:
         links = cd.read_claim_links(path)
@@ -764,6 +878,7 @@ def load_claim_universe(
         dedup_counts=counts,
         collapsed_embedding=collapsed_embedding,
         claim_dedup=block,
+        title_predicate=tier4,
     )
 
 
@@ -787,7 +902,8 @@ def freeze_manifest_from_data(
     from modeling.eval import claim_dedup as cd
 
     settings = Settings(data_dir=Path(data_dir), _env_file=None)
-    result = read_deduplicated_factchecks(settings)
+    include = title_predicate_settings()["include_in_primary_evaluation"]
+    result = read_deduplicated_factchecks(settings, merge_tier4=include)
     kept = result.kept
     links_file = Path(links_path) if links_path else cd.claim_links_path(settings.data_dir)
     try:
@@ -812,7 +928,7 @@ def freeze_manifest_from_data(
             )
         except cd.ClaimLinksError as exc:
             raise EvalInputError(str(exc)) from exc
-    rows = build_manifest(kept)
+    rows = build_manifest(kept, include_title_predicate=include)
     target = write_manifest(rows, path or default_manifest_path(), overwrite=overwrite)
     return target, len(rows)
 
@@ -856,6 +972,14 @@ CORPUS_TEXT_NOTICE = (
     "text. The roberta classifier truncates the text at 256 tokens. A model that reads more "
     "of a long article has more chances to cross its threshold. Compare models on "
     "corpus_title, the primary figure, and read corpus_text as a second value."
+)
+TITLE_PREDICATE_STATEMENT = (
+    "Tier 4 claims are headlines that a pattern reader turned into a verdict. They are "
+    "inference, not a verdict that a publisher stated. The claim text of a tier 4 row is the "
+    "debunk headline, for example 'Video Is AI-Generated', and not the false claim itself. "
+    "The recall of a model on this cell therefore measures how well it detects debunk "
+    "language, not how well it detects a false claim. The cell is reported apart, and tier 4 "
+    "counts in the primary figures only when the config says so."
 )
 NOT_FROZEN_NOTICE = (
     "WARNING: evaluation set not frozen. No manifest exists, so the claim set is whatever "
@@ -1508,6 +1632,7 @@ def evaluate(
 
     model_out: dict[str, Any] = {}
     cells: dict[str, dict[str, Any]] = {}
+    tier4_cells: dict[str, dict[str, Any]] = {}
     for name in ordered:
         scores, op = models[name], ops[name]
         claims, excluded, absent = _split_claims(scores, universe)
@@ -1548,6 +1673,19 @@ def evaluate(
         else:
             reason = f"no operating point: {op['reason']}"
             cells[name] = {lang: _unavailable_cell(reason) for lang in (*LANGUAGES, ALL)}
+        if universe.title_predicate_ids:
+            tier4_claims = scores.part("claims")
+            tier4_claims = tier4_claims[tier4_claims["id"].isin(universe.title_predicate_ids)]
+            if op["status"] == "ok":
+                tier4_cells[name] = {
+                    lang: _cell(tier4_claims, corpus, lang, op["threshold"], n_bootstrap, seed)
+                    for lang in (*LANGUAGES, ALL)
+                }
+            else:
+                tier4_cells[name] = {
+                    lang: _unavailable_cell(f"no operating point: {op['reason']}")
+                    for lang in (*LANGUAGES, ALL)
+                }
 
     comparisons = {
         name: paired_comparison(
@@ -1623,6 +1761,13 @@ def evaluate(
         "models": model_out,
         "comparisons": comparisons,
         "cells": cells,
+        "title_predicate": {
+            "included_in_primary": universe.title_predicate_included,
+            "n_claims": len(universe.title_predicate_ids),
+            "error_rate": universe.title_predicate_error_rate,
+            "cells": tier4_cells,
+            "statement": TITLE_PREDICATE_STATEMENT,
+        },
         "controls": sorted(set(ordered) & controls),
         "hindi_gate": hindi_gates,
     }
@@ -1724,6 +1869,49 @@ def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
             f"Embedding pass precision: **not measured** (reason code `{reason}`{tail}). "
             "Label `is_same_claim` with yes or no and rerun the evaluation.",
         ]
+    lines.append("")
+    return lines
+
+
+def _title_predicate_lines(result: dict[str, Any]) -> list[str]:
+    """The tier 4 section: the error rate from the config, then recall per model."""
+    block = result.get("title_predicate") or {}
+    if not block:
+        return []
+    rate = block.get("error_rate") or {}
+    lines = [
+        "## Tier 4 claims read from headlines (separate cell)",
+        "",
+        f"> {block['statement']}",
+        "",
+        f"- In the primary evaluation: **{'yes' if block['included_in_primary'] else 'no'}**.",
+        f"- Tier 4 known-false claims: {block['n_claims']}.",
+    ]
+    if rate.get("status") == "measured":
+        lines.append(
+            f"- Measured error rate: precision {_escape(rate.get('precision'))}, recall "
+            f"{_escape(rate.get('recall'))} on {_escape(rate.get('n_headlines'))} adjudicated "
+            f"headlines, labeller kind `{_escape(rate.get('labeller_kind'))}`, pattern set "
+            f"`{_escape(rate.get('pattern_hash'))}`."
+        )
+    else:
+        reason = _escape(rate.get("reason") or "not in config")
+        lines.append(f"- Measured error rate: not measured ({reason}).")
+    lines.append("")
+    if not block["cells"]:
+        lines += ["No tier 4 claim is present in the fact-check rows, so there is no cell.", ""]
+        return lines
+    lines += [
+        "| model | language | claims scored/rows | recall [95% CI] |",
+        "|---|---|---|---|",
+    ]
+    for name, by_language in block["cells"].items():
+        for language in result["languages"]:
+            claims = by_language[language]["claims"]
+            lines.append(
+                f"| {name} | {language} | {claims.get('n_scored', 0)}/{claims.get('n_rows', 0)} | "
+                f"{_escape(_cell_text(claims.get('recall')))} |"
+            )
     lines.append("")
     return lines
 
@@ -1872,6 +2060,8 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
                     f"{zero if zero is not None else 'n/a'} of {result['n_bootstrap']} |"
                 )
         lines.append("")
+
+    lines += _title_predicate_lines(result)
 
     lines += [
         "## Hindi gate",

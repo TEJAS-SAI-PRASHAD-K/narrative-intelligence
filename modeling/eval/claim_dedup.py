@@ -110,6 +110,9 @@ class EmbeddingReason(str, Enum):
     ENCODE_FAILED = "embedding_encode_failed"
     #: The row's claim text is empty, so it has no embedding.
     NO_CLAIM_TEXT = "no_claim_text"
+    #: The row is tier `title_predicate`, a verdict inferred from a headline. It is
+    #: not embedded, so it cannot absorb a claim that a publisher stated.
+    TIER_TITLE_PREDICATE = "tier_title_predicate"
     #: No links artifact was written for this data, so the eval cannot apply it.
     LINKS_ABSENT = "links_artifact_absent"
 
@@ -375,6 +378,7 @@ def run_claim_dedup(
     *,
     config: ClaimDedupConfig | None = None,
     embedder: Any | None = None,
+    merge_tier4: bool = False,
 ) -> ClaimDedupResult:
     """Link claims by simhash, then by multilingual embedding similarity.
 
@@ -388,6 +392,9 @@ def run_claim_dedup(
     under ``no_claim_text``. A pass that cannot run (dependency absent, model
     unavailable, disabled in config) returns ``collapsed=None`` and a reason
     code; the simhash result is still returned.
+
+    ``merge_tier4`` is true when tier 4 counts in the primary evaluation. It must equal
+    the setting that the evaluation reads with, or the links artifact is stale.
     """
     config = config or claim_dedup_config()
     items = [_as_row(row) for row in rows]
@@ -401,7 +408,7 @@ def run_claim_dedup(
             raise ValueError(f"claim record_id {record_id!r} appears more than once")
         by_id[record_id] = item
 
-    simhash = collapse_duplicate_claims(items)
+    simhash = collapse_duplicate_claims(items, merge_tier4=merge_tier4)
     kept_ids = [str(row.get("record_id") or "") for row in simhash.kept]
     kept_by_id = {str(row.get("record_id") or ""): row for row in simhash.kept}
     simhash_rep = {record_id: record_id for record_id in kept_ids}
@@ -440,6 +447,11 @@ def run_claim_dedup(
         )
     else:
         for record_id in kept_ids:
+            if str(kept_by_id[record_id].get("tier") or "").strip() == "title_predicate":
+                skipped[EmbeddingReason.TIER_TITLE_PREDICATE.value] = (
+                    skipped.get(EmbeddingReason.TIER_TITLE_PREDICATE.value, 0) + 1
+                )
+                continue
             text = str(kept_by_id[record_id].get("claim") or "").strip()
             if not text:
                 skipped[EmbeddingReason.NO_CLAIM_TEXT.value] = (

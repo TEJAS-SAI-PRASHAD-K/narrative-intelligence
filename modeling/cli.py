@@ -422,6 +422,7 @@ def dedup_claims(
     from ingest.config import Settings
     from ingest.factcheck import FACTCHECKS_FILENAME, read_factcheck_rows
     from modeling.eval import claim_dedup as cd
+    from modeling.eval.factcheck_eval import EvalInputError, title_predicate_settings
 
     read_dir = Path(data_dir) if data_dir else get_settings().data_dir
     out_dir = Path(out) if out else get_settings().data_dir
@@ -439,7 +440,12 @@ def dedup_claims(
     if no_embedding:
         config = cd.config_without_embedding(config)
 
-    result = cd.run_claim_dedup(rows, config=config)
+    try:
+        merge_tier4 = title_predicate_settings()["include_in_primary_evaluation"]
+    except EvalInputError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    result = cd.run_claim_dedup(rows, config=config, merge_tier4=merge_tier4)
     links_path = cd.claim_links_path(out_dir)
     sample_path = cd.hand_check_sample_path(out_dir)
     cd.write_claim_links(

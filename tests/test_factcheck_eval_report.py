@@ -20,7 +20,7 @@ from modeling.eval.factcheck_eval import (
     run_comparison,
     write_manifest,
 )
-from tests.test_factcheck_eval import COLUMNS, VAL_A, make_test_rows, small_case_rows
+from tests._factcheck_eval_support import COLUMNS, VAL_A, make_test_rows, small_case_rows
 from tests.test_factcheck_manifest import _write_factchecks
 
 runner = CliRunner()
