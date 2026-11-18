@@ -442,3 +442,95 @@ def test_the_report_shows_used_below_and_band_counts(env):
     assert "| direct [0.85, 0.9) | 0 | 0 | no pairs in this band |" in text
     assert "| direct [0.9, 0.95) | 1 | 1 | 1.000 |" in text
     assert "| chain [0.0, 0.85) | 1 | 0 | 0.000 |" in text
+
+
+def test_the_public_report_prints_no_machine_local_path(env, tmp_path):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,,\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=sample,
+    )
+
+    _, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    for path in paths:
+        assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    markdown = paths[1].read_text(encoding="utf-8")
+    assert "half-filled" in markdown
+    assert "Sample `factchecks/claim_dedup_sample.csv`" in markdown
+    manifest = json.loads(paths[0].read_text())["evaluation_set"]["manifest"]
+    assert manifest == "manifest.csv (outside the repository)"
+
+
+def test_a_moved_sample_note_prints_no_machine_local_path(env, tmp_path):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,yes,yes\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=env["data"] / "gone" / "claim_dedup_sample.csv",
+    )
+    _, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    for path in paths:
+        assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    markdown = paths[1].read_text(encoding="utf-8")
+    assert "(gone/claim_dedup_sample.csv) does not exist" in markdown
+
+
+def test_display_path_prints_a_public_form_for_each_location(tmp_path):
+    from ingest.config import REPO_ROOT
+    from modeling.eval.factcheck_eval import display_path
+
+    manifest = REPO_ROOT / "configs" / "factcheck_eval_manifest.csv"
+    assert display_path(manifest) == "configs/factcheck_eval_manifest.csv"
+    repo_data = REPO_ROOT / "data" / "factchecks" / "factchecks.parquet"
+    assert display_path(repo_data, REPO_ROOT / "data") == "data/factchecks/factchecks.parquet"
+    data = tmp_path / "data"
+    assert display_path(data / "factchecks" / "claim_links.json", data) == (
+        "factchecks/claim_links.json"
+    )
+    outside = tmp_path / "elsewhere" / "manifest.csv"
+    assert display_path(outside, data) == "manifest.csv (outside the repository)"
+    assert display_path(outside) == "manifest.csv (outside the repository)"
+
+
+def test_redact_paths_rewrites_paths_in_nested_values_only(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    outside = tmp_path / "elsewhere" / "x.csv"
+    value = {
+        "sample": f"{data}/factchecks/s.csv",
+        "error": f"{data}/factchecks/s.csv line 2: bad label; see {outside}.",
+        "list": [f"{outside}", 1, None, 0.5],
+        "url": "https://example.org/a/b",
+        "ratio": "1/2 and 3 / 4",
+    }
+    assert redact_paths(value, data) == {
+        "sample": "factchecks/s.csv",
+        "error": "factchecks/s.csv line 2: bad label; see x.csv (outside the repository).",
+        "list": ["x.csv (outside the repository)", 1, None, 0.5],
+        "url": "https://example.org/a/b",
+        "ratio": "1/2 and 3 / 4",
+    }

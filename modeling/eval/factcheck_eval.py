@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2273,28 +2274,70 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Public paths: the report is published, so it prints no machine-local path.
+# ---------------------------------------------------------------------------
+#: An absolute POSIX path inside report text. The lookbehind skips URLs (``https://``),
+#: ratios (``1/2``) and a slash already inside a path.
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./:+-])/(?:[\w.+-]+/)*[\w+-](?:[\w.+-]*[\w+-])?")
+
+
+def display_path(path: str | Path, data_dir: str | Path | None = None) -> str:
+    """The form of ``path`` that the public report prints.
+
+    A path under the repository root prints relative to it, so a data file reads
+    ``data/factchecks/...`` and a config reads ``configs/...``. Otherwise a path under
+    ``data_dir`` prints relative to it. A path outside both prints its file name and
+    the words "outside the repository".
+    """
+    from modeling.config import REPO_ROOT
+
+    target = Path(path).resolve()
+    for base in (REPO_ROOT, data_dir):
+        if base is not None and target.is_relative_to(Path(base).resolve()):
+            return target.relative_to(Path(base).resolve()).as_posix()
+    return f"{target.name} (outside the repository)"
+
+
+def redact_paths(value: Any, data_dir: str | Path | None = None) -> Any:
+    """A copy of ``value`` with every absolute path in its strings made public.
+
+    Keys and numbers pass through. A path inside a sentence, such as the one in a
+    refusal message, is rewritten in place by :func:`display_path`.
+    """
+    if isinstance(value, str):
+        return _ABSOLUTE_PATH.sub(lambda match: display_path(match.group(0), data_dir), value)
+    if isinstance(value, dict):
+        return {key: redact_paths(item, data_dir) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_paths(item, data_dir) for item in value]
+    return value
+
+
 def write_factcheck_report(
     result: dict[str, Any], *, label: str = "comparison", settings: Any = None
 ) -> list[Path]:
     """Write the JSON result and the Markdown report under ``artifacts/eval/factcheck/<label>/``."""
     from datetime import datetime, timezone
 
-    from modeling.config import run_fingerprint
+    from modeling.config import get_settings, run_fingerprint
     from modeling.eval.report import eval_dir
 
+    settings = settings or get_settings()
     target = eval_dir(EVAL_MODULE, label, settings)
     fingerprint = run_fingerprint(result["seed"])
+    public = redact_paths(result, settings.data_dir)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run": fingerprint,
-        **result,
+        **public,
     }
     json_path = target / JSON_NAME
     json_path.write_text(
         json.dumps(payload, indent=2, sort_keys=False, allow_nan=False) + "\n", encoding="utf-8"
     )
     markdown_path = target / MARKDOWN_NAME
-    markdown_path.write_text(render_markdown(result, fingerprint), encoding="utf-8")
+    markdown_path.write_text(render_markdown(public, fingerprint), encoding="utf-8")
     return [json_path, markdown_path]
 
 
