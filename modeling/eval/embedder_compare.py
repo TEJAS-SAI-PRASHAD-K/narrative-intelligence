@@ -6,9 +6,10 @@ The operator runs this on the GPU host before deciding whether the default in
 1. Copies the scored tables the current run produced into a directory of its
    own, minus the narrative tables, so every score the clustering reads is the
    same for both models.
-2. Runs the existing cluster stage there with the alternative model. That is the
-   same code as ``modeling cluster``, so the clustering checks are the ones
-   already in use: cluster count, clustered fraction, silhouette and noise.
+2. Runs the existing cluster stage there with the alternative model, and again with
+   the configured model over the same sources and limit, so both read one input.
+   That is the same code as ``modeling cluster``, so the clustering checks are the
+   ones already in use: cluster count, clustered fraction, silhouette and noise.
 3. Runs the existing ablation over that store, and writes both ablation tables
    with the clustering checks in one ``comparison.md``.
 
@@ -48,10 +49,27 @@ MIXED_BELOW = 0.9
 UNKNOWN_LANGUAGES = frozenset({"", "und", "unknown", "none", "nan"})
 
 
+def _language_key(value: Any) -> str | None:
+    """The language code of a record, or None when it has none."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    text = str(value).strip()
+    return None if text.lower() in UNKNOWN_LANGUAGES else text
+
+
 def language_purity(
-    membership: pd.DataFrame, lang_by_id: dict[str, Any], *, mixed_below: float = MIXED_BELOW
+    membership: pd.DataFrame,
+    lang_by_id: dict[str, Any],
+    *,
+    noise_ids: list[str] | None = None,
+    mixed_below: float = MIXED_BELOW,
 ) -> dict[str, Any]:
-    """Language purity of every cluster.
+    """Language purity of every cluster, and what the clustering did to each language.
 
     Purity of one cluster is the share of its members in the majority language.
     The weighted mean uses the member count of each cluster as the weight. A
@@ -59,22 +77,31 @@ def language_purity(
     language, or one the corpus does not list, is counted in ``lang_unknown`` and
     left out of the share. A cluster with no member that has a language is
     reported with ``purity`` None and does not enter the mean.
+
+    Purity alone hides a clustering that keeps one language and sends the other to
+    noise. So ``by_language`` gives, for each language, the clustered and noise
+    counts and shares, and ``shares_cluster_with`` gives the share of its clustered
+    records that sit in a cluster that also holds each other language. The noise
+    ids come from the clusterer, because the membership table holds clustered
+    records only.
     """
-    if membership is None or not len(membership):
+    noise_ids = [str(i) for i in (noise_ids or [])]
+    if (membership is None or not len(membership)) and not noise_ids:
         return {"status": "no_clusters", "clusters": [], "n_clusters": 0}
     counts: dict[str, dict[str, int]] = {}
     unknown: dict[str, int] = {}
-    for record_id, cluster in zip(
-        membership["record_id"].astype(str), membership["narrative_id"].astype(str), strict=True
-    ):
-        lang = lang_by_id.get(record_id)
-        key = None if lang is None or str(lang).strip().lower() in UNKNOWN_LANGUAGES else str(lang)
-        if key is None:
-            unknown[cluster] = unknown.get(cluster, 0) + 1
+    if membership is not None and len(membership):
+        for record_id, cluster in zip(
+            membership["record_id"].astype(str),
+            membership["narrative_id"].astype(str),
+            strict=True,
+        ):
+            key = _language_key(lang_by_id.get(record_id))
             counts.setdefault(cluster, {})
-            continue
-        counts.setdefault(cluster, {})
-        counts[cluster][key] = counts[cluster].get(key, 0) + 1
+            if key is None:
+                unknown[cluster] = unknown.get(cluster, 0) + 1
+            else:
+                counts[cluster][key] = counts[cluster].get(key, 0) + 1
 
     rows: list[dict[str, Any]] = []
     for cluster in sorted(counts):
@@ -95,13 +122,45 @@ def language_purity(
     scored = [r for r in rows if r["purity"] is not None]
     total = sum(r["known_members"] for r in scored)
     weighted = sum(r["purity"] * r["known_members"] for r in scored) / total if total else None
+
+    noise_by_lang: dict[str, int] = {}
+    noise_unknown = 0
+    for record_id in noise_ids:
+        key = _language_key(lang_by_id.get(record_id))
+        if key is None:
+            noise_unknown += 1
+        else:
+            noise_by_lang[key] = noise_by_lang.get(key, 0) + 1
+    languages = sorted({k for langs in counts.values() for k in langs} | set(noise_by_lang))
+    by_language: dict[str, dict[str, Any]] = {}
+    for lang in languages:
+        clustered = sum(langs.get(lang, 0) for langs in counts.values())
+        noise = noise_by_lang.get(lang, 0)
+        sharing = {}
+        for other in languages:
+            if other == lang:
+                continue
+            together = sum(
+                langs.get(lang, 0) for langs in counts.values() if langs.get(other, 0) > 0
+            )
+            sharing[other] = round(together / clustered, 4) if clustered else None
+        by_language[lang] = {
+            "clustered": clustered,
+            "noise": noise,
+            "clustered_share": round(clustered / (clustered + noise), 4)
+            if clustered + noise
+            else None,
+            "noise_share": round(noise / (clustered + noise), 4) if clustered + noise else None,
+            "shares_cluster_with": sharing,
+        }
     return {
         "status": "measured" if scored else "no_known_language",
         "n_clusters": len(rows),
         "weighted_mean_purity": round(weighted, 4) if weighted is not None else None,
         "mixed_clusters": sum(r["purity"] < mixed_below for r in scored),
         "mixed_below": mixed_below,
-        "lang_unknown": sum(unknown.values()),
+        "lang_unknown": sum(unknown.values()) + noise_unknown,
+        "by_language": by_language,
         "clusters": rows,
     }
 
@@ -150,7 +209,7 @@ def compare_embedder(
     for size in min_cluster_sizes or []:
         if size < 2:
             raise ValueError(f"min_cluster_size must be 2 or more, got {size}")
-    from modeling.scoring import _store_for, run_stages
+    from modeling.scoring import _store_for
 
     settings = settings or get_settings()
     baseline_model = str(module_config("embed").get("model_name"))
@@ -166,43 +225,32 @@ def compare_embedder(
 
     Embedder(settings, model_name=model_name).load()
 
-    scored = out / "scored"
-    if scored.exists():
-        shutil.rmtree(scored)
-    scored.mkdir(parents=True)
-    _copy_scored_tables(source, scored)
-    store = ScoredStore(settings, root=scored, manifest_path=scored / "manifest.json")
-
     result = EmbedderComparison(model_name=model_name, baseline_model=baseline_model, out_dir=out)
-    summary = run_stages(
-        ["cluster"],
-        demo=demo,
-        sources=sources,
-        limit=limit,
-        settings=settings,
-        store=store,
-        embed_model=model_name,
-    )
-    result.stage_notes = [str(row.get("note", "")) for row in summary]
-
-    entry = store.manifest().get("narratives") or {}
-    result.alternative_checks = _checks(entry)
-    result.baseline_checks = _checks(source.manifest().get("narratives") or {})
-
     lang_by_id = _languages(demo, sources, settings)
-    result.alternative_purity = language_purity(store.read("narrative_membership"), lang_by_id)
-    result.baseline_purity = language_purity(source.read("narrative_membership"), lang_by_id)
+    run = dict(demo=demo, sources=sources, limit=limit, settings=settings)
+
+    # Both embedders cluster the same input here. The stored baseline narratives
+    # may come from other sources or another limit, so they are not read.
+    alt = _cluster_run("alternative", model_name, None, out / "scored", source, lang_by_id, **run)
+    base = _cluster_run(
+        "baseline", baseline_model, None, out / "baseline_scored", source, lang_by_id, **run
+    )
+    result.stage_notes = alt["notes"]
+    result.alternative_checks = alt["checks"]
+    result.baseline_checks = base["checks"]
+    result.alternative_purity = alt["purity"]
+    result.baseline_purity = base["purity"]
+
     for size in min_cluster_sizes or []:
         for role, name in (("baseline", baseline_model), ("alternative", model_name)):
-            result.sweep.append(
-                _sweep_run(
-                    role, name, size, source, out, lang_by_id,
-                    demo=demo, sources=sources, limit=limit, settings=settings,
-                )
+            row = _cluster_run(
+                role, name, size, out / "sweep" / f"{role}-mcs{size}", source, lang_by_id, **run
             )
+            row.pop("store")
+            result.sweep.append(row)
 
-    result.baseline_ablation = run_ablation(demo=demo, settings=settings, store=source)
-    result.alternative_ablation = run_ablation(demo=demo, settings=settings, store=store)
+    result.baseline_ablation = run_ablation(demo=demo, settings=settings, store=base["store"])
+    result.alternative_ablation = run_ablation(demo=demo, settings=settings, store=alt["store"])
     result.written = _write(result, settings)
     return result
 
@@ -217,12 +265,12 @@ def _languages(demo: bool, sources: list[str] | None, settings: ModelingSettings
     return dict(zip(frame["id"].astype(str), frame["lang"], strict=True))
 
 
-def _sweep_run(
+def _cluster_run(
     role: str,
     model_name: str,
-    size: int,
+    size: int | None,
+    target: Path,
     source: ScoredStore,
-    out: Path,
     lang_by_id: dict,
     *,
     demo: bool,
@@ -230,15 +278,18 @@ def _sweep_run(
     limit: int | None,
     settings: ModelingSettings,
 ) -> dict[str, Any]:
-    """Cluster once with one embedder at one size, in a store of its own."""
+    """Cluster once with one embedder, in a store of its own.
+
+    ``size`` None keeps ``cluster.min_cluster_size`` from the config.
+    """
     from modeling.scoring import run_stages
 
-    target = out / "sweep" / f"{role}-mcs{size}"
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True)
     _copy_scored_tables(source, target)
     store = ScoredStore(settings, root=target, manifest_path=target / "manifest.json")
+    capture: dict[str, Any] = {}
     notes = run_stages(
         ["cluster"],
         demo=demo,
@@ -248,15 +299,22 @@ def _sweep_run(
         store=store,
         embed_model=model_name,
         min_cluster_size=size,
+        capture=capture,
     )
+    clustering = capture.get("cluster")
     checks = _checks(store.manifest().get("narratives") or {})
     return {
         "embedder": role,
         "model": model_name,
-        "min_cluster_size": size,
+        "min_cluster_size": checks.get("min_cluster_size", size),
         "checks": checks,
-        "purity": language_purity(store.read("narrative_membership"), lang_by_id),
+        "purity": language_purity(
+            store.read("narrative_membership"),
+            lang_by_id,
+            noise_ids=clustering.noise_ids if clustering is not None else None,
+        ),
         "notes": [str(row.get("note", "")) for row in notes],
+        "store": store,
     }
 
 
@@ -268,6 +326,7 @@ def _checks(manifest_entry: dict[str, Any]) -> dict[str, Any]:
         "embed_model": manifest_entry.get("embed_model"),
         "embedding_dim": manifest_entry.get("embedding_dim"),
         "narratives": manifest_entry.get("rows"),
+        "min_cluster_size": manifest_entry.get("min_cluster_size"),
         **(manifest_entry.get("diagnostics") or {}),
     }
 
@@ -306,6 +365,7 @@ _CHECK_ROWS = (
     ("embedding model", "embed_model"),
     ("dimension", "embedding_dim"),
     ("narratives", "narratives"),
+    ("min_cluster_size", "min_cluster_size"),
     ("clusters", "n_clusters"),
     ("clustered fraction", "clustered_fraction"),
     ("silhouette", "silhouette"),
@@ -365,6 +425,12 @@ def _fmt(value: Any) -> str:
     return "n/a" if value is None else str(value)
 
 
+def _share(lang_row: dict[str, Any] | None, other: str) -> Any:
+    if not lang_row:
+        return None
+    return lang_row["shares_cluster_with"].get(other)
+
+
 def _purity_lines(result: EmbedderComparison) -> list[str]:
     lines = [
         "Purity is the share of a cluster in its majority language. A cluster is mixed",
@@ -373,15 +439,29 @@ def _purity_lines(result: EmbedderComparison) -> list[str]:
         "| embedder | clusters | weighted mean purity | mixed clusters | no language |",
         "|---|---|---|---|---|",
     ]
-    for label, purity in (("baseline", result.baseline_purity),
-                          ("alternative", result.alternative_purity)):
+    pairs = (("baseline", result.baseline_purity), ("alternative", result.alternative_purity))
+    for label, purity in pairs:
         lines.append(
             f"| {label} | {_fmt(purity.get('n_clusters'))} "
             f"| {_fmt(purity.get('weighted_mean_purity'))} "
             f"| {_fmt(purity.get('mixed_clusters'))} | {_fmt(purity.get('lang_unknown'))} |"
         )
-    for label, purity in (("baseline", result.baseline_purity),
-                          ("alternative", result.alternative_purity)):
+    lines += [
+        "",
+        "Each language, clustered and in noise. The last column is the share of its clustered",
+        "records that sit in a cluster that also holds each other language.",
+        "",
+        "| embedder | language | clustered | noise | noise share | shares a cluster with |",
+        "|---|---|---|---|---|---|",
+    ]
+    for label, purity in pairs:
+        for lang, row in (purity.get("by_language") or {}).items():
+            sharing = ", ".join(f"{k} {_fmt(v)}" for k, v in row["shares_cluster_with"].items())
+            lines.append(
+                f"| {label} | {lang} | {row['clustered']} | {row['noise']} "
+                f"| {_fmt(row['noise_share'])} | {sharing or 'n/a'} |"
+            )
+    for label, purity in pairs:
         rows = purity.get("clusters") or []
         if not rows:
             continue
@@ -403,17 +483,22 @@ def _purity_lines(result: EmbedderComparison) -> list[str]:
 def _sweep_lines(sweep: list[dict[str, Any]]) -> list[str]:
     lines = [
         "| embedder | min_cluster_size | clusters | clustered fraction | silhouette "
-        "| weighted mean purity | mixed clusters |",
-        "|---|---|---|---|---|---|---|",
+        "| weighted mean purity | mixed clusters | hi noise share | hi shares a cluster with en "
+        "| en shares a cluster with hi |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in sorted(sweep, key=lambda r: (r["min_cluster_size"], r["embedder"])):
         checks, purity = row["checks"], row["purity"]
+        by_lang = purity.get("by_language") or {}
         status = "" if checks else " (no clusters)"
         lines.append(
             f"| {row['embedder']}{status} | {row['min_cluster_size']} "
             f"| {_fmt(checks.get('n_clusters', 0))} | {_fmt(checks.get('clustered_fraction'))} "
             f"| {_fmt(checks.get('silhouette'))} | {_fmt(purity.get('weighted_mean_purity'))} "
-            f"| {_fmt(purity.get('mixed_clusters'))} |"
+            f"| {_fmt(purity.get('mixed_clusters'))} "
+            f"| {_fmt((by_lang.get('hi') or {}).get('noise_share'))} "
+            f"| {_fmt(_share(by_lang.get('hi'), 'en'))} "
+            f"| {_fmt(_share(by_lang.get('en'), 'hi'))} |"
         )
     return lines
 

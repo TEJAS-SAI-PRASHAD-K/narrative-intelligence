@@ -118,7 +118,11 @@ with the default embedder and with the candidate at each size. For each run it r
 the purity of each cluster, which is the share of its members in the majority language.
 It also reports the member-weighted mean purity and the number of mixed clusters, which
 are clusters below 0.9. Members with no language code are counted and left out of the
-share. The default changes only if clusters group by topic across languages.
+share. It also reports, for each language, the clustered and noise counts and the share of
+its clustered records that sit in a cluster with each other language. Purity alone cannot
+see a run that keeps one language and sends the other to noise. Both embedders cluster the
+same sources and limit. The default changes only if clusters group by topic across
+languages.
 
 Result for both embedders: not measured. The run needs the larger corpus and the GPU host.
 
