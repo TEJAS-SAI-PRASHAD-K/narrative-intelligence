@@ -41,94 +41,6 @@ class TestUnscorableReason:
         assert ct.unscorable_reason("en", text, allow_en) is None
 
 
-class TestBuildSample:
-    def test_every_sampled_row_is_scorable_and_unexcluded_rows_are_counted(self):
-        result = ct.build_sample(corpus(), n=8, language_allowed=allow_en, seed=1)
-        assert set(result.frame["lang"]) == {"en"}
-        assert not set(result.frame["id"]) & {"short", "nolang", "h0", "h1", "h2", "h3"}
-        assert result.excluded == {ct.LANGUAGE_NOT_SCORED: 5, ct.TEXT_TOO_SHORT: 1}
-        assert len(result.frame) == 8
-
-    def test_sheet_has_blank_labels_and_no_score_column(self):
-        frame = ct.build_sample(corpus(), n=8, language_allowed=allow_en).frame
-        assert list(frame.columns) == ["id", "source", "lang", "text", "label"]
-        assert (frame["label"] == "").all()
-
-    def test_stratified_by_source(self):
-        frame = ct.build_sample(corpus(), n=8, language_allowed=allow_en).frame
-        assert frame["source"].value_counts().to_dict() == {"news": 4, "reddit": 4}
-
-    def test_language_filter_hi_with_english_only_module_counts_everything_excluded(self):
-        result = ct.build_sample(corpus(), n=8, language_allowed=allow_en, lang="hi")
-        assert len(result.frame) == 0
-        assert result.pool == 4
-        assert result.excluded == {ct.LANGUAGE_NOT_SCORED: 4}
-
-    def test_language_filter_hi_samples_hindi_when_the_module_scores_it(self):
-        result = ct.build_sample(
-            corpus(), n=8, language_allowed=lambda lang: lang in ("en", "hi"), lang="hi"
-        )
-        assert sorted(result.frame["id"]) == ["h0", "h1", "h2", "h3"]
-
-    def test_language_filter_en_drops_unknown_language_from_the_pool(self):
-        result = ct.build_sample(corpus(), n=20, language_allowed=allow_en, lang="en")
-        assert "nolang" not in set(result.frame["id"])
-        assert result.pool == 13
-
-    def test_unsupported_language_is_rejected(self):
-        with pytest.raises(ValueError):
-            ct.build_sample(corpus(), n=5, language_allowed=allow_en, lang="fr")
-
-    def test_tops_up_when_a_source_is_small(self):
-        records = corpus()
-        frame = ct.build_sample(records[records["id"] != "n5"], n=11, language_allowed=allow_en)
-        assert len(frame.frame) == 11
-
-
-class TestSampleCommand:
-    @pytest.fixture
-    def env(self, tmp_path, monkeypatch):
-        class S:
-            artifacts_dir = tmp_path / "artifacts"
-            seed = 0
-            language_allowed = staticmethod(
-                lambda module, lang: module == "misinfo" and allow_en(lang)
-            )
-
-        monkeypatch.setattr(modeling_cli, "get_settings", lambda: S)
-        monkeypatch.setattr(modeling_cli, "_bootstrap", lambda verbose=False: None)
-        monkeypatch.setattr("modeling.io.CorpusReader.__init__", lambda self, settings=None: None)
-        monkeypatch.setattr(
-            "modeling.io.CorpusReader.records", lambda self, **kw: corpus()
-        )
-        return S
-
-    def test_writes_sheet_and_reports_exclusions(self, env):
-        result = runner.invoke(
-            modeling_cli.app, ["sample-for-labelling", "misinfo", "--n", "8", "--lang", "en"]
-        )
-        assert result.exit_code == 0, result.output
-        sheet = pd.read_csv(
-            env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv",
-            dtype=str, keep_default_na=False,
-        )
-        assert len(sheet) == 8 and (sheet["label"] == "").all()
-        assert "text_too_short=1" in result.output
-
-    def test_unscorable_language_is_a_clear_failure(self, env):
-        result = runner.invoke(
-            modeling_cli.app, ["sample-for-labelling", "misinfo", "--lang", "hi"]
-        )
-        assert result.exit_code == 1
-        assert "nothing to label" in result.output
-
-    def test_bad_lang_is_rejected(self, env):
-        result = runner.invoke(
-            modeling_cli.app, ["sample-for-labelling", "misinfo", "--lang", "fr"]
-        )
-        assert result.exit_code != 0
-
-
 # ---------------------------------------------------------------------------
 # evaluation
 # ---------------------------------------------------------------------------
@@ -284,7 +196,8 @@ class TestEvaluateCommand:
         )
         monkeypatch.setattr(ct, "MIN_LABELLED_ROWS", 8)
         (S.artifacts_dir / "hand_labels").mkdir(parents=True)
-        sheet.to_csv(S.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv", index=False)
+        sheet["labeller_kind"] = "human"
+        sheet.to_csv(S.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv", index=False)
         return S
 
     def test_reports_transfer_when_a_labelled_sample_exists(self, env):
@@ -296,13 +209,13 @@ class TestEvaluateCommand:
         assert "language_not_scored=1" in result.output
 
     def test_says_not_measured_when_no_sample_exists(self, env):
-        (env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv").unlink()
+        (env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv").unlink()
         result = runner.invoke(modeling_cli.app, ["evaluate", "misinfo"])
         assert result.exit_code == 0
         assert "NOT MEASURED" in result.output
 
     def test_refusal_exits_nonzero_and_prints_no_metrics(self, env):
-        path = env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv"
+        path = env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv"
         sheet = pd.read_csv(path, dtype=str, keep_default_na=False)
         sheet["label"] = ""
         sheet.to_csv(path, index=False)

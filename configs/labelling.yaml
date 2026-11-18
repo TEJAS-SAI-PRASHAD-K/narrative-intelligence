@@ -1,0 +1,34 @@
+# How the hand-labelling sample is drawn. Read by `modeling sample-for-labelling misinfo`.
+#
+# The sample is stratified. A uniform draw from the corpus holds very few
+# misinformation-like rows, so the labelled set would have one class and the transfer
+# metrics would refuse. Each stratum gets a share of the sample, and every sampled row
+# records its weight (stratum pool size over stratum sample size). Metrics that must
+# describe the whole corpus are reweighted with that column.
+#
+# The sheet shows a neutral code (S1, S2, ...) in the order of `strata` below. The
+# meaning of each code is written beside the sheet, never in it, because a labeller who
+# knows that a row matched a debunked claim anchors on that fact.
+
+seed: 20260813
+
+# Sources whose posts are more likely to carry a false claim than a news article is.
+likely_positive_sources: [reddit, mastodon, youtube, telegram]
+
+# Order sets the stratum codes. `claim_match` holds rows that match a fact-check claim.
+# A row goes to the first stratum that fits: claim_match, then its own platform, then
+# `other`. Shares need not sum to 1. A stratum with no rows gives its share to the others.
+strata:
+  - {name: claim_match, share: 0.30}
+  - {name: reddit, share: 0.15}
+  - {name: mastodon, share: 0.15}
+  - {name: youtube, share: 0.15}
+  - {name: telegram, share: 0.10}
+  - {name: other, share: 0.15}
+
+# A corpus record matches a claim when the Hamming distance between their simhashes is at
+# most this many bits. Same radius as the claim dedup in `ingest.factcheck`.
+simhash_hamming: 3
+
+# Only claims with these verdict labels count as false claims.
+claim_labels: [false]

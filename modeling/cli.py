@@ -328,7 +328,13 @@ def evaluate(
     sample: Path | None = typer.Option(
         None,
         help="misinfo only: the hand-labelled sample CSV. "
-        "Default artifacts/hand_labels/misinfo_corpus_sample.csv.",
+        "Default artifacts/hand_labels/misinfo_corpus_sample_en.csv.",
+    ),
+    allow_model_labels: bool = typer.Option(
+        False,
+        "--allow-model-labels",
+        help="misinfo only: use labels that a model made and no person reviewed. "
+        "Every output then says so.",
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
@@ -336,7 +342,9 @@ def evaluate(
 
     For ``misinfo`` the output ends with a corpus-transfer section computed from the
     hand-labelled sample. It says so when no sample exists, and refuses to compute
-    metrics while fewer than MIN_LABELLED_ROWS rows carry a label. Exits 1 on refusal.
+    metrics while fewer than MIN_LABELLED_ROWS rows carry a label. The label is the
+    ``adjudicated_label`` column. A sheet with labels from a model that no person
+    reviewed is refused unless ``--allow-model-labels`` is set. Exits 1 on refusal.
     """
     _bootstrap(verbose)
     from modeling.training import evaluate_module
@@ -351,27 +359,137 @@ def evaluate(
     from modeling.io import ScoredStore
 
     settings = get_settings()
-    path = sample or settings.artifacts_dir / "hand_labels" / "misinfo_corpus_sample.csv"
+    path = sample or settings.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv"
     if not path.exists():
         console.print(
             f"\n[yellow]corpus transfer: NOT MEASURED[/] - no labelled sample at {path}. "
-            "Run `modeling sample-for-labelling misinfo`, label the `label` column by hand "
-            "(1 = misinformation-like, 0 = not), then rerun this command."
+            "Run `modeling sample-for-labelling misinfo --lang en`, label the sheet by hand "
+            "(1 = misinformation-like, 0 = not) as docs/labelling-guide.md says, then rerun "
+            "this command."
         )
         return
+    from modeling.eval.labelling import resolve_sheet
+
+    resolved = resolve_sheet(read_label_sheet(path), allow_model_labels=allow_model_labels)
+    if resolved.refusal:
+        console.print(f"\ncorpus transfer\n  REFUSED: {resolved.refusal}", markup=False)
+        raise typer.Exit(code=1)
     transfer = evaluate_transfer(
-        read_label_sheet(path),
+        resolved.frame,
         ScoredStore(settings).read("record_scores"),
         language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
         model_version=str(module_config("misinfo").get("version", "v0.0.0-unset")),
         threshold=module_config("misinfo").get("decision_threshold"),
         seed=settings.seed,
+        labeller_note=resolved.labeller_note,
     )
     benchmark = result.report.macro_f1.value if result.report is not None else None
     console.print()
     for line in transfer.render(benchmark_macro_f1=benchmark):
-        console.print(line, markup=False, highlight=False)
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
     if not transfer.computed:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="evaluate-laya-hindi")
+def evaluate_laya_hindi(
+    sample: Path | None = typer.Option(
+        None, help="The Hindi sheet. Default artifacts/hand_labels/misinfo_corpus_sample_hi.csv."
+    ),
+    threshold: float | None = typer.Option(
+        None,
+        help="Decision threshold. Default is laya.decision_threshold, which is null until set.",
+    ),
+    allow_model_labels: bool = typer.Option(False, "--allow-model-labels"),
+    n_bootstrap: int = typer.Option(1000, "--n-bootstrap", help="Resamples for each interval."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Laya on Hindi titles: transfer metrics and calibration error against adjudicated labels.
+
+    The values are the ``misinfo_prob`` that the ``laya`` scoring stage wrote to
+    ``record_scores``. This command runs no model.
+    """
+    _bootstrap(verbose)
+    from modeling.eval.relabel import laya_hindi_section
+
+    section = laya_hindi_section(
+        sample or get_settings().artifacts_dir / "hand_labels" / "misinfo_corpus_sample_hi.csv",
+        allow_model_labels=allow_model_labels,
+        threshold=threshold,
+        n_bootstrap=n_bootstrap,
+    )
+    for line in section.lines:
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
+    if not section.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="label-agreement")
+def label_agreement(
+    sheet: Path = typer.Argument(..., help="A labelled sheet with label_a and label_b."),
+    fill_agreed: bool = typer.Option(
+        False,
+        "--fill-agreed",
+        help="Copy the shared label into the adjudicated columns where both labellers agree. "
+        "Rows where they disagree stay blank for a person to settle.",
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Cohen's kappa with a bootstrap interval, raw agreement and the disagreement list."""
+    _bootstrap(verbose)
+    from modeling.eval.labelling import (
+        DEFAULT_SEED,
+        agreement_report,
+        read_sheet,
+        render_agreement,
+    )
+    from modeling.eval.labelling import (
+        fill_agreed as fill,
+    )
+
+    frame = read_sheet(sheet)
+    for line in render_agreement(agreement_report(frame, seed=DEFAULT_SEED), DEFAULT_SEED):
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
+    if fill_agreed:
+        filled, counts = fill(frame)
+        filled.to_csv(sheet, index=False)
+        console.print(f"filled {counts['filled']} cells, {counts['left_for_adjudication']} left")
+
+
+@app.command(name="relabel-eval")
+def relabel_eval(
+    en_sheet: Path | None = typer.Option(None, help="Default hand_labels/..._en.csv."),
+    hi_sheet: Path | None = typer.Option(None, help="Default hand_labels/..._hi.csv."),
+    out_dir: Path | None = typer.Option(None, help="Default artifacts/eval/labelling."),
+    allow_model_labels: bool = typer.Option(False, "--allow-model-labels"),
+    laya_threshold: float | None = typer.Option(None, "--laya-threshold"),
+    n_bootstrap: int = typer.Option(1000, "--n-bootstrap", help="Resamples for each interval."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Read the filled sheets and rewrite every labelling output in one run.
+
+    For each sheet that exists: the agreement report, the disagreement list and the
+    transfer metrics (``misinfo`` for English, Laya for Hindi). A sheet that is refused
+    writes its refusal. Exits 1 when any sheet is refused or not measured.
+    """
+    _bootstrap(verbose)
+    from modeling.eval.relabel import run_relabel_eval
+
+    settings = get_settings()
+    root = settings.artifacts_dir
+    outcome = run_relabel_eval(
+        en_sheet=en_sheet or root / "hand_labels" / "misinfo_corpus_sample_en.csv",
+        hi_sheet=hi_sheet or root / "hand_labels" / "misinfo_corpus_sample_hi.csv",
+        out_dir=out_dir or root / "eval" / "labelling",
+        allow_model_labels=allow_model_labels,
+        laya_threshold=laya_threshold,
+        n_bootstrap=n_bootstrap,
+    )
+    for path in outcome.written:
+        console.print(f"wrote {path}", soft_wrap=True, highlight=False)
+    for line in outcome.lines:
+        console.print(line, markup=False, highlight=False, soft_wrap=True)
+    if not outcome.ok:
         raise typer.Exit(code=1)
 
 
@@ -737,12 +855,146 @@ def compare_embedder_command(
         raise typer.Exit(code=1)
 
 
+def _draw_misinfo_sample(
+    target_dir: Path,
+    *,
+    n: int,
+    lang: str | None,
+    seed: int | None,
+    embeddings: Path | None,
+    force: bool,
+) -> Path:
+    """Draw the weighted sheet for ``sample-for-labelling misinfo`` and its sampling record."""
+    import ingest.factcheck as factcheck
+    from ingest.config import Settings as IngestSettings
+    from modeling.config import FactCheckDomainsMissing, fact_check_domains
+    from modeling.eval.claim_dedup import (
+        ClaimDedupConfigError,
+        claim_dedup_config,
+        default_embedder,
+    )
+    from modeling.eval.corpus_transfer import SAMPLE_LANGUAGES
+    from modeling.eval.labelling import (
+        build_weighted_sample,
+        claim_evidence,
+        load_sampling_config,
+    )
+    from modeling.io import CorpusReader
+
+    settings = get_settings()
+    if lang is not None and lang not in SAMPLE_LANGUAGES:
+        raise typer.BadParameter(f"--lang must be one of {', '.join(SAMPLE_LANGUAGES)}")
+    path = target_dir / f"misinfo_corpus_sample_{lang or 'all'}.csv"
+    if path.exists() and not force:
+        console.print(
+            f"[red]{path} exists and may hold labels.[/] Move it, or pass --force to replace it."
+        )
+        raise typer.Exit(code=1)
+    try:
+        domains = fact_check_domains()
+        config = load_sampling_config()
+    except (FactCheckDomainsMissing, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    records = CorpusReader(settings).records(
+        columns=["id", "source", "source_detail", "text", "lang", "raw", "simhash"]
+    )
+    if not len(records):
+        console.print("[red]no corpus on disk[/]")
+        raise typer.Exit(code=1)
+
+    rows = factcheck.read_deduplicated_factchecks(
+        IngestSettings(data_dir=settings.data_dir, _env_file=None)
+    ).kept
+    min_similarity = None
+    embedder_factory = None
+    if embeddings is not None:
+        try:
+            dedup = claim_dedup_config()
+        except ClaimDedupConfigError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=1) from exc
+        min_similarity = dedup.min_similarity
+        embedder_factory = lambda: default_embedder(dedup.model_name or "", settings)  # noqa: E731
+    evidence = claim_evidence(
+        rows,
+        config,
+        embeddings_path=embeddings,
+        embedder_factory=embedder_factory,
+        min_similarity=min_similarity,
+    )
+    built = build_weighted_sample(
+        records,
+        n=n,
+        # Hindi titles go to Laya, so the Hindi pool uses Laya's language list.
+        language_allowed=lambda value: settings.language_allowed(
+            "laya" if lang == "hi" else "misinfo", value
+        ),
+        fact_checker_domains=domains,
+        config=config,
+        claims=evidence,
+        lang=lang,
+        seed=seed,
+    )
+    console.print(
+        f"pool {built.pool} records"
+        + (f" in lang={lang}" if lang else "")
+        + "; left out: "
+        + (", ".join(f"{k}={v}" for k, v in sorted(built.excluded.items())) or "none")
+    )
+    if built.degraded:
+        console.print(
+            "degraded paths: " + ", ".join(f"{k}={v}" for k, v in sorted(built.degraded.items()))
+        )
+    for note in built.notes:
+        console.print(f"[yellow]{note}[/]")
+    if not len(built.frame):
+        console.print("[red]no scorable record in the pool; nothing to label[/]")
+        raise typer.Exit(code=1)
+    # No model score goes in the sheet: a labeller who sees one anchors on it.
+    # `evaluate misinfo` joins the scores from record_scores by id.
+    built.frame.to_csv(path, index=False)
+    record = {
+        "seed": built.seed,
+        "n_requested": n,
+        "n_drawn": len(built.frame),
+        "lang": lang,
+        "pool": built.pool,
+        "left_out": built.excluded,
+        "degraded": built.degraded,
+        "claim_matches_in_scorable_pool": built.claim_match_counts,
+        "strata": built.strata,
+        "notes": built.notes,
+        "weight": "stratum pool size over stratum rows drawn",
+    }
+    path.with_suffix(".sampling.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    console.print(
+        "strata (code: meaning, pool, drawn): "
+        + "; ".join(f"{k}: {v['name']}, {v['pool']}, {v['drawn']}" for k, v in built.strata.items())
+    )
+    return path
+
+
 @app.command(name="sample-for-labelling")
 def sample_for_labelling(
     what: str = typer.Argument(..., help="misinfo | narratives"),
     n: int = typer.Option(100, help="How many rows to sample."),
     lang: str | None = typer.Option(
         None, "--lang", help="misinfo only: restrict the sample to en or hi."
+    ),
+    seed: int | None = typer.Option(
+        None,
+        help="misinfo only: sampling seed. Default is the seed in configs/labelling.yaml "
+        "(20260813). The sheet records it.",
+    ),
+    embeddings: Path | None = typer.Option(
+        None,
+        help="misinfo only: Parquet file with `id` and `embedding` for corpus records. "
+        "It turns on the embedding match to fact-check claims. Without it, only simhash "
+        "matches count and the output says so.",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="misinfo only: replace a sheet that already exists."
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
@@ -751,50 +1003,26 @@ def sample_for_labelling(
     This is how the two most informative tables in the whole report get
     produced, and neither can be automated:
 
-    * ``misinfo`` — 100 real corpus records. Scoring them measures the
-      benchmark-to-corpus transfer gap, which is the only number that describes
-      production behaviour.
+    * ``misinfo`` — real corpus records, drawn with weights towards likely
+      positives (Reddit, Mastodon, YouTube and Telegram posts, and posts that match a
+      fact-check claim) and without fact-checker articles. Each row records its
+      stratum and weight. Scoring the labelled rows measures the benchmark-to-corpus
+      transfer gap, which is the only number that describes production behaviour.
     * ``narratives`` — narrative-level risk labels, which the ablation table
       needs before its quality columns mean anything.
     """
     _bootstrap(verbose)
 
-    from modeling.io import CorpusReader, ScoredStore
+    from modeling.io import ScoredStore
 
     settings = get_settings()
     target_dir = settings.artifacts_dir / "hand_labels"
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if what == "misinfo":
-        from modeling.eval.corpus_transfer import SAMPLE_LANGUAGES, build_sample
-
-        if lang is not None and lang not in SAMPLE_LANGUAGES:
-            raise typer.BadParameter(f"--lang must be one of {', '.join(SAMPLE_LANGUAGES)}")
-        records = CorpusReader(settings).records(columns=["id", "source", "text", "lang"])
-        if not len(records):
-            console.print("[red]no corpus on disk[/]")
-            raise typer.Exit(code=1)
-        built = build_sample(
-            records,
-            n=n,
-            language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
-            lang=lang,
-            seed=settings.seed,
+        path = _draw_misinfo_sample(
+            target_dir, n=n, lang=lang, seed=seed, embeddings=embeddings, force=force
         )
-        sample = built.frame
-        console.print(
-            f"pool {built.pool} records"
-            + (f" in lang={lang}" if lang else "")
-            + "; not sampled because the misinfo stage cannot score them: "
-            + (", ".join(f"{k}={v}" for k, v in sorted(built.excluded.items())) or "none")
-        )
-        if not len(sample):
-            console.print("[red]no scorable record in the pool; nothing to label[/]")
-            raise typer.Exit(code=1)
-        # No model score goes in the sheet: a labeller who sees one anchors on it.
-        # `evaluate misinfo` joins the scores from record_scores by id.
-        path = target_dir / "misinfo_corpus_sample.csv"
-        sample.to_csv(path, index=False)
     elif what == "narratives":
         narratives = ScoredStore(settings).read("narratives")
         if not len(narratives):
@@ -811,9 +1039,9 @@ def sample_for_labelling(
 
     console.print(f"wrote {path}")
     console.print(
-        "[yellow]Fill in the blank column by hand[/], then rerun "
-        f"`modeling {'evaluate misinfo' if what == 'misinfo' else 'ablate'}`. "
-        "Until it is filled in, the corresponding table reports the gap as unmeasured."
+        "[yellow]Fill in the blank columns by hand[/], then rerun "
+        f"`modeling {'relabel-eval' if what == 'misinfo' else 'ablate'}`. "
+        "Until they are filled in, the corresponding table reports the gap as unmeasured."
     )
 
 
