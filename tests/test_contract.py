@@ -27,7 +27,6 @@ def demo_client(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DEMO_MODE", "1")
     monkeypatch.setenv("API_KEY_PEPPER", "contract-test-pepper")
-    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
     get_api_settings.cache_clear()
@@ -77,6 +76,31 @@ def test_committed_openapi_matches_the_code():
 
     committed = json.loads((REPO_ROOT / "openapi.json").read_text(encoding="utf-8"))
     assert build_schema() == committed, "openapi.json has drifted; run `make openapi`"
+
+
+def test_every_risk_score_declares_its_0_to_100_range():
+    """Most scores are 0 to 1 and risk_score is 0 to 100.
+
+    A client can only tell the two scales apart from the declared bounds, and a
+    missing bound once rendered 33.2 as 3320 percent in the dashboard.
+    """
+    from app.openapi_export import build_schema
+
+    schemas = build_schema()["components"]["schemas"]
+    found = []
+    for name, schema in schemas.items():
+        field = schema.get("properties", {}).get("risk_score")
+        if field is None:
+            continue
+        found.append(name)
+        variants = field.get("anyOf", [field])
+        numeric = [v for v in variants if v.get("type") == "number"]
+        assert numeric, f"{name}.risk_score is not numeric"
+        for v in numeric:
+            assert (v.get("minimum"), v.get("maximum")) == (0.0, 100.0), (
+                f"{name}.risk_score declares no 0 to 100 range"
+            )
+    assert {"HighRiskPost", "AuthorScoreExplanation"} <= set(found)
 
 
 def test_every_documented_route_is_reachable(demo_client):
@@ -428,6 +452,45 @@ def test_actors(demo_client, demo_ids):
     )
     # Unknown ids are reported, never silently dropped.
     assert result.unknown == ["reddit:does-not-exist"]
+
+
+def test_cohort_and_author_group_name_lookups(demo_client, demo_ids):
+    from app.mock.corpus import corpus
+    from app.schemas.actors import AuthorGroupOut
+    from app.schemas.common import NamedRef, PageResponse
+
+    cohort = corpus().cohorts[0]
+    response = demo_client.get(f"/api/v1/cohorts/{demo_ids['cohort_id']}")
+    assert response.status_code == 200
+    ref = NamedRef.model_validate(response.json())
+    assert (ref.id, ref.name) == (cohort["id"], cohort["name"])
+    assert set(response.json()) == {"id", "name"}
+
+    groups = PageResponse[AuthorGroupOut].model_validate(
+        demo_client.get(f"/api/v1/author-groups?project_id={demo_ids['project_id']}").json()
+    )
+    assert groups.items
+    for group in groups.items:
+        response = demo_client.get(f"/api/v1/author-groups/{group.id}")
+        assert response.status_code == 200
+        assert NamedRef.model_validate(response.json()) == NamedRef(id=group.id, name=group.name)
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("/api/v1/cohorts/not-a-cohort", "cohort_not_found"),
+        ("/api/v1/cohorts/00000000-0000-0000-0000-000000000000", "cohort_not_found"),
+        ("/api/v1/author-groups/not-a-group", "author_group_not_found"),
+        ("/api/v1/author-groups/00000000-0000-0000-0000-000000000000", "author_group_not_found"),
+    ],
+)
+def test_unknown_name_lookups_are_404_not_an_empty_name(demo_client, path, code):
+    response = demo_client.get(path)
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert set(error) == {"code", "message", "detail", "request_id"}
+    assert error["code"] == code
 
 
 def test_drivers(demo_client, demo_ids):

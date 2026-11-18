@@ -365,7 +365,6 @@ def demo_client(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DEMO_MODE", "1")
     monkeypatch.setenv("API_KEY_PEPPER", "contract-test-pepper")
-    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("REDIS_URL", "")
     get_api_settings.cache_clear()

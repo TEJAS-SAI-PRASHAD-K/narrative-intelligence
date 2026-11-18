@@ -46,6 +46,9 @@ class SkipReason:
     TEXT_TOO_SHORT = "text_too_short"
     INFERENCE_ERROR = "inference_error"
     NOT_ENOUGH_HISTORY = "not_enough_history"
+    #: The record comes from a fact-checker. Its article quotes a false claim in
+    #: order to debunk it, and a misinformation model reads that as misinformation.
+    FACT_CHECK_PUBLISHER = "fact_check_publisher"
 
 
 @dataclass
