@@ -34,7 +34,7 @@ COPY . .
 RUN pip install --no-deps -e .
 
 RUN useradd --create-home --uid 10001 app \
- && mkdir -p /srv/uploads /srv/reports /srv/data /srv/models /srv/.cache \
+ && mkdir -p /srv/reports /srv/data /srv/models /srv/.cache \
  && chown -R app:app /srv
 USER app
 
