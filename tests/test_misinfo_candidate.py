@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 import modeling.registry as registry
@@ -117,14 +117,8 @@ def test_the_stage_stamps_the_candidate_and_never_the_configured_version(
     monkeypatch.setattr(
         registry, "resolve", lambda *a, **k: pytest.fail("the candidate went through resolve")
     )
-    C.set_request("cand-1", unverified=True)
-    try:
+    with C.scoped_request("cand-1", unverified=True):
         out = S._misinfo_stage(ctx)
-    finally:
-        for name in (C.VERSION_ENV, C.ALLOW_UNVERIFIED_ENV):
-            import os
-
-            os.environ.pop(name, None)
     rows = ctx.store.read("record_scores")
     stamps = {json.dumps(dict(v), sort_keys=True) for v in rows["model_versions"].dropna()}
     misinfo_stamps = [s for s in stamps if "misinfo" in s]
@@ -155,6 +149,110 @@ def test_the_stage_uses_the_configured_version_without_a_candidate(
                for v in rows["model_versions"].dropna())
 
 
+def test_scoped_request_restores_the_environment(monkeypatch):
+    import os
+
+    monkeypatch.setenv(C.VERSION_ENV, "before")
+    monkeypatch.delenv(C.ALLOW_UNVERIFIED_ENV, raising=False)
+    with C.scoped_request("cand-1", unverified=True, replace_other=True):
+        assert os.environ[C.VERSION_ENV] == "cand-1"
+        assert os.environ[C.ALLOW_UNVERIFIED_ENV] == "1"
+        assert C.replace_other_version()
+    assert os.environ[C.VERSION_ENV] == "before"
+    assert C.ALLOW_UNVERIFIED_ENV not in os.environ
+    assert not C.replace_other_version()
+    with pytest.raises(RuntimeError), C.scoped_request("cand-2"):
+        raise RuntimeError("stage failed")
+    assert os.environ[C.VERSION_ENV] == "before"
+
+
+def seed_rows_from_another_version(ctx):
+    """Write misinfo_prob rows that the configured version scored, for the candidate to meet."""
+    S._misinfo_stage(ctx)
+    return ctx.store.read("record_scores").set_index("record_id")["misinfo_prob"].copy()
+
+
+def test_a_candidate_run_over_rows_of_another_version_refuses_and_writes_nothing(
+    stage_settings, models, monkeypatch, tmp_path, caplog
+):
+    make_candidate(models)
+    ctx = fcs.make_ctx(tmp_path, stage_settings, monkeypatch)
+    before = seed_rows_from_another_version(ctx)
+    assert before.notna().any()
+    monkeypatch.setattr(registry, "resolve", lambda *a, **k: pytest.fail("resolve called"))
+    with caplog.at_level(logging.WARNING), C.scoped_request("cand-1", unverified=True):
+        out = S._misinfo_stage(ctx)
+    assert out[0]["refused"] == C.CandidateReason.REPLACE_REQUIRED
+    assert "1 row(s) carry another misinfo stamp" in out[0]["note"]
+    assert "would overwrite misinfo_prob of 1 row" in caplog.text
+    after = ctx.store.read("record_scores").set_index("record_id")["misinfo_prob"]
+    assert after.equals(before)
+
+
+def test_the_replace_flag_lets_the_candidate_overwrite(
+    stage_settings, models, monkeypatch, tmp_path
+):
+    make_candidate(models)
+    ctx = fcs.make_ctx(tmp_path, stage_settings, monkeypatch)
+    seed_rows_from_another_version(ctx)
+    monkeypatch.setattr(registry, "resolve", lambda *a, **k: pytest.fail("resolve called"))
+    with C.scoped_request("cand-1", unverified=True, replace_other=True):
+        out = S._misinfo_stage(ctx)
+    assert "refused" not in out[0]
+    rows = ctx.store.read("record_scores")
+    assert any("cand-1+" in json.dumps(dict(v)) for v in rows["model_versions"].dropna())
+
+
+def invoke_score(monkeypatch, *args):
+    from typer.testing import CliRunner
+
+    import modeling.cli as cli
+
+    monkeypatch.setattr(cli, "_bootstrap", lambda verbose=False: None)
+    return CliRunner().invoke(cli.app, ["score", "misinfo", *args])
+
+
+def test_the_cli_exits_1_for_a_refused_candidate_and_leaves_the_environment(models, monkeypatch):
+    import os
+
+    make_candidate(models)
+    result = invoke_score(monkeypatch, "--misinfo-version", "cand-1")
+    assert result.exit_code == 1
+    assert "candidate_unverified_refused" in result.output.replace("\n", "")
+    result = invoke_score(
+        monkeypatch, "--misinfo-version", "missing", "--allow-unverified-candidate"
+    )
+    assert result.exit_code == 1
+    assert C.VERSION_ENV not in os.environ and C.ALLOW_UNVERIFIED_ENV not in os.environ
+
+
+def test_the_cli_exits_1_when_the_stage_refuses_and_clears_the_environment(models, monkeypatch):
+    import os
+
+    make_candidate(models)
+    seen = {}
+
+    def fake_run_stages(stages, **kwargs):
+        seen["version"] = os.environ.get(C.VERSION_ENV)
+        seen["replace"] = C.replace_other_version()
+        return [{"stage": "misinfo", "table": "record_scores", "refused": "some_reason",
+                 "note": "n"}]
+
+    monkeypatch.setattr(S, "run_stages", fake_run_stages)
+    result = invoke_score(
+        monkeypatch, "--misinfo-version", "cand-1", "--allow-unverified-candidate",
+        "--replace-other-version",
+    )
+    assert result.exit_code == 1 and "some_reason" in result.output
+    assert seen == {"version": "cand-1", "replace": True}
+    assert C.VERSION_ENV not in os.environ
+
+
+def test_replace_needs_a_candidate(models, monkeypatch):
+    result = invoke_score(monkeypatch, "--replace-other-version")
+    assert result.exit_code != 0
+
+
 # ---------------------------------------------------------------------------
 # the comparison script
 # ---------------------------------------------------------------------------
@@ -164,25 +262,61 @@ def comparison_run(request):
     return request.getfixturevalue("scored")
 
 
-def test_the_comparison_scores_with_a_candidate_and_stamps_its_version(
-    models, comparison_run, tmp_path
+def candidate_args(out, *extra):
+    return ["score", "--demo", "--out", str(out), "--misinfo-version", "cand-1", *extra]
+
+
+def test_the_comparison_scores_the_candidate_under_its_own_key(models, comparison_run, tmp_path):
+    make_candidate(models, "cand-1")
+    out = tmp_path / "candidate_out"
+    shutil.copytree(comparison_run, out)
+    original_file = (out / "scores" / "misinfo.parquet").read_bytes()
+    deps, *_ = trc.make_deps()
+    assert trc.run(candidate_args(out), deps) == 1  # no sha256 in the config and no flag
+    assert not (out / "scores" / "misinfo@cand-1.parquet").exists()
+
+    deps, *_ = trc.make_deps()
+    assert trc.run(candidate_args(out, "--allow-unverified-candidate"), deps) == 0
+    provenance = json.loads((out / "scores" / "misinfo@cand-1.provenance.json").read_text())
+    # The same `<version>+<sha8>` stamp as the batch scorer.
+    assert provenance["model"] == "misinfo@cand-1"
+    assert re.fullmatch(r"cand-1\+[0-9a-f]{8}", provenance["model_version"])
+    # The configured version stays as it was, so both load together.
+    assert (out / "scores" / "misinfo.parquet").read_bytes() == original_file
+    from modeling.eval.factcheck_eval import load_score_dir
+
+    both = load_score_dir(out / "scores", names=["misinfo", "misinfo@cand-1"])
+    assert set(both) == {"misinfo", "misinfo@cand-1"}
+
+
+def test_a_score_file_of_another_version_is_not_overwritten_without_force(
+    models, comparison_run, tmp_path, capsys
 ):
     make_candidate(models, "cand-1")
     out = tmp_path / "candidate_out"
     shutil.copytree(comparison_run, out)
-    args = ["score", "--demo", "--out", str(out), "--models", "misinfo",
-            "--misinfo-version", "cand-1"]
+    flag = "--allow-unverified-candidate"
     deps, *_ = trc.make_deps()
-    assert trc.run(args, deps) == 1  # no sha256 in the config and no flag
+    assert trc.run(candidate_args(out, flag), deps) == 0
+    sidecar = out / "scores" / "misinfo@cand-1.provenance.json"
+    recorded = json.loads(sidecar.read_text())
+    recorded["model_version"] = "cand-1+00000000"
+    sidecar.write_text(json.dumps(recorded))
+    before = (out / "scores" / "misinfo@cand-1.parquet").read_bytes()
+    # The checkpoint identity is stale too, so the stage decides to score again.
+    recorded["checkpoint"] = {"kind": "directory", "sha256": "stale"}
+    sidecar.write_text(json.dumps(recorded))
+
+    capsys.readouterr()
+    deps, *_ = trc.make_deps()
+    assert trc.run(candidate_args(out, flag), deps) == 1
+    assert trc.rc.SCORE_FILE_OTHER_VERSION in capsys.readouterr().err
+    assert (out / "scores" / "misinfo@cand-1.parquet").read_bytes() == before
 
     deps, *_ = trc.make_deps()
-    assert trc.run([*args, "--allow-unverified-candidate"], deps) == 0
-    provenance = json.loads((out / "scores" / "misinfo.provenance.json").read_text())
-    assert provenance["model_version"] == "cand-1"
-    # The run of the configured version stays as it was.
-    original = json.loads((comparison_run / "scores" / "misinfo.provenance.json").read_text())
-    assert original["model_version"] == module_config("misinfo")["version"]
-    assert len(pd.read_parquet(out / "scores" / "misinfo.parquet"))
+    assert trc.run(candidate_args(out, flag, "--force"), deps) == 0
+    stamp = json.loads(sidecar.read_text())["model_version"]
+    assert re.fullmatch(r"cand-1\+[0-9a-f]{8}", stamp)
 
 
 def test_the_unverified_flag_alone_is_a_usage_error(comparison_run):

@@ -8,6 +8,11 @@ version. Two settings select it for one run:
 ``MISINFO_CANDIDATE_ALLOW_UNVERIFIED``
     ``1`` lets a candidate with no ``sha256`` in ``configs/models.yaml`` load.
     ``--allow-unverified-candidate`` sets it.
+``MISINFO_CANDIDATE_REPLACE_OTHER_VERSION``
+    ``1`` lets the stage overwrite ``misinfo_prob`` of rows that carry another misinfo stamp.
+    ``--replace-other-version`` sets it.
+
+``scoped_request`` sets the variables for one call and restores them after it.
 
 The registry hash check still runs. A candidate with a configured hash must match it. A
 candidate with no configured hash is refused unless the flag is set. With the flag, the load
@@ -19,9 +24,11 @@ A candidate is never pulled from the Hub or Drive. It exists on local disk or it
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
+from collections.abc import Iterator
 
 from modeling.config import module_config
 from modeling.registry import (
@@ -38,6 +45,7 @@ log = logging.getLogger(__name__)
 
 VERSION_ENV = "MISINFO_CANDIDATE_VERSION"
 ALLOW_UNVERIFIED_ENV = "MISINFO_CANDIDATE_ALLOW_UNVERIFIED"
+REPLACE_ENV = "MISINFO_CANDIDATE_REPLACE_OTHER_VERSION"
 _VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 
@@ -48,6 +56,8 @@ class CandidateReason:
     IS_CONFIGURED_VERSION = "candidate_is_configured_version"
     NOT_FOUND = "candidate_checkpoint_not_found"
     UNVERIFIED_REFUSED = "candidate_unverified_refused"
+    #: Rows on disk carry another misinfo stamp, and the run did not ask to replace them.
+    REPLACE_REQUIRED = "candidate_replace_other_version_required"
 
 
 class CandidateRefused(RuntimeError):
@@ -68,12 +78,34 @@ def allow_unverified() -> bool:
     return os.environ.get(ALLOW_UNVERIFIED_ENV) == "1"
 
 
-def set_request(version: str | None, *, unverified: bool = False) -> None:
-    """Put the options of a command line into the environment for the stages that read it."""
-    if version:
-        os.environ[VERSION_ENV] = version
-    if unverified:
-        os.environ[ALLOW_UNVERIFIED_ENV] = "1"
+def replace_other_version() -> bool:
+    return os.environ.get(REPLACE_ENV) == "1"
+
+
+@contextlib.contextmanager
+def scoped_request(
+    version: str | None, *, unverified: bool = False, replace_other: bool = False
+) -> Iterator[None]:
+    """Put the candidate options into the environment for the stages, and restore it after.
+
+    The stages read the options from the environment. The call never leaves them set.
+    """
+    names = (VERSION_ENV, ALLOW_UNVERIFIED_ENV, REPLACE_ENV)
+    saved = {name: os.environ.get(name) for name in names}
+    try:
+        if version:
+            os.environ[VERSION_ENV] = version
+        if unverified:
+            os.environ[ALLOW_UNVERIFIED_ENV] = "1"
+        if replace_other:
+            os.environ[REPLACE_ENV] = "1"
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def resolve_candidate(

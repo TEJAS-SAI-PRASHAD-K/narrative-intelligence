@@ -323,6 +323,7 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
                     "stage": "misinfo",
                     "table": "record_scores",
                     "note": ctx.note(f"candidate {candidate} refused ({exc}); misinfo_prob stays"),
+                    "refused": exc.reason,
                 }
             ]
         version = candidate
@@ -374,6 +375,32 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             }
         ]
 
+    if candidate is not None:
+        other = _rows_with_other_misinfo_stamp(
+            ctx.store.read("record_scores"), set(eligible["id"].astype(str)), versions["misinfo"]
+        )
+        if other:
+            log.warning(
+                "candidate %s would overwrite misinfo_prob of %d row(s) that carry another "
+                "misinfo stamp",
+                candidate,
+                other,
+            )
+            if not candidate_module.replace_other_version():
+                reason = candidate_module.CandidateReason.REPLACE_REQUIRED
+                return [
+                    {
+                        "stage": "misinfo",
+                        "table": "record_scores",
+                        "refused": reason,
+                        "note": ctx.note(
+                            f"{reason}: {other} row(s) carry another misinfo stamp. Nothing "
+                            "was written. Use a separate DATA_DIR, or pass "
+                            "--replace-other-version."
+                        ),
+                    }
+                ]
+
     scores = classifier.predict(eligible["text"].astype(str).tolist())
     frame = pd.DataFrame(
         {
@@ -405,6 +432,24 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             ),
         }
     ]
+
+
+def _rows_with_other_misinfo_stamp(existing: pd.DataFrame, ids: set[str], stamp: str) -> int:
+    """How many of ``ids`` hold a ``misinfo_prob`` with a misinfo stamp other than ``stamp``."""
+    from modeling.io import _as_version_dict
+
+    if not len(existing) or "model_versions" not in existing.columns:
+        return 0
+    count = 0
+    for record_id, value, versions in zip(
+        existing["record_id"], existing["misinfo_prob"], existing["model_versions"], strict=True
+    ):
+        if str(record_id) not in ids or pd.isna(value):
+            continue
+        held = _as_version_dict(versions).get("misinfo")
+        if held is not None and held != stamp:
+            count += 1
+    return count
 
 
 def _from_fact_checker(records: pd.DataFrame) -> pd.Series:
