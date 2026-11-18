@@ -451,21 +451,38 @@ LAYA_HI_CHECKPOINT=laya/multi-v0.2.1
 ```
 
 `modeling/registry.py` resolves `MODELS_DIR → HF_REPO → GDRIVE_DIR`, first hit wins. The
-`laya` stage calls it when `LAYA_HI_CHECKPOINT` is a `laya/<version>` path that is not on
-disk. The pull skips `checkpoint_latest/`, which only training resume needs.
+`laya` stage always calls it when `LAYA_HI_CHECKPOINT` has the form `laya/<version>`. A local
+copy is checked, and an absent copy is pulled. To fetch a folder by hand:
 
-The registry checks each folder against the `sha256` in `configs/models.yaml` on every
+```bash
+python -m modeling.cli checkpoint-pull laya --version multi-v0.2.1
+python -m modeling.cli checkpoint-pull laya --version en-v0.2.1
+```
+
+The pull leaves out `checkpoint_latest/` at any depth, because only training resume
+needs it. `HF_REVISION` or `hf_revision` in `configs/models.yaml` pins a repo revision.
+
+The registry checks each folder against the `sha256` map in `configs/models.yaml` on every
 resolve. A different hash raises `checkpoint_sha256_mismatch`, and a pulled copy is
-deleted. A folder with no `sha256` resolves with the reason `checkpoint_unverified`.
-To fill in the values, run this on the host that holds the weights, once per folder:
+deleted. In the stage, this gives the reason `laya:checkpoint_sha256_mismatch` and no score.
+A pulled folder with no `sha256` value is refused with `checkpoint_unverified_pull`. Set
+`ALLOW_UNVERIFIED_PULL=1` only to override it on purpose. A local folder with no value is
+used with the reason `checkpoint_unverified`. A map without a value for the folder gives
+`checkpoint_sha256_missing_key`.
+
+To print the hash of a local folder, run this on the host that holds the weights:
 
 ```bash
 python -m modeling.cli checkpoint-hash laya --version multi-v0.2.1
+python -m modeling.cli checkpoint-hash laya --version en-v0.2.1
 ```
 
-The hash covers every file in the folder, with the calibrator files, but not
-`checkpoint_latest/`, `registry.json`, `*.tmp` or `tokenizer/tokenizer_config.json`. A miss
-writes honest nulls rather than guessing.
+The hash covers every file in the folder, with the calibrator files and `registry.json`.
+It does not cover `checkpoint_latest/` at any depth or `*.tmp` files. It reads
+`tokenizer/tokenizer_config.json` after the same rewrite that the Laya loader applies, so
+loading a checkpoint does not change the hash. It reads `registry.json` without its
+`sha256` key. A symbolic link counts by the content of its target. A folder that is missing
+gives the stage reason `laya:checkpoint_missing`, and no score is written.
 
 ---
 

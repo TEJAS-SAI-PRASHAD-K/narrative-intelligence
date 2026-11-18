@@ -143,9 +143,14 @@ LAYA_HI_CHECKPOINT=laya/multi-v0.2.1
 ```
 
 Put the three lines in `.env`. The first `laya` stage run pulls the folder into
-`models/laya/multi-v0.2.1`. The registry checks it against `sha256` in
-`configs/models.yaml`. A different hash gives `checkpoint_sha256_mismatch` and the pulled
-copy is deleted. The pull leaves out `checkpoint_latest/`. No training run is needed.
+`models/laya/multi-v0.2.1`. To fetch a folder by hand, run
+`python -m modeling.cli checkpoint-pull laya --version multi-v0.2.1`, and the same for
+`en-v0.2.1`. The registry checks each folder against the `sha256` map in
+`configs/models.yaml`. A different hash gives `checkpoint_sha256_mismatch`. The stage then
+writes no score and gives the reason `laya:checkpoint_sha256_mismatch`. A pulled copy that
+fails the check is deleted. A pulled copy with no `sha256` value is refused with
+`checkpoint_unverified_pull`. The pull leaves out `checkpoint_latest/`. No training run is
+needed.
 
 ## Out-of-scope use
 

@@ -12,7 +12,7 @@ This card reports the comparison run of 2026-11-09. The full report is
 [docs/results/factcheck-comparison.md](../../docs/results/factcheck-comparison.md).
 
 The checkpoint is a `roberta-base` fine-tune. Training saved the last epoch. The
-checkpoint sha256 is `be9cc846c5d019881269bce7b1b007e5ffd937bc520a70a8e0b28dcaba5d70e6`.
+checkpoint sha256 is `<new hash: filled after the GPU host run>`.
 A private Hugging Face copy holds the weights at `misinfo/v0.2.0`. See "Get the
 weights on a fresh clone" below.
 
@@ -260,10 +260,13 @@ HF_TOKEN=<read token>
 ```
 
 Run `python -m modeling.cli score --all`. The registry pulls `misinfo/v0.2.0` into
-`models/misinfo/v0.2.0` on first use and checks it against `sha256` in `configs/models.yaml`.
+`models/misinfo/v0.2.0` on first use.
+The registry checks each folder against the `sha256` map in `configs/models.yaml`.
 A copy with a different hash is refused with `checkpoint_sha256_mismatch`. A pulled copy
-that fails the check is deleted. The pull leaves out `checkpoint_latest/`, which only
-training resume needs. No training run is needed.
+that fails the check is deleted. A pulled copy with no `sha256` value is also refused
+(`checkpoint_unverified_pull`). The pull leaves out `checkpoint_latest/`, which only
+training resume needs. To fetch it by hand, run
+`python -m modeling.cli checkpoint-pull misinfo --version v0.2.0`. No training run is needed.
 
 ## Deployment
 
