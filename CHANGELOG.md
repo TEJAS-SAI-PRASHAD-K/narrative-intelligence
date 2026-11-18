@@ -45,6 +45,12 @@ decision.
 
 ### Fixed
 
+- **Two `risk_score` fields declared no range.** `HighRiskPost.risk_score` and
+  `AuthorScoreExplanation.risk_score` now carry `minimum: 0` and `maximum: 100` in
+  `openapi.json`, like `AuthorOut.risk_score`. A client could only learn the 0 to 100
+  scale from a sample response, and a dashboard once read 33.2 as 3320 percent. A
+  contract test fails if any `risk_score` field loses its bounds.
+
 - **The fact-check backfill spent its URL budget on pages that it had already dropped.**
   Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
   verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
