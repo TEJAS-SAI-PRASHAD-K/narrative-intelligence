@@ -73,6 +73,7 @@ class LayaTransferResult:
     sample: dict[str, Any] = field(default_factory=dict)
     corpus: dict[str, Any] | None = None
     strata_info: StratumWeights | None = None
+    weighted_reason: str | None = None
 
     def _block(self, block: dict[str, Any]) -> list[str]:
         lines = []
@@ -83,14 +84,21 @@ class LayaTransferResult:
                 lines.append(f"    {name.replace('_', ' ')} not measured, no decision threshold")
         return lines
 
-    def _ece_lines(self, block: dict[str, Any], n: int) -> list[str]:
+    def _ece_lines(self, block: dict[str, Any], n: float, *, effective: bool = False) -> list[str]:
+        label = "n_eff" if effective else "n"
         lines = [
-            f"    ece {fmt(block['ece'])} ({self.bins} equal-width bins, n {n})",
+            f"    ece {fmt(block['ece'])} ({self.bins} equal-width bins, {label} {n:.0f})",
             f"    ece definition: {ECE_DEFINITION}",
         ]
+        if "ece_boot_mean" in block:
+            lines.append(
+                f"    mean of the bootstrap draws of ece {block['ece_boot_mean']:.3f}. "
+                "ECE is biased upward under resampling, so the interval can exclude the point "
+                "value."
+            )
         if n < ECE_MIN_N:
             lines.append(
-                f"    caveat: n is below {ECE_MIN_N}, so each bin holds few rows and the "
+                f"    caveat: {label} is below {ECE_MIN_N}, so each bin holds few rows and the "
                 "ECE is noisy. Read the interval, not the point."
             )
         return lines
@@ -125,13 +133,14 @@ class LayaTransferResult:
                     )
             if self.corpus is not None and self.strata_info is not None:
                 lines += render_reweighted(
-                    {k: v for k, v in self.corpus.items() if k not in ("ece",)},
+                    {k: v for k, v in self.corpus.items() if k not in ("ece", "ece_boot_mean")},
                     self.strata_info,
                 )
-                lines += self._ece_lines(self.corpus, self.used)
+                n_eff = self.strata_info.n_eff or 0.0
+                lines += self._ece_lines(self.corpus, n_eff, effective=True)
             else:
                 lines.append(
-                    "  reweighted to the corpus: not measured, the sheet has no design file"
+                    f"  reweighted to the corpus: not measured, {self.weighted_reason}"
                 )
         if self.labeller_note:
             lines.insert(1, f"  {self.labeller_note}")
@@ -237,9 +246,12 @@ def evaluate_laya_transfer(
 
     def block(w: np.ndarray, strata: np.ndarray | None) -> dict[str, Any]:
         result: dict[str, Any] = {}
+        means: dict[str, float] = {}
         result["ece"] = ece_interval(
-            y, prob, w, n_bootstrap=n_bootstrap, seed=seed, bins=bins, strata=strata
+            y, prob, w, n_bootstrap=n_bootstrap, seed=seed, bins=bins, strata=strata, means=means
         )
+        if "ece" in means:
+            result["ece_boot_mean"] = means["ece"]
         flag = (prob >= (threshold if threshold is not None else 2.0)).astype(int)
         rates = rate_intervals(y, flag, w, n_bootstrap=n_bootstrap, seed=seed, strata=strata)
         if threshold is None:
@@ -256,5 +268,11 @@ def evaluate_laya_transfer(
     if sw is not None:
         out.strata_info = sw
         out.corpus = block(sw.weights, sw.strata)
+    else:
+        out.weighted_reason = (
+            "a labelled row has no stratum in the design file"
+            if sheet.has_design
+            else "the sheet has no design file"
+        )
     out.computed = True
     return out

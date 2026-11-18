@@ -58,6 +58,7 @@ STALE_MODEL_VERSION = "stale_model_version"
 UNLABELLED = "unlabelled"
 INVALID_LABEL = "invalid_label"
 NOT_IN_CORPUS_SCORES = "id_missing_from_scores"
+UNSTAMPED_SCORE = "unstamped_score"
 
 CLASS_NAMES = ["not_misinfo", "misinfo"]
 
@@ -118,6 +119,8 @@ class TransferResult:
     drops_by_stratum: dict[str, dict[str, int]] = field(default_factory=dict)
     #: False-positive rate on rows that report on a false claim and on the rest.
     reporting: dict[str, Any] | None = None
+    #: Why there is no reweighted figure, or ``None`` when there is one.
+    weighted_reason: str | None = None
     seed: int = 0
 
     def render(self, benchmark_macro_f1: float | None = None) -> list[str]:
@@ -164,6 +167,8 @@ class TransferResult:
                 )
         if self.weighted is not None and self.strata_info is not None:
             lines += render_reweighted(self.weighted, self.strata_info)
+        if self.weighted_reason is not None:
+            lines.append(f"  reweighted to the corpus: not measured, {self.weighted_reason}")
         if self.reporting is not None:
             lines += render_reporting_fpr(self.reporting)
         return lines
@@ -185,7 +190,8 @@ def evaluate_transfer(
     ``sheet`` is a ``modeling.eval.labelling.ResolvedSheet``. Its refusal, for labels that a
     model made and no person reviewed, becomes the refusal here. ``scores`` is the
     ``record_scores`` table (``record_id``, ``misinfo_prob``, optionally ``model_versions``).
-    A score stamped by a different model version is excluded as stale. Labels come only
+    A score stamped by a different model version is excluded as stale, and a score with no
+    ``misinfo`` stamp is excluded as unstamped. Labels come only
     from the sheet. With a design file, the reweighted figures use ``pool / n_used`` per
     stratum, where ``n_used`` counts the rows that reach the metrics.
     """
@@ -233,12 +239,16 @@ def evaluate_transfer(
 
     score_by_id: dict[str, float] = {}
     stale: set[str] = set()
+    unstamped: set[str] = set()
     if scores is not None and len(scores) and "misinfo_prob" in scores.columns:
         for rec in scores.to_dict(orient="records"):
             rid = str(rec["record_id"])
             versions = _as_version_dict(rec.get("model_versions"))
             stamp = versions.get("misinfo")
-            if stamp is not None and stamp.split("+")[0] != model_version:
+            if stamp is None:
+                unstamped.add(rid)
+                continue
+            if stamp.split("+")[0] != model_version:
                 stale.add(rid)
                 continue
             value = rec["misinfo_prob"]
@@ -254,7 +264,13 @@ def evaluate_transfer(
             continue
         reason = unscorable_reason(row.get("lang"), row.get("text"), language_allowed)
         if reason is None:
-            reason = STALE_MODEL_VERSION if rid in stale else NO_SCORE
+            reason = (
+                STALE_MODEL_VERSION
+                if rid in stale
+                else UNSTAMPED_SCORE
+                if rid in unstamped
+                else NO_SCORE
+            )
         reasons[reason] += 1
         row_reason[idx] = reason
     out.excluded = dict(reasons)
@@ -298,11 +314,18 @@ def evaluate_transfer(
         out.weighted = rate_intervals(
             y_true, y_pred, sw.weights, n_bootstrap=n_bootstrap, seed=seed, strata=sw.strata
         )
+    if sw is None:
+        out.weighted_reason = (
+            "a labelled row has no stratum in the design file"
+            if sheet.has_design
+            else "the sheet has no design file"
+        )
     out.reporting = reporting_fpr(
-        used["reports"].to_numpy(dtype=float),
+        frame,
+        used,
         y_true,
         y_pred,
-        sw,
+        has_design=sheet.has_design,
         n_bootstrap=n_bootstrap,
         seed=seed,
     )

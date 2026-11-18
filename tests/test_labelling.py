@@ -601,8 +601,16 @@ class TestEnglishTransfer:
         out = self.run()
         r = out.reporting
         assert r["n_negatives_reporting"] + r["n_negatives_other"] == 30
-        assert r["unweighted"]["reporting"].value is not None
-        assert r["weighted"]["other"].value is not None
+        # Negatives are rows 30..59. Row i reports when i % 5 == 0, so 6 of them report.
+        assert r["n_negatives_reporting"] == 6 and r["n_negatives_other"] == 24
+        # A negative is flagged when its score is 0.7, which happens when i % 4 == 0.
+        # Reporting negatives: i in {30, 35, 40, 45, 50, 55}, flagged are 40 only.
+        assert r["unweighted"]["reporting"].value == pytest.approx(1 / 6)
+        # Other negatives: 24 rows, flagged i in {32, 36, 44, 48, 52, 56}, that is 6.
+        assert r["unweighted"]["other"].value == pytest.approx(6 / 24)
+        # All negatives sit in S2 and carry one weight, so the weighted rates are equal.
+        assert r["weighted"]["reporting"].value == pytest.approx(1 / 6)
+        assert r["weighted"]["other"].value == pytest.approx(6 / 24)
 
     def test_a_dropped_row_renormalises_the_weights_and_is_counted_per_stratum(self):
         from modeling.eval import corpus_transfer as ct
@@ -990,3 +998,222 @@ class TestRelabelEval:
         )
         assert result.exit_code == 0, result.output
         assert "ece" in result.output and "not the configured threshold" in result.output
+
+
+# ---------------------------------------------------------------------------
+# round 2 review
+# ---------------------------------------------------------------------------
+def _fpr_frame():
+    rows = [
+        # id, stratum, pool, flag, reports, unchecked
+        ("a", "S1", 10, 1, 1.0, False),
+        ("b", "S1", 10, 0, 1.0, False),
+        ("c", "S1", 10, 1, np.nan, False),
+        ("d", "S1", 10, 0, 0.0, False),
+        ("e", "S2", 6, 0, 0.0, False),
+        ("f", "S2", 6, 1, 0.0, False),
+    ]
+    frame = pd.DataFrame(rows, columns=["id", "stratum", "pool", "flag", "reports", "unchecked"])
+    return frame, np.zeros(len(frame), dtype=int), frame["flag"].to_numpy()
+
+
+class TestReportingFalsePositiveRate:
+    def test_weights_are_renormalised_over_the_rows_that_have_a_reports_value(self):
+        frame, y, flag = _fpr_frame()
+        out = wt.reporting_fpr(frame, frame, y, flag, has_design=True, n_bootstrap=20, seed=1)
+        assert out["dropped"] == {wt.REPORTS_UNKNOWN: 1}
+        # S1 keeps 3 rows (a, b, d), so each weighs 10 / 3. S2 keeps 2 rows of weight 3.
+        assert out["weighted"]["reporting"].value == pytest.approx(0.5)
+        assert out["weighted"]["other"].value == pytest.approx(3 / (10 / 3 + 6))
+        # Without the renormalisation S1 would weigh 10 / 4 and "other" would be 3 / 8.5.
+        assert out["weighted"]["other"].value != pytest.approx(3 / 8.5)
+        kept = np.array([10 / 3] * 3 + [3] * 2)
+        assert out["weighted_n_eff"] == pytest.approx(wt.kish_n_eff(kept))
+        assert out["unweighted"]["other"].value == pytest.approx(1 / 3)
+        assert "reports_unknown=1" in "\n".join(wt.render_reporting_fpr(out))
+
+    def test_unchecked_rows_are_counted_and_left_out(self):
+        frame, y, flag = _fpr_frame()
+        frame.loc[frame["id"] == "f", "unchecked"] = True
+        out = wt.reporting_fpr(frame, frame, y, flag, has_design=True, n_bootstrap=20, seed=1)
+        assert out["dropped"] == {wt.REPORTS_UNKNOWN: 1, wt.UNCHECKED_CLAIM: 1}
+        assert out["unweighted"]["other"].value == pytest.approx(0.0)
+
+    def test_the_unchecked_note_is_read_from_the_sheet(self):
+        sheet, _, design = scored_sheet()
+        sheet["notes"] = ["unchecked" if i == 3 else "" for i in range(len(sheet))]
+        frame = lb.resolve_sheet(sheet, design=design).frame
+        assert frame["unchecked"].sum() == 1 and bool(frame.loc[3, "unchecked"])
+
+
+class TestSmallStrata:
+    def frames(self, n_s1):
+        rows = [{"id": f"a{i}", "stratum": "S1", "pool": 40} for i in range(n_s1)]
+        rows += [{"id": f"b{i}", "stratum": "S2", "pool": 10} for i in range(6)]
+        frame = pd.DataFrame(rows)
+        return wt.stratum_weights(frame, frame)
+
+    def test_a_one_row_stratum_marks_the_intervals_as_not_reliable(self):
+        sw = self.frames(1)
+        assert sw.single == ["S1"] and sw.small == ["S1"] and not sw.interval_reliable
+        text = "\n".join(wt.render_reweighted({"flag rate": None}, sw))
+        assert "NOT RELIABLE" in text and "stratum S1" in text
+
+    def test_a_stratum_with_a_few_rows_warns_but_the_interval_stays_reliable(self):
+        sw = self.frames(3)
+        assert sw.small == ["S1"] and sw.single == [] and sw.interval_reliable
+        warning = "\n".join(wt.stratum_warning(sw))
+        assert "only 3 used rows" in warning and "NOT RELIABLE" not in warning
+
+    def test_a_stratum_of_five_rows_is_not_small(self):
+        assert self.frames(5).small == []
+
+    def test_the_transfer_json_carries_the_warning(self):
+        from modeling.eval.relabel import _jsonable
+
+        data = _jsonable(self.frames(1))
+        assert data["interval_reliable"] is False and data["single"] == ["S1"]
+        assert any("NOT RELIABLE" in line for line in data["warnings"])
+
+
+class TestStratifiedBootstrapWidth:
+    def test_the_interval_has_the_width_that_the_strata_imply(self):
+        # Stratum A (weight 3) has 5 positives in 10 rows. Stratum B (weight 1) has 10 of 10.
+        # The positive rate is (3 k + 10) / 40 with k ~ Binomial(10, 0.5), so its standard
+        # deviation is 3 * sqrt(2.5) / 40 = 0.1186 and the 95 percent interval is about 0.46 wide.
+        y = np.array([1] * 5 + [0] * 5 + [1] * 10)
+        strata = np.array(["A"] * 10 + ["B"] * 10)
+        w = np.array([3.0] * 10 + [1.0] * 10)
+        stat = {"pos": lambda idx: wt.rates(y[idx], y[idx], w[idx])["positive_rate"]}
+        within = wt.bootstrap_statistics(
+            y, w, stat, n_bootstrap=2000, seed=3, strata=strata
+        )["pos"]
+        plain = wt.bootstrap_statistics(y, w, stat, n_bootstrap=2000, seed=3)["pos"]
+        assert within.value == pytest.approx(0.625)
+        assert (within.high - within.low) == pytest.approx(0.46, abs=0.07)
+        assert (within.high - within.low) < (plain.high - plain.low)
+
+    def test_the_ece_bootstrap_mean_is_returned(self):
+        y = np.array([0, 1] * 10)
+        prob = np.full(20, 0.5)
+        means: dict = {}
+        interval = wt.ece_interval(
+            y, prob, np.ones(20), n_bootstrap=200, seed=1, means=means
+        )
+        assert means["ece"] >= 0 and interval is not None
+
+
+class TestRoundTwoTransfer:
+    def english(self, scores_edit=None, with_design=True):
+        from modeling.eval import corpus_transfer as ct
+
+        sheet, scores = resolved(with_design=with_design)
+        scores["model_versions"] = [{"misinfo": f"{VERSION}+ab"}] * len(scores)
+        if scores_edit:
+            scores = scores_edit(scores)
+        return ct.evaluate_transfer(
+            sheet, scores, language_allowed=allow, model_version=VERSION, threshold=0.5,
+            n_bootstrap=50,
+        )
+
+    def test_a_score_with_no_misinfo_stamp_is_excluded_as_unstamped(self):
+        from modeling.eval import corpus_transfer as ct
+
+        def edit(scores):
+            scores = scores.astype({"model_versions": object})
+            scores.at[0, "model_versions"] = {"laya": f"{VERSION}+ab"}
+            return scores
+
+        out = self.english(edit)
+        assert out.excluded == {ct.UNSTAMPED_SCORE: 1} and out.used == 59
+
+    def test_no_design_file_prints_not_measured_with_the_reason(self):
+        out = self.english(with_design=False)
+        text = "\n".join(out.render())
+        assert "reweighted to the corpus: not measured, the sheet has no design file" in text
+
+    @pytest.mark.parametrize("bad", ["", "   "])
+    def test_a_labelled_row_with_a_blank_stratum_is_refused(self, bad):
+        sheet, _, design = scored_sheet()
+        design["stratum"] = [bad if i == 0 else v for i, v in enumerate(design["stratum"])]
+        refused = lb.resolve_sheet(sheet, design=design)
+        assert refused.refusal and lb.DESIGN_MISSING in refused.refusal
+
+    def test_a_labelled_row_with_no_design_row_is_refused_by_stratum_too(self):
+        sheet, _, design = scored_sheet()
+        design.loc[0, "stratum"] = np.nan
+        assert lb.resolve_sheet(sheet, design=design).refusal
+
+    def test_laya_ece_uses_the_kish_n_eff_for_the_reweighted_block(self):
+        sheet, scores = resolved(lang="hi")
+        out = lt.evaluate_laya_transfer(
+            sheet, scores, model_version=VERSION, threshold=0.5, n_bootstrap=100
+        )
+        text = "\n".join(out.render())
+        n_eff = out.strata_info.n_eff
+        assert f"equal-width bins, n_eff {n_eff:.0f})" in text
+        assert "caveat: n_eff is below 200" in text
+
+    def test_laya_ece_prints_the_bootstrap_mean_and_the_bias_caveat(self):
+        sheet, scores = resolved(lang="hi")
+        out = lt.evaluate_laya_transfer(
+            sheet, scores, model_version=VERSION, threshold=0.5, n_bootstrap=100
+        )
+        text = "\n".join(out.render())
+        assert "mean of the bootstrap draws of ece" in text
+        assert "biased upward under resampling" in text
+
+    def test_laya_without_a_design_file_says_so(self):
+        sheet, scores = resolved(lang="hi", with_design=False)
+        out = lt.evaluate_laya_transfer(
+            sheet, scores, model_version=VERSION, threshold=0.5, n_bootstrap=50
+        )
+        assert "not measured, the sheet has no design file" in "\n".join(out.render())
+
+
+class TestClaimEvidenceCounts:
+    def test_claims_without_a_simhash_are_counted_and_noted(self):
+        rows = [
+            {"label": "false", "claim_simhash": 5, "claim": "a"},
+            {"label": "false", "claim_simhash": 0, "claim": "b"},
+            {"label": "false", "claim_simhash": None, "claim": "c"},
+            {"label": "true", "claim_simhash": None, "claim": "d"},
+        ]
+        evidence = lb.claim_evidence(rows, config())
+        assert evidence.degraded == {lb.CLAIM_WITHOUT_SIMHASH: 2}
+        built = lb.build_weighted_sample(
+            corpus(),
+            n=20,
+            language_allowed=allow,
+            fact_checker_domains=FC,
+            config=config(),
+            claims=evidence,
+            lang="en",
+        )
+        assert built.degraded[lb.CLAIM_WITHOUT_SIMHASH] == 2
+
+    def test_a_file_with_a_model_id_and_no_expected_model_prints_a_note(self, tmp_path):
+        helper = TestEmbeddingsFile()
+        out, _ = helper.evidence(helper.write(tmp_path, "model-x"), None)
+        assert any("no expected embedding model" in n for n in out.notes)
+
+
+class TestFillAgreedKeepsABackup:
+    def test_the_sheet_is_replaced_in_one_step_after_a_backup(self, tmp_path):
+        sheet = pd.DataFrame(
+            {
+                "id": ["a", "b"],
+                "label_a": ["1", "1"],
+                "label_b": ["1", "0"],
+                "reports_on_false_claim_a": ["0", "0"],
+                "reports_on_false_claim_b": ["0", "0"],
+            }
+        )
+        path = tmp_path / "s.csv"
+        sheet.to_csv(path, index=False)
+        before = path.read_text()
+        result = runner.invoke(modeling_cli.app, ["label-agreement", str(path), "--fill-agreed"])
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "s.csv.bak").read_text() == before
+        assert not (tmp_path / "s.csv.tmp").exists()
+        assert "adjudicated_label" in path.read_text()

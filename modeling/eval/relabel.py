@@ -30,7 +30,7 @@ from modeling.eval.labelling import (
     resolve_sheet_file,
 )
 from modeling.eval.metrics import Interval
-from modeling.eval.weighted import DEFAULT_SEED, StratumWeights
+from modeling.eval.weighted import DEFAULT_SEED, StratumWeights, stratum_warning
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,15 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, Interval):
         return _jsonable(value.as_dict())
     if isinstance(value, StratumWeights):
-        return {"per_stratum": value.per_stratum, "empty": value.empty, "n_eff": value.n_eff}
+        return {
+            "per_stratum": value.per_stratum,
+            "empty": value.empty,
+            "small": value.small,
+            "single": value.single,
+            "interval_reliable": value.interval_reliable,
+            "warnings": stratum_warning(value),
+            "n_eff": value.n_eff,
+        }
     if is_dataclass(value) and not isinstance(value, type):
         return {k: _jsonable(v) for k, v in vars(value).items()}
     if isinstance(value, dict):

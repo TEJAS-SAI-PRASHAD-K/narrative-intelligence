@@ -10,7 +10,7 @@ rows is not measured, and 0.0 would claim a measured failure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,8 @@ DEFAULT_BINS = 10
 DEFAULT_SEED = 20260813
 #: Below this many rows an ECE bin holds too few rows for its gap to mean much.
 ECE_MIN_N = 200
+#: A stratum with fewer used rows than this gets a loud warning in the output.
+MIN_STRATUM_USED = 5
 
 
 def _ratio(num: float, den: float) -> float | None:
@@ -96,13 +98,15 @@ def bootstrap_statistics(
     n_bootstrap: int,
     seed: int,
     strata: np.ndarray | None = None,
+    means: dict[str, float] | None = None,
 ) -> dict[str, Interval | None]:
     """Percentile bootstrap over rows for each named statistic.
 
     ``stats`` maps a name to ``f(index) -> float | None`` over a row index array. A draw
     where a statistic is undefined is skipped for that statistic only. Every statistic
     sees the same draws. With ``strata``, rows are resampled inside each stratum, so
-    every draw keeps the stratum sizes that the weights assume.
+    every draw keeps the stratum sizes that the weights assume. When ``means`` is given, it
+    receives the mean of the draws of each statistic.
     """
     n = len(y_true)
     points = {name: fn(np.arange(n)) for name, fn in stats.items()}
@@ -122,6 +126,8 @@ def bootstrap_statistics(
             value = fn(index)
             if value is not None:
                 samples[name].append(value)
+    if means is not None:
+        means.update({name: float(np.mean(v)) for name, v in samples.items() if v})
     return {name: _interval(points[name], samples[name], n_bootstrap) for name in stats}
 
 
@@ -159,10 +165,16 @@ def ece_interval(
     seed: int,
     bins: int = DEFAULT_BINS,
     strata: np.ndarray | None = None,
+    means: dict[str, float] | None = None,
 ) -> Interval | None:
+    """Interval of the ECE. ``means`` receives ``ece``, the mean of the bootstrap draws.
+
+    ECE is biased upward under resampling, so the interval can exclude its own point value.
+    The mean of the draws shows the size of that bias.
+    """
     stats = {"ece": lambda idx: expected_calibration_error(y_true[idx], prob[idx], w[idx], bins)}
     return bootstrap_statistics(
-        y_true, w, stats, n_bootstrap=n_bootstrap, seed=seed, strata=strata
+        y_true, w, stats, n_bootstrap=n_bootstrap, seed=seed, strata=strata, means=means
     )["ece"]
 
 
@@ -223,6 +235,16 @@ class StratumWeights:
     #: any reweighted figure.
     empty: list[str]
     n_eff: float | None
+    #: Strata with fewer than ``MIN_STRATUM_USED`` used rows. Their part of the corpus rests
+    #: on very few rows.
+    small: list[str] = field(default_factory=list)
+    #: Strata with weight and fewer than 2 used rows. A one-row stratum has zero bootstrap
+    #: variance, so the interval of a reweighted figure is too narrow.
+    single: list[str] = field(default_factory=list)
+
+    @property
+    def interval_reliable(self) -> bool:
+        return not self.single
 
 
 def stratum_weights(all_rows: pd.DataFrame, used: pd.DataFrame) -> StratumWeights | None:
@@ -246,37 +268,79 @@ def stratum_weights(all_rows: pd.DataFrame, used: pd.DataFrame) -> StratumWeight
     weights = np.array(
         [per[str(k)]["pool"] / per[str(k)]["n_used"] for k in used["stratum"]], dtype=float
     )
+    live = {k: v for k, v in per.items() if v["pool"] > 0 and v["n_used"] > 0}
+    small = [k for k, v in live.items() if v["n_used"] < MIN_STRATUM_USED]
+    single = [k for k, v in live.items() if v["n_used"] < 2]
     return StratumWeights(
-        weights, used["stratum"].astype(str).to_numpy(), per, empty, kish_n_eff(weights)
+        weights,
+        used["stratum"].astype(str).to_numpy(),
+        per,
+        empty,
+        kish_n_eff(weights),
+        small,
+        single,
     )
 
 
 def stratum_warning(sw: StratumWeights) -> list[str]:
     """Loud lines for strata that no used row represents."""
-    return [
+    lines = [
         f"WARNING: stratum {k} (pool {sw.per_stratum[k]['pool']}) has no used row, so every "
         "reweighted figure leaves that part of the corpus out"
         for k in sw.empty
     ]
+    lines += [
+        f"WARNING: stratum {k} (pool {sw.per_stratum[k]['pool']}) has only "
+        f"{sw.per_stratum[k]['n_used']} used rows, fewer than {MIN_STRATUM_USED}, so its "
+        "part of every reweighted figure is uncertain"
+        for k in sw.small
+    ]
+    if sw.single:
+        lines.append(
+            "WARNING: reweighted intervals are NOT RELIABLE. Stratum "
+            + ", ".join(sw.single)
+            + " has fewer than 2 used rows, so the bootstrap cannot vary it and the interval "
+            "is too narrow"
+        )
+    return lines
+
+
+REPORTS_UNKNOWN = "reports_unknown"
+UNCHECKED_CLAIM = "unchecked_claim"
 
 
 def reporting_fpr(
-    reports: np.ndarray,
+    all_rows: pd.DataFrame,
+    used: pd.DataFrame,
     y_true: np.ndarray,
     flag: np.ndarray,
-    sw: StratumWeights | None,
     *,
+    has_design: bool,
     n_bootstrap: int,
     seed: int,
 ) -> dict | None:
     """False-positive rate for rows that report on a false claim against the other rows.
 
+    ``used`` holds the rows that reach the metrics, in the order of ``y_true`` and ``flag``.
+    It needs ``reports`` (0, 1 or NaN) and may hold ``unchecked`` (bool) and ``stratum``.
     A false positive is a flagged row that carries label 0, so the rate is the flag rate
     among rows labelled 0. It comes in two forms: ``unweighted`` over the sample rows, and
-    ``weighted`` to the corpus, with the bootstrap resampled inside each stratum. Rows with
-    no adjudicated ``reports_on_false_claim`` are left out. ``None`` when no row has one.
+    ``weighted`` to the corpus, with the bootstrap resampled inside each stratum.
+
+    Two kinds of row are left out and counted under ``dropped``: a row with no adjudicated
+    ``reports_on_false_claim`` (``reports_unknown``) and a row that the labeller marked
+    ``unchecked``. The weights are renormalised over the rows that stay, so the dropped rows
+    do not skew the figures. ``None`` when no row stays.
     """
-    known = ~np.isnan(reports)
+    reports = used["reports"].to_numpy(dtype=float)
+    unchecked = (
+        used["unchecked"].to_numpy(dtype=bool) if "unchecked" in used else np.zeros(len(used), bool)
+    )
+    dropped = {
+        REPORTS_UNKNOWN: int(np.isnan(reports).sum()),
+        UNCHECKED_CLAIM: int((unchecked & ~np.isnan(reports)).sum()),
+    }
+    known = ~np.isnan(reports) & ~unchecked
     if not known.any():
         return None
     r = reports[known].astype(int)
@@ -285,22 +349,20 @@ def reporting_fpr(
     out: dict = {
         "n_negatives_reporting": int((negatives & (r == 1)).sum()),
         "n_negatives_other": int((negatives & (r == 0)).sum()),
+        "dropped": {k: v for k, v in dropped.items() if v},
         "unweighted": fpr_by_reporting(
             y, f, r, np.ones(len(r)), n_bootstrap=n_bootstrap, seed=seed
         ),
         "weighted": None,
     }
-    if sw is not None:
-        out["weighted"] = fpr_by_reporting(
-            y,
-            f,
-            r,
-            sw.weights[known],
-            n_bootstrap=n_bootstrap,
-            seed=seed,
-            strata=sw.strata[known],
-        )
-        out["weighted_n_eff"] = kish_n_eff(sw.weights[known])
+    if has_design:
+        sw = stratum_weights(all_rows, used[known])
+        if sw is not None:
+            out["weighted"] = fpr_by_reporting(
+                y, f, r, sw.weights, n_bootstrap=n_bootstrap, seed=seed, strata=sw.strata
+            )
+            out["weighted_n_eff"] = sw.n_eff
+            out["weighted_strata"] = sw
     return out
 
 
@@ -312,11 +374,17 @@ def render_reporting_fpr(section: dict) -> list[str]:
         f"    unweighted, sample rows: reporting {fmt(section['unweighted']['reporting'])}, "
         f"other {fmt(section['unweighted']['other'])}",
     ]
+    if section["dropped"]:
+        lines.append(
+            "    rows left out of this rate, by reason: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(section["dropped"].items()))
+        )
     if section["weighted"] is not None:
         lines.append(
             f"    reweighted to the corpus (n_eff {section['weighted_n_eff']:.1f}): reporting "
             f"{fmt(section['weighted']['reporting'])}, other {fmt(section['weighted']['other'])}"
         )
+        lines += [f"    {line}" for line in stratum_warning(section["weighted_strata"])]
     return lines
 
 

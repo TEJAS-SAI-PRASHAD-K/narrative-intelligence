@@ -74,6 +74,9 @@ INVALID_WEIGHT = "invalid_weight"
 EMBEDDING_MODEL_MISMATCH = "embedding_model_mismatch"
 EMBEDDING_MODEL_UNVERIFIED = "embedding_model_unverified"
 DESIGN_MISSING = "design_missing"
+CLAIM_WITHOUT_SIMHASH = "claim_without_simhash"
+#: A labeller writes this word in ``notes`` when the label needs a web search to check.
+UNCHECKED_NOTE = "unchecked"
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +258,8 @@ class ClaimEvidence:
     embedding_reason: str | None = EMBEDDING_UNAVAILABLE
     #: Notes the evidence loader wants printed, such as an unverified model id.
     notes: list[str] = field(default_factory=list)
+    #: Counted degradations of the evidence itself, such as a claim with no simhash.
+    degraded: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -358,6 +363,8 @@ def build_weighted_sample(
         degraded[reason] += 1
         notes.append(f"embedding match path did not run ({reason}); only simhash matches count")
     notes.extend(claims.notes)
+    for reason, count in claims.degraded.items():
+        degraded[reason] += count
 
     codes = {s.name: f"S{i + 1}" for i, s in enumerate(config.strata)}
     names = set(codes)
@@ -463,8 +470,9 @@ def read_design(sheet_path: Path) -> pd.DataFrame | None:
 class ResolvedSheet:
     """A sheet read for evaluation.
 
-    ``frame`` has ``label`` (the adjudicated label), ``reports`` (0, 1 or NaN) and, when a
-    design file was joined, ``stratum``, ``pool`` and ``drawn``.
+    ``frame`` has ``label`` (the adjudicated label), ``reports`` (0, 1 or NaN), ``unchecked``
+    (true when ``notes`` says the claim needed a web search) and, when a design file was
+    joined, ``stratum``, ``pool`` and ``drawn``.
     """
 
     frame: pd.DataFrame
@@ -542,10 +550,12 @@ def resolve_sheet(
             how="left",
         )
         joined["pool"] = pd.to_numeric(joined["pool"], errors="coerce")
-        bad = int(((joined["pool"].isna() | (joined["pool"] <= 0)) & labelled).sum())
+        no_stratum = joined["stratum"].isna() | (joined["stratum"].astype(str).str.strip() == "")
+        bad = int(((joined["pool"].isna() | (joined["pool"] <= 0) | no_stratum) & labelled).sum())
         if bad:
             result.refusal = (
-                f"{bad} labelled rows have no design row with a positive pool ({DESIGN_MISSING})"
+                f"{bad} labelled rows have no design row with a stratum and a positive pool "
+                f"({DESIGN_MISSING})"
             )
             return result
         frame = joined
@@ -557,6 +567,10 @@ def resolve_sheet(
         else [None] * len(frame)
     )
     frame["reports"] = [r if r in (0, 1) else np.nan for r in reports]
+    notes = frame["notes"] if "notes" in frame else pd.Series("", index=frame.index)
+    frame["unchecked"] = notes.astype(str).str.contains(
+        rf"\b{UNCHECKED_NOTE}\b", case=False, regex=True
+    )
     return result
 
 
@@ -744,6 +758,13 @@ def claim_evidence(
     evidence = ClaimEvidence(
         hashes=[int(r["claim_simhash"]) for r in claims if r.get("claim_simhash")]
     )
+    missing = len(claims) - len(evidence.hashes)
+    if missing:
+        evidence.degraded[CLAIM_WITHOUT_SIMHASH] = missing
+        evidence.notes.append(
+            f"{CLAIM_WITHOUT_SIMHASH}: {missing} of {len(claims)} false claims have no simhash "
+            "and cannot match by simhash"
+        )
     if embeddings_path is None or not claims:
         return evidence
     if embedder_factory is None or config.min_similarity is None:
@@ -762,6 +783,11 @@ def claim_evidence(
             f"{expected_model!r}"
         )
         return evidence
+    if file_model is not None and not expected_model:
+        evidence.notes.append(
+            f"no expected embedding model is configured, so the model {file_model!r} named by "
+            "the embeddings file is not checked"
+        )
     if file_model is None:
         evidence.notes.append(
             f"{EMBEDDING_MODEL_UNVERIFIED}: the embeddings file carries no model id, so "
