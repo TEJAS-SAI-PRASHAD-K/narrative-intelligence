@@ -7,7 +7,8 @@ than any hyperparameter sweep.
 |---|---|---|
 | `misinfo_corpus_sample_en.csv` | `modeling sample-for-labelling misinfo --lang en` | the English corpus-transfer table and `artifacts/eval/labelling/en/` |
 | `misinfo_corpus_sample_hi.csv` | `modeling sample-for-labelling misinfo --lang hi` | the Laya Hindi transfer table and `artifacts/eval/labelling/hi/` |
-| `*.sampling.json` | the same command | the seed, the strata and the pool sizes of the draw |
+| `*.design.csv` | the same command | the stratum, pool and weight of each row, joined on `id` by the evaluation. Do not give it to labellers. |
+| `*.sampling.json` | the same command | the seed, the strata and the pool sizes of the draw. Do not give it to labellers. |
 | `narratives.csv` | `modeling sample-for-labelling narratives` | the quality columns of the ablation table |
 
 The misinfo sheets are weighted towards likely positives and list their stratum and sampling
@@ -17,7 +18,7 @@ writes a CSV with one blank column. Fill it in by hand, then rerun `modeling abl
 both reports state that the corresponding gap is **unmeasured** rather than
 guessing at it.
 
-**These files are gitignored.** They carry verbatim corpus text, and the
+**Everything in this folder except this README is gitignored.** They carry verbatim corpus text, and the
 project's rule is that no corpus content enters git — reproducibility comes from
 `make data` plus the configs, not from committed bytes. A *completed* label set
 is genuine research evidence and worth archiving somewhere durable; that place is
