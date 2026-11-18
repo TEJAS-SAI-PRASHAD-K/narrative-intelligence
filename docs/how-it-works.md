@@ -84,7 +84,7 @@ and each one is documented with what it *can't* tell you, which is just as impor
 | **Mastodon** | Live posts, account age, follower counts, the platform's own "is this a bot" flag | 300 requests per 5 minutes, enforced by the server | Anything from servers that don't federate. Thread roots cost an extra API call, so that field is left empty rather than guessed |
 | **GDELT** | Which news outlets covered a story, in what language, on what day, plus tone and themes | Free, but it throttles hard | What the article actually *said*. GDELT gives metadata only, so the text field is just the headline |
 | **News** (RSS feeds) | Headlines, summaries, publication time, outlet name, full text when the outlet allows it | Free | How many people read it. No feed reports readership, so all engagement numbers are empty |
-| **YouTube** | The only source that reports **view counts**. Channel identity, comment threads, video URLs | 10,000 "quota units" per day, hard limit | Who watched. And nothing about videos with comments turned off — which happens to correlate with the political content this project cares about |
+| **YouTube** | The only source that reports **view counts**. Channel identity, subtitles (manual when available, else auto), comments, video URLs | Free, no key. Read through yt-dlp, so YouTube may answer a burst with a bot check | Who watched. And nothing about videos with comments turned off, which happens to correlate with the political content this project cares about |
 
 ### How each source is fetched
 
@@ -98,22 +98,21 @@ Everything else (saving files, removing duplicates, counting rejects, updating t
 manifest) is shared code. That way six adapters can't drift apart and start
 behaving differently.
 
-**Every credential is optional.** If you don't have a YouTube key, the YouTube
-adapter is skipped with a warning. The run doesn't fail.
+**Every credential is optional.** YouTube needs none: it is read through yt-dlp. If
+yt-dlp is not installed, the YouTube adapter is skipped with a warning. The run doesn't
+fail.
 
-### Budget control (YouTube example)
+### Subtitles (YouTube example)
 
-YouTube charges different amounts for different calls:
+A video's title and description are a few hundred characters. Its transcript is
+thousands. The YouTube adapter puts all three into the record text.
 
-| Call | Cost | Used for |
-|---|---|---|
-| `search.list` | 100 units | Finding videos — expensive, so it's strictly budgeted |
-| `videos.list` | 1 unit | Getting video details (50 at a time) |
-| `commentThreads.list` | 1 unit | Getting comments |
-
-Every call is charged to a ledger **before** it happens, and the run stops cleanly
-when the budget runs out. A real test run collected 25 videos plus their comments —
-250 records — for only 105 units.
+It prefers a human-written subtitle track in the video's language, then the
+original auto-generated track. YouTube also offers machine translations of the
+auto track into every other language, and those are never used, because they would
+put one language's words under a record labelled with another. The record says which
+track it used (`subtitle_kind`: manual, auto or none), and the run summary counts
+records with subtitles. A video with no subtitles is kept and counted, not dropped.
 
 ---
 

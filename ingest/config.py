@@ -35,11 +35,6 @@ class Settings(BaseSettings):
     mastodon_api_base_url: str = "https://mastodon.social"
     mastodon_access_token: str | None = None
 
-    # --- YouTube ---
-    youtube_api_key: str | None = None
-    youtube_max_searches_per_day: int = 20
-    youtube_daily_quota_units: int = 10_000
-
     # --- News ---
     newsapi_key: str | None = None
 
@@ -59,7 +54,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "mastodon_access_token",
-        "youtube_api_key",
         "newsapi_key",
         "kaggle_username",
         "kaggle_key",
@@ -117,7 +111,7 @@ class Settings(BaseSettings):
             "mastodon": bool(self.mastodon_access_token),
             "gdelt": True,  # open data
             "news_rss": True,  # RSS needs nothing; NewsAPI is an optional bonus
-            "youtube": bool(self.youtube_api_key),
+            "youtube": True,  # yt-dlp reads public pages; no key
         }.get(source, True)
 
 

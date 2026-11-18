@@ -13,6 +13,17 @@ decision.
 
 ### Added
 
+- **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
+  `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
+  subtitle text, so a video carries thousands of characters instead of a few hundred.
+  A manual track in the video's language is preferred, then the original auto caption
+  track; machine translations are never used. `raw` records `subtitle_lang` and
+  `subtitle_kind` (`manual`, `auto` or `none`). The run summary counts
+  `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`, and every
+  skip has a reason code (`extract_failed`, `search_failed`, `subtitle_fetch_failed`,
+  `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
+  a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
+  `fixtures/youtube_ytdlp_info.json`.
 - **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
   in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
   Vishvas News, DigitEye) carry a claim *and a verdict* and are the only
@@ -134,6 +145,10 @@ decision.
 
 ### Removed
 
+- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
+  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
+  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
+  Data API's `regionCode` did.
 - **The deepfake module.** The code, the API, the table, the dependency tree, the
   training path and the evaluation artifacts are gone.
   - `POST /api/v1/media/check`, `GET /api/v1/media/check/{job_id}` and

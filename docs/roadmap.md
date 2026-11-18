@@ -13,7 +13,7 @@ the module being quietly described as present.
 | component | state | notes |
 |---|---|---|
 | canonical schema | done | `ingest/schema.py`, the contract everything converges on |
-| source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube |
+| source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube (yt-dlp, with subtitles) |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
 | fact-check verdicts | partial | 4311 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News archive read inside the 2022 window |
@@ -186,8 +186,6 @@ the honest entry in that cell, not a zero.
   it sits next to structured data. Both would roughly double the evaluation set.
 - **Telegram adapter.** Free official API, widely used for political forwards in
   the target domain, and the cheapest large source still missing.
-- **Replace the YouTube Data API with yt-dlp.** Removes the only hard API-key
-  dependency and the 10,000 unit daily quota, and additionally yields subtitles.
 - **Cross-publisher claim deduplication over longer windows.** A 96-claim
   set measured earlier had zero near-duplicates at the project's own Hamming threshold.
   The freeze collapsed 29 duplicate false verdicts among 4310 by exact claim hash. Near-duplicates are not measured. Several publishers often debunk the same claim

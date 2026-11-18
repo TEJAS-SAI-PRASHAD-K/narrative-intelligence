@@ -102,7 +102,7 @@ sources = [
     "Mastodon.py>=1.8",
     "gdeltdoc>=1.5",
     "trafilatura>=1.9",
-    "google-api-python-client>=2.130",
+    "yt-dlp>=2024.8.6",
     "kaggle>=1.6",
     "zstandard>=0.22",
 ]

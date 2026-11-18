@@ -2,7 +2,7 @@
 to one validated :class:`~ingest.schema.Record`, and nothing else.
 
 The registry is lazy -- importing ``ingest.sources`` must not import convokit,
-Mastodon.py or googleapiclient, so the pipeline still runs when the optional
+Mastodon.py or yt_dlp, so the pipeline still runs when the optional
 extras are not installed.
 """
 

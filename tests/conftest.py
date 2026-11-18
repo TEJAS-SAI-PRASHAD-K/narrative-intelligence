@@ -56,7 +56,6 @@ def settings(tmp_path) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
         mastodon_access_token=None,
-        youtube_api_key=None,
         newsapi_key=None,
         _env_file=None,
     )

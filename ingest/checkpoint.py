@@ -1,4 +1,4 @@
-"""Resumable cursors and the YouTube quota ledger.
+"""Resumable cursors and the daily quota ledger.
 
 A run that dies forty minutes in must resume, not restart. Two pieces make that
 true: the store deduplicates on ``id``, and every adapter records where it got
