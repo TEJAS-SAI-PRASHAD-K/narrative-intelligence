@@ -1091,6 +1091,8 @@
           "risk_score": {
             "anyOf": [
               {
+                "maximum": 100.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -2163,6 +2165,8 @@
           "sharing_author_bot_ratio": {
             "anyOf": [
               {
+                "maximum": 1.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -2689,6 +2693,8 @@
           "bot_score": {
             "anyOf": [
               {
+                "maximum": 1.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -3078,6 +3084,8 @@
             "type": "array"
           },
           "risk_score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Risk Score",
             "type": "number"
           }
