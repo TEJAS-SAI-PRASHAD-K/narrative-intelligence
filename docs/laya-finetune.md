@@ -283,7 +283,15 @@ from 0.05 to 100, the argmin, the argmin for each source dataset, and ECE with a
 group bootstrap interval (seed 20260813). The ECE rows for the fitted variants are out of
 fold, because the ECE of an isotonic fit on its own rows is near zero by construction.
 
-To serve a refitted temperature, set `laya.temperature_refit: true` and run
+The clamp at 5 stays, and `laya.temperature_refit` stays `false`. The optimum on validation is
+11.846 for the multilingual fine-tune and 11.408 for the English fine-tune, both inside the
+search. The isotonic calibrator does the calibration. On the stored scores, ECE prob falls
+from 0.159 to 0.009 and from 0.151 to 0.009 out of fold. The clamp does not change the
+calibrated value. A report is `valid: false` when the rebuilt scores differ from the score
+file. The model card gives the reason and the numbers. Base a decision on the stored-score
+rows of the card.
+
+To serve a refitted temperature anyway, set `laya.temperature_refit: true` and run
 `calibrate-laya --model <model> --checkpoint-dir <copy> --logits <gap file>`. See the model
 card for what the refit changes.
 

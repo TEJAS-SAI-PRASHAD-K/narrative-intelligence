@@ -66,15 +66,39 @@ from 0.173 to 0.134. The calibration error of 0 after the fit is an in-sample va
 
 ## Calibration of the raw model
 
-The temperature fit reached the upper clamp of 5 on both fine-tunes, and the report
-records this issue. Expected calibration error on validation is 0.152 for the English
-fine-tune. For the multilingual fine-tune, it increased from 0.068 to 0.159. Do not
-read a Laya score as a calibrated probability.
+The vendor fit of the temperature ends on its upper clamp of 5 for both fine-tunes. Issue 33
+asked why, and whether the clamp is right. This section gives the answer.
 
-The temperature fit is part of `laya.train.finetune`. This repository does not own it. The
-fit uses the negative log likelihood of the two-option softmax, which is the right
-objective for a `noul`. The clamp is `[0.5, 5]`, and the fit uses a calibration slice of at
-most 400 rows. A fit that ends on the clamp has not converged.
+**Decision: the clamp at 5 stays and `laya.temperature_refit` stays `false`.** The isotonic
+calibrator does the calibration. On the stored scores, ECE prob falls from 0.159 to 0.009
+for the multilingual fine-tune, and from 0.151 to 0.009 for the English fine-tune. Both values
+are out of fold. The guard difference is below zero for both, with an interval that excludes
+zero (see "The calibrator guard"). ECE does not rise after calibration.
+
+The raw score is not a probability. The mean confidence of the raw score is 0.966 and 0.962
+(multilingual and English, diagnosis run). The raw ECE prob is 0.159 and 0.151 on the stored
+scores. Use the calibrated value of the stage.
+
+### Why the optimum lies past 5
+
+The temperature that minimizes the validation NLL is inside the wide search of 0.05 to 100.
+It is not on a bound. The cause is overconfident logits. It is not the fit objective, and it
+is not the grouping by question type. The checkpoint holds `per_type` temperatures of
+`[1.0, 1.0, 5.0]`, and only the `noul` type is on the clamp.
+
+| measure | multilingual | English |
+|---|---|---|
+| optimum temperature on validation | 11.846 | 11.408 |
+| 5th to 95th percentile of fits on 400 rows | 10.472 to 13.678 | 10.119 to 13.066 |
+| share of 400-row fits above the vendor clamp of 5 | 1.000 | 1.000 |
+| NLL at the optimum | 0.460 | 0.469 |
+| NLL at the checkpoint temperature of 5 | 0.657 | 0.648 |
+| logit gap, 5th percentile | -22.467 | -18.250 |
+| logit gap, 95th percentile | 18.938 | 18.125 |
+
+Every fit on a 400-row slice passes the clamp. One small slice is enough to reach it.
+The logit gaps are far from zero on both sides, which is the sign of overconfident logits.
+The gap at the 5th and the 95th percentile is 18 or more in absolute value for both models.
 
 `scripts/diagnose_laya_calibration.py` measures where the optimum lies on the validation
 rows. It searches 0.05 to 100 and reports the argmin, the NLL curve, a fit with an
@@ -83,28 +107,62 @@ reads with `predict_long`, and it counts them. The report is marked invalid when
 has a binning map or a language temperature, or when more than 2 percent of the rebuilt
 scores differ from the score file.
 
+The temperature fit is part of `laya.train.finetune`. This repository does not own it. The
+fit uses the negative log likelihood of the two-option softmax, which is the right
+objective for a `noul`. The clamp is `[0.5, 5]`, and the fit uses a calibration slice of at
+most 400 rows.
+
+### ECE before and after
+
 Two ECE definitions appear in the report. "ECE prob" is the 10-bin ECE of P(true). "ECE top1"
 is the 15-bin ECE of the top-1 confidence, which is the number in the vendor report. Every row
-below has both, with a 95 percent group bootstrap interval (seed 20260813). Rows that use a
-fit are out of fold.
+has both, with a 95 percent group bootstrap interval (seed 20260813). Rows that use a
+fit are out of fold. The validation set has 3596 rows.
 
-| row | what it is | ECE prob (10 bins) | ECE top1 (15 bins) |
-|---|---|---|---|
-| raw, checkpoint temperature | P(true) as the checkpoint serves it | ECE: not measured yet | ECE: not measured yet |
-| temperature only | wide-range temperature, no isotonic | ECE: not measured yet | ECE: not measured yet |
-| isotonic only | isotonic map on the gap | ECE: not measured yet | ECE: not measured yet |
-| temperature and isotonic | same map as the row above in exact arithmetic | ECE: not measured yet | ECE: not measured yet |
-| `isotonic_served` (the relevant row) | isotonic map on the 4-decimal score that the scorer serves now | ECE: not measured yet | ECE: not measured yet |
+| fine-tune | row | what it is | ECE prob (10 bins) | ECE top1 (15 bins) |
+|---|---|---|---|---|
+| multilingual | raw, checkpoint temperature | P(true) as the checkpoint serves it, diagnosis run | 0.159 [0.143, 0.176] | 0.159 [0.143, 0.176] |
+| multilingual | temperature only | wide-range temperature, no isotonic | 0.063 [0.050, 0.077] | 0.034 [0.029, 0.047] |
+| multilingual | isotonic only | isotonic map on the gap | 0.008 [0.010, 0.026] | 0.012 [0.010, 0.027] |
+| multilingual | temperature and isotonic | same map as the row above in exact arithmetic | 0.008 [0.010, 0.026] | 0.012 [0.010, 0.027] |
+| multilingual | `isotonic_served` | isotonic map on the 4-decimal score that the scorer serves now | 0.008 [0.010, 0.026] | 0.012 [0.010, 0.027] |
+| multilingual | raw, stored score file | P(true) in the score file of the score stage | 0.159 [0.144, 0.175] | 0.159 [0.143, 0.175] |
+| multilingual | isotonic, stored score file | out-of-fold isotonic map on the stored scores, mean of five fold seeds | 0.009 [0.009, 0.027] | 0.016 [0.011, 0.030] |
+| English | raw, checkpoint temperature | P(true) as the checkpoint serves it, diagnosis run | 0.150 [0.135, 0.167] | 0.152 [0.137, 0.169] |
+| English | temperature only | wide-range temperature, no isotonic | 0.058 [0.044, 0.075] | 0.018 [0.012, 0.034] |
+| English | isotonic only | isotonic map on the gap | 0.009 [0.010, 0.029] | 0.013 [0.010, 0.028] |
+| English | temperature and isotonic | same map as the row above in exact arithmetic | 0.009 [0.010, 0.029] | 0.013 [0.010, 0.028] |
+| English | `isotonic_served` | isotonic map on the 4-decimal score that the scorer serves now | 0.009 [0.010, 0.029] | 0.013 [0.010, 0.028] |
+| English | raw, stored score file | P(true) in the score file of the score stage | 0.151 [0.133, 0.170] | 0.152 [0.134, 0.169] |
+| English | isotonic, stored score file | out-of-fold isotonic map on the stored scores, mean of five fold seeds | 0.009 [0.011, 0.029] | 0.019 [0.015, 0.033] |
 
-The optimum temperature on validation is not measured yet for both fine-tunes.
+For the isotonic rows, the point value can be below the lower end of its percentile interval.
+ECE has an upward bias under resampling, so the bootstrap values sit above the point value.
+
+### Validity of the diagnosis run
+
+Both diagnosis reports are marked `valid: false`. The rebuilt scores differ from the score
+file by more than 0.00015 on 50.6 percent of rows for the multilingual fine-tune and on
+36.0 percent for the English fine-tune. The largest difference is 0.505 and 0.773. For the
+multilingual fine-tune, 18.2 percent of rows differ by more than 0.0005, 4.3 percent by more
+than 0.01, and 1.5 percent by more than 0.05. The Spearman rank correlation of the rebuilt
+and the stored scores is 0.9997. The checkpoint sha256 is the same in the score provenance
+and in the diagnosis, so the weights are the same.
+
+A probable cause is the batch shape, because the score stage runs padded batches of 16.
+This cause is not proven. Because of the difference, this card bases its decision on the
+rows "stored score file", which use the scores that the pipeline serves. The other rows
+describe the logits of the diagnosis run.
 
 ### Does the clamp change the served score
 
-Yes. The vendor rounds P(true) to 4 decimals. At a temperature of 5, a logit gap above about
-46 gives exactly 1.0, and a gap below about -46 gives exactly 0.0. Every such row ties with
-the rows beyond it. An isotonic map cannot split a tie, so it cannot restore the rank. A
-larger temperature moves fewer rows into a tie. The `isotonic_served` row measures the effect
-on real data.
+No, not on validation. The vendor rounds P(true) to 4 decimals. At a temperature of 5, a
+logit gap above about 46 gives exactly 1.0, and a gap below about -46 gives exactly 0.0. Every
+such row ties with the rows beyond it, and an isotonic map cannot split a tie. The largest
+absolute logit gap on validation is 31.875 for the multilingual fine-tune and 18.438 for the
+English fine-tune, so no validation row reaches a tie. The `isotonic_served` row is the same
+as the exact `isotonic` row to the third decimal for both fine-tunes. The clamp does not change
+the calibrated value.
 
 ### The temperature refit
 
@@ -151,6 +209,10 @@ writes no score and gives the reason `laya:checkpoint_sha256_mismatch`. A pulled
 fails the check is deleted. A pulled copy with no `sha256` value is refused with
 `checkpoint_unverified_pull`. The pull leaves out `checkpoint_latest/`. No training run is
 needed.
+
+On the stored scores, the guard difference `ECE(out of fold) - ECE(raw)` is -0.147
+[-0.153, -0.122] for the multilingual fine-tune and -0.138 [-0.145, -0.112] for the English
+fine-tune. Both intervals are below zero, so the guard accepts both maps.
 
 ## Out-of-scope use
 
