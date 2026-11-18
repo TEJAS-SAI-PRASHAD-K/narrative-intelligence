@@ -53,6 +53,18 @@ decision.
 
 ### Added
 
+- **Corpus label results for #30 (English transfer), provisional.** A 150-row English sample
+  has labels from two models, and no person reviewed them. No row is positive, so the card
+  reports the flag rate on negatives and the agreement. ROC-AUC, precision and recall are not
+  measured. The 100-row sample of 2026-11-11 is no longer quoted as a result.
+- **Hindi transfer and calibration for #31, provisional.** The Laya card reports 0 of 150
+  positive Hindi titles and a mean calibrated probability of 0.446 [0.401, 0.491]. Labels are
+  from models and no person reviewed them. Calibration on Hindi corpus titles is poor by this
+  sample. Issue #76 tracks the refit.
+- **Reporting negatives candidate `v0.3.0-rn` for #32, provisional and not shipped.** The
+  candidate flags 0 of 8 reporting rows in the sample, against 7 of 8 for v0.2.0, and it
+  meets the shipping bar. `configs/models.yaml` does not change, because the checkpoint
+  registry does not hold the candidate yet.
 - **The claim dedup hand-check sample records who labelled it.** The sample has the new
   columns `labeller_kind`, `labeller_1`, `labeller_2`, `label_1` and `label_2`.
   `embedding_precision` returns a Wilson interval, Cohen's kappa, raw agreement and the

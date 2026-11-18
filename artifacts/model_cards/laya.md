@@ -67,6 +67,40 @@ out four. It gave a lift of 1.760 [1.286, 2.630] on 431 Hindi titles.
 - The English recall on the fact-check set (93 claims) is 0.065 [0.022, 0.118] for `laya_en` and
   0.054 [0.011, 0.108] for `laya_multi`. The English result does not prove any transfer to Hindi.
 
+### Transfer on Hindi corpus titles (#31)
+
+Status: provisional, needs person labels. Every label here is from models, and no person
+reviewed it. Each number carries the note "labeller: model, unreviewed by a person".
+
+The sample has 150 Hindi rows, drawn with `modeling.cli sample-for-labelling misinfo --lang hi
+--n 150` and the seed 20260813, from outlets that are not fact-checkers. The record
+embeddings come from the claim dedup model. In the claim-match stratum, 2 records match a
+false claim. The Reddit, Mastodon and Telegram strata are empty, because the corpus has no
+such records. Laya scores the title, so the labels apply to the title. Two independent model
+labellers labelled each row. They did not see the scores or each other. They agree on every
+row: raw agreement 1.000 for the label and for `reports_on_false_claim`, with 0
+disagreements. Cohen kappa of the label is undefined, because both used one class. The run
+used `relabel-eval --allow-model-labels --n-bootstrap 2000` on 2026-11-18 (UTC) with the
+model v0.2.1.
+
+| measure on the 150 Hindi titles | value |
+|---|---|
+| positive rate | 0 of 150, 0.000 [0.000, 0.025] (Wilson 95%) |
+| ROC-AUC, precision, recall | not measured (reason `one_class_only`) |
+| mean calibrated probability | 0.446 [0.401, 0.491] |
+| mean calibrated probability, reweighted | 0.432 [0.388, 0.474] |
+| ECE | 0.446 [0.401, 0.491] |
+| ECE, reweighted | 0.432 [0.388, 0.474] (n_eff 137.5) |
+| flag rate | not measured, because `laya.decision_threshold` is null |
+
+All 150 labels are 0, so the sample holds one class. With one class, the ECE equals the mean
+predicted probability. With n below 200 the ECE is noisy, so read the interval and not the
+point. The mean calibrated value of 0.446 is far above the observed positive rate, whose
+upper limit is 0.025. By this sample, the calibration on Hindi corpus titles is poor. The
+calibrator saw only English labels, and this result is the first measurement on Hindi. Issue
+#76 tracks a refit on Hindi labels. The result is provisional until a person labels a
+sample that has positives.
+
 ## Real run of the stage
 
 On 2026-11-10 the stage scored 156 Hindi titles on the GPU host. No raw value fell
@@ -97,7 +131,7 @@ The raw score is not a probability. The mean confidence of the raw score is 0.96
 scores. Use the calibrated value of the stage for the multilingual fine-tune only.
 
 All ECE values in this card come from validation rows. Those rows are English benchmark rows.
-No Hindi ECE exists yet. Issue 31 measures it.
+The Hindi ECE of the model-labelled sample is in "Transfer on Hindi corpus titles (#31)".
 
 ### History
 
@@ -294,7 +328,7 @@ The stage writes `record_scores.misinfo_prob` from a calibrator, never from the 
 
 The fit refuses raw scores with a ROC-AUC of 0.60 or less on the fit rows. The fit and the load both refuse a map with fewer than 5 distinct values. The calibrator file records the identity of the checkpoint that it was fitted for. The stage refuses a calibrator that does not match the served directory, and a calibrator that the demo flow made.
 
-The calibrator is fitted on the validation labels of the English benchmarks. No Hindi label took part. The calibration on Hindi is not measured. Use a Hindi value as a rank within Hindi records. Do not read it as a measured probability.
+The calibrator is fitted on the validation labels of the English benchmarks. No Hindi label took part. The calibration on Hindi corpus titles is poor by the model-labelled sample (see "Transfer on Hindi corpus titles (#31)"). Use a Hindi value as a rank within Hindi records. Do not read it as a measured probability.
 
 A Hindi value and an English value come from different models and different calibrations. The two values are not comparable. Fusion mixes them, and the narrative score inherits this limit.
 

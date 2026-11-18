@@ -317,28 +317,45 @@ the honest entry in that cell, not a zero.
   of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so there is no signal above the null.
   Telegram is not measured, because no Telegram session credentials exist. The Telegram
   run needs those credentials. See `artifacts/model_cards/coordination.md`.
-- **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
-  statements, CoAID is COVID-era health claims, and this corpus is Indian
-  recontextualised media. The gap is still unmeasured. `modeling.cli sample-for-labelling`
-  writes the blank CSV. `modeling.cli sample-for-labelling misinfo [--lang en|hi]` writes
-  the blank sheet with no model score in it. Then `modeling.cli evaluate misinfo` reports
-  the transfer section. Blank labels are not 0, null scores are excluded with a reason,
-  and no metric is computed below `MIN_LABELLED_ROWS` (50) labelled rows. The 100-record
-  English sample from 2026-11-11 is now labelled, but an AI model wrote the labels. The
-  sheet marks every row `labeller=llm-unreviewed`, and a person did not check them. Every
-  label is 0. 20 rows are fact-check articles that debunk a claim, and 80 are news
-  reports, features or opinion. The 95 percent Wilson interval for the positive rate is
-  [0.000, 0.037]. At threshold 0.5, `misinfo` v0.2.0 flags 42 of 100 rows (Wilson
-  [0.328, 0.518]). All 42 flags are false positives against these labels. The model flags
-  all 20 debunks and 22 of the 80 other articles. It reacts to articles about false
-  claims, not only to articles that push one. The command `evaluate misinfo` refuses
-  transfer metrics here, because the labelled rows hold one class. The next sample needs
-  more likely positives, for example social posts or posts that fact-checkers debunked.
-  A person must label it. The `misinfo` and `laya` scoring stages give records from a
-  fact-checker no score (reason `fact_check_publisher`), so fusion no longer reads a
-  debunk as misinformation. The list of fact-checker domains is
-  `configs/factcheck.yaml`, `publishers` plus `other_fact_checkers`. The label sheet and
-  the corpus text are not in git.
+- **Measure the benchmark-to-corpus transfer gap (#30, #31, #32). Status: provisional,
+  needs person labels.** Every label below is from models, and no person reviewed it
+  (labeller: model, unreviewed by a person). `modeling.cli sample-for-labelling misinfo
+  [--lang en|hi]` writes the blank sheet with no model score in it. `relabel-eval` reports the
+  agreement and the transfer section. Both samples have 150 rows (seed 20260813), run on
+  2026-11-18 (UTC). Two model labellers agree on every label. Both samples hold one class: 0
+  of 150 rows are positive in each, Wilson upper limit 0.025. So ROC-AUC, precision and
+  recall are not measured. The first sample (100 English rows, 2026-11-11) is history and is
+  no longer a result.
+  - **#30, English.** `misinfo` v0.2.0 flags 47 of 150 rows at 0.5, 0.313 [0.245, 0.391]. The
+    rate reweighted to the corpus is 0.089 [0.038, 0.151]. The YouTube stratum has 39 of 54
+    flagged. The claim-match stratum has no English record.
+  - **#31, Hindi.** Laya has a mean calibrated probability of 0.446 [0.401, 0.491] on the
+    150 titles, and 0.432 [0.388, 0.474] reweighted. The ECE equals the mean with one class.
+    There is no flag rate, because `laya.decision_threshold` is null. The claim-match stratum
+    has 2 records. Calibration on Hindi corpus titles is poor by this sample.
+  - **#32, reporting articles.** The candidate `v0.3.0-rn` (93 reporting negatives from 6
+    fact-checker domains) flags 0 of the 8 reporting rows, against 7 of 8 for v0.2.0. On the
+    held-out fact-checker articles it flags 2 of 18, against 17 of 18 (2 publishers, so the
+    publisher interval is not meaningful). Recall on English claims at precision 0.85 is 0.495
+    [0.398, 0.591] against 0.516 [0.419, 0.613], so the shipping bar is kept. The candidate is
+    not shipped yet: the checkpoint registry must hold it before `configs/models.yaml` can
+    name it, and the upload is waiting for the owner. The stance fix has no effect, because
+    no sampled row has a deny stance.
+  - **Open.** A person must label a sample that holds positives and likely positives. Until
+    then, read these results as provisional. The label sheet and the corpus text are not in
+    git. The `misinfo` and `laya` scoring stages give records from a fact-checker no score
+    (reason `fact_check_publisher`). The list of fact-checker domains is in
+    `configs/factcheck.yaml`.
+- **#80 chain collapses. Status: open.** The embedding pass of claim dedup joins a claim to a
+  cluster when it is similar to any member. Its similarity to the representative can then be
+  below `claim_dedup.min_similarity`. In the model-labelled hand check of 200 links, chain links
+  are the same claim in 8 of 76 (0.105 [0.054, 0.194]), and direct links in 70 of 124 (0.565
+  [0.477, 0.649]). The work is a linking rule that a chain cannot break, chosen from person
+  labels (#43).
+- **#76 Hindi calibration. Status: open.** The served Laya calibrator was fitted on English
+  benchmark labels only. The Hindi sample of #31 has a mean calibrated probability of 0.446
+  [0.401, 0.491] and no positive row. The work is to refit the calibrator on Hindi corpus
+  labels from a person, and to bump the `laya` version in `configs/models.yaml` then.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination
