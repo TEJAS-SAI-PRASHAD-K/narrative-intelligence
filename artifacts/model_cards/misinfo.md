@@ -12,7 +12,7 @@ This card reports the comparison run of 2026-11-09. The full report is
 [docs/results/factcheck-comparison.md](../../docs/results/factcheck-comparison.md).
 
 The checkpoint is a `roberta-base` fine-tune. Training saved the last epoch. The
-checkpoint sha256 is `<new hash: filled after the GPU host run>`.
+checkpoint sha256 is `e6726079336c08cc7f22052f1c4222a25d7a600aaf22a25b53c68dec97c1adf0`.
 A private Hugging Face copy holds the weights at `misinfo/v0.2.0`. See "Get the
 weights on a fresh clone" below.
 

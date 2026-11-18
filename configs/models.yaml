@@ -85,6 +85,8 @@ misinfo:
   # v0.2.0 is the roberta-base fine-tune of the three-way comparison. The weights of
   # v0.1.0 are lost, so a score stamped v0.1.0 came from a different checkpoint.
   version: v0.2.0
+  sha256:
+    v0.2.0: e6726079336c08cc7f22052f1c4222a25d7a600aaf22a25b53c68dec97c1adf0
   # roberta-base is English-only. Hindi is skipped with `unsupported_language`;
   # `laya` is the module that reads it.
   languages: [en]
@@ -129,6 +131,9 @@ misinfo:
 # the first is not.
 laya:
   version: v0.2.1
+  sha256:
+    multi-v0.2.1: 2e83abb0cf78f4d1c8477219395723efc683689f3508bedcdfe097a4319f6d19
+    en-v0.2.1: 162080a6df6c7217ff8d729dde7f8994b34d8d6927c7055bc60c8b4c1e65499d
   # The routes below are the source for this list. A language with no route is
   # skipped with `unrouted_language`. Hindi goes to the multilingual checkpoint.
   languages: [en, hi]
@@ -248,6 +253,8 @@ stance:
   # label order read from the checkpoint's id2label, and a scoring stage that
   # writes stance toward each narrative's representative claim.
   version: v0.3.0
+  sha256:
+    v0.3.0: 0bd2b8e2ebf88e5d697e83cc8287ea8b8b6994ab2cfae5834bead4f9c08a79c6
   # DeBERTa-v3, English NLI and FEVER. English only through this gate.
   languages: [en]
   # An NLI+FEVER-tuned encoder, not a bare one. (claim, post) stance is
