@@ -160,6 +160,10 @@ class NarrativeScorecard(Base):
     )
     priority: Mapped[str | None] = mapped_column(String(8), nullable=True)
     bot_like: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: The value fusion read for this narrative, stored with the score so the API
+    #: shows exactly the input behind fusion_score. NULL means no member author
+    #: was scored by the coordination stage.
+    coordinated_author_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     anomalous: Mapped[float | None] = mapped_column(Float, nullable=True)
     toxicity: Mapped[float | None] = mapped_column(Float, nullable=True)
     compass_risk: Mapped[str | None] = mapped_column(String(8), nullable=True)

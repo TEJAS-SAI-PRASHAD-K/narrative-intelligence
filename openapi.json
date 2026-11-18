@@ -1211,6 +1211,10 @@
           "bot_like": {
             "$ref": "#/components/schemas/Metric"
           },
+          "coordinated_author_ratio": {
+            "$ref": "#/components/schemas/Metric",
+            "description": "Share of coordination-scored authors above the fusion coordination threshold, as a value in [0, 1]. This is the author signal fusion reads. The value is null when no author in scope was scored by the coordination stage, never 0."
+          },
           "top_cohorts": {
             "items": {
               "$ref": "#/components/schemas/HierarchyNode"
@@ -1230,6 +1234,7 @@
         "required": [
           "total",
           "bot_like",
+          "coordinated_author_ratio",
           "author_groups"
         ],
         "title": "AuthorsBreakdown",
@@ -4274,6 +4279,7 @@
                 "type": "null"
               }
             ],
+            "description": "Share of the narrative's classifiable authors the account classifier scores as bot-like. Fusion does not read this: the classifier does not generalize across folds, so it is shown for context only. Null means not measured.",
             "title": "Bot Like"
           },
           "compass_risk": {
@@ -4303,6 +4309,20 @@
               }
             ],
             "title": "Computed At"
+          },
+          "coordinated_author_ratio": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Share of the narrative's coordination-scored authors whose coordination score is above the fusion threshold. This is the author signal fusion reads. Null means no member author was scored by the coordination stage; it is never 0 for not measured.",
+            "title": "Coordinated Author Ratio"
           },
           "fusion_score": {
             "anyOf": [

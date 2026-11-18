@@ -42,6 +42,13 @@ decision.
   flags 42 of 100 rows at threshold 0.5, and all 42 are false positives. It flags all 20
   debunk articles. The transfer gap stays unmeasured, and `evaluate misinfo` refuses
   transfer metrics on one class.
+- **`coordinated_author_ratio` on the narrative scorecard and the authors KPI.** Fusion
+  reads this ratio and not `bot_like`, so the API now serves the one it uses. The scorecard
+  stores the value fusion read at score time (new nullable column, migration `c4d8a2f6e193`),
+  and `/overview/kpis/authors` reports the same ratio over the filtered authors with the same
+  threshold. Null means no author was scored by the coordination stage, never 0. Rows scored
+  before the migration stay null until the next `score.fusion` run. `bot_like` is kept and
+  documented as an input fusion does not read.
 
 ### Fixed
 
