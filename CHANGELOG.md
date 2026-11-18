@@ -13,6 +13,10 @@ decision.
 
 ### Added
 
+- **`GET /authors/{author_id}/cohorts` and `GET /authors/{author_id}/narratives`**,
+  cursor paginated, returning `CohortOut` and `NarrativeSummary`. An unknown
+  author is a 404 `author_not_found`. Both are declared ahead of the
+  `:path` author detail route, which would otherwise match them.
 - **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
   in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
   Vishvas News, DigitEye) carry a claim *and a verdict* and are the only

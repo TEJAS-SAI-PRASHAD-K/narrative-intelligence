@@ -92,6 +92,70 @@ def test_every_documented_route_is_reachable(demo_client):
         assert path.startswith(("/api/v1/", "/healthz", "/readyz"))
 
 
+def _author_with(demo_client, attr, minimum):
+    from app.mock.corpus import corpus
+
+    candidates = [a for a in corpus().authors if len(getattr(a, attr)) >= minimum]
+    assert candidates, f"fixture corpus has no author with {minimum}+ {attr}"
+    return candidates[0]
+
+
+def test_author_cohorts_and_narratives_routes_win_over_the_path_converter(demo_client):
+    """``/authors/{id:path}`` swallows slashes, so route order is part of the contract."""
+    from app.mock.corpus import corpus
+    from app.schemas.actors import CohortOut
+    from app.schemas.common import PageResponse
+    from app.schemas.narratives import NarrativeSummary
+
+    c = corpus()
+    author = _author_with(demo_client, "cohort_ids", 2)
+    base = f"?project_id={c.project_id}"
+
+    cohorts = PageResponse[CohortOut].model_validate(
+        demo_client.get(f"/api/v1/authors/{author.author_id}/cohorts{base}").json()
+    )
+    assert {x.id for x in cohorts.items} == set(author.cohort_ids)
+    assert cohorts.total == len(author.cohort_ids)
+
+    narr_author = _author_with(demo_client, "narrative_ids", 1)
+    narratives = PageResponse[NarrativeSummary].model_validate(
+        demo_client.get(f"/api/v1/authors/{narr_author.author_id}/narratives{base}").json()
+    )
+    assert {x.id for x in narratives.items} == set(narr_author.narrative_ids)
+    assert narratives.total == len(narr_author.narrative_ids)
+
+    # The detail route still resolves a bare id.
+    assert demo_client.get(f"/api/v1/authors/{author.author_id}").json()["author_id"] == (
+        author.author_id
+    )
+
+
+def test_author_cohorts_and_narratives_paginate(demo_client):
+    from app.mock.corpus import corpus
+    from app.schemas.common import PageResponse
+    from app.schemas.narratives import NarrativeSummary
+
+    author = _author_with(demo_client, "narrative_ids", 2)
+    url = f"/api/v1/authors/{author.author_id}/narratives?project_id={corpus().project_id}"
+    first = PageResponse[NarrativeSummary].model_validate(demo_client.get(f"{url}&limit=1").json())
+    assert len(first.items) == 1
+    assert first.next_cursor is not None
+    second = PageResponse[NarrativeSummary].model_validate(
+        demo_client.get(f"{url}&limit=1&cursor={first.next_cursor}").json()
+    )
+    assert second.items and second.items[0].id != first.items[0].id
+
+
+def test_author_cohorts_and_narratives_unknown_author_is_404(demo_client):
+    from app.mock.corpus import corpus
+
+    base = f"?project_id={corpus().project_id}"
+    for suffix in ("cohorts", "narratives"):
+        response = demo_client.get(f"/api/v1/authors/reddit:does-not-exist/{suffix}{base}")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "author_not_found"
+
+
 # ---------------------------------------------------------------------------
 # every route, exercised
 # ---------------------------------------------------------------------------
