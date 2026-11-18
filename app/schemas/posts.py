@@ -59,6 +59,18 @@ class PostScores(Camel):
     emotion: str | None = None
     emotion_scores: dict[str, float] | None = None
     scoring_version: str | None = None
+    model_versions: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Version stamp of each module that scored this post, keyed by module name. "
+            "A key is present only for a module that wrote a score for this post. "
+            "Keys: toxicity, sentiment, emotion, anomaly (the aux pass), misinfo (English, "
+            "roberta-base), laya (Hindi, the Laya multilingual model on the title only) and "
+            "stance. misinfo_likelihood from misinfo and from laya are not comparable, so "
+            "read the key to learn which model produced it. Null means the stored row "
+            "carries no map. It does not mean an empty map."
+        ),
+    )
     scored_at: datetime | None = None
     skip_reasons: list[str] = Field(
         default_factory=list,

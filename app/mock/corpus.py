@@ -21,6 +21,18 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 
+#: Version stamps in the shape of configs/models.yaml `version`. The laya stamp carries the
+#: `+base` suffix that LayaClassifier.model_version_for appends when no fine-tune is loaded.
+MOCK_AUX_VERSIONS = {
+    "toxicity": "v0.1.0",
+    "sentiment": "v0.1.0",
+    "emotion": "v0.1.0",
+    "anomaly": "v0.1.0",
+}
+MOCK_MISINFO_VERSION = "v0.2.0"
+MOCK_LAYA_VERSION = "v0.2.1+base"
+MOCK_HINDI_TEXT = "चुनाव आयोग के नाम पर फैलाया गया यह वीडियो पुराना है, दावा भ्रामक है"
+
 #: Everything stochastic here derives from this. Changing it changes every
 #: fixture id, so it is a deliberate act.
 SEED = 20260820
@@ -432,6 +444,7 @@ def corpus() -> MockCorpus:
                 "emotion": max(emotion_scores, key=emotion_scores.get),
                 "emotion_scores": emotion_scores,
                 "scoring_version": "phase2-v0.1.0",
+                "model_versions": dict(MOCK_AUX_VERSIONS, misinfo=MOCK_MISINFO_VERSION),
                 "scored_at": DEMO_NOW - timedelta(hours=6),
                 "skip_reasons": [],
             }
@@ -493,6 +506,18 @@ def corpus() -> MockCorpus:
                     narrative.top_hashtags.append(tag)
             if source not in narrative.platforms:
                 narrative.platforms.append(source)
+
+    # One Hindi post scored by laya. Its misinfo_likelihood comes from a different model
+    # than the English posts, which is the case model_versions exists to expose. A later
+    # scored English post keeps its misinfo stamp and one post carries no map at all.
+    scored_en = [
+        p for p in posts if p.scores and p.scores.get("scoring_version") and p.lang == "en"
+    ]
+    hindi = scored_en[0]
+    hindi.lang = "hi"
+    hindi.text = MOCK_HINDI_TEXT
+    hindi.scores["model_versions"] = dict(MOCK_AUX_VERSIONS, laya=MOCK_LAYA_VERSION)
+    scored_en[1].scores["model_versions"] = None
 
     # Threading: give some replies a real parent inside their conversation, so
     # /posts/{id}/thread has something to reconstruct.

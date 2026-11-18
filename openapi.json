@@ -5671,6 +5671,21 @@
             ],
             "title": "Misinfo Likelihood"
           },
+          "model_versions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Version stamp of each module that scored this post, keyed by module name. A key is present only for a module that wrote a score for this post. Keys: toxicity, sentiment, emotion, anomaly (the aux pass), misinfo (English, roberta-base), laya (Hindi, the Laya multilingual model on the title only) and stance. misinfo_likelihood from misinfo and from laya are not comparable, so read the key to learn which model produced it. Null means the stored row carries no map. It does not mean an empty map.",
+            "title": "Model Versions"
+          },
           "scored_at": {
             "anyOf": [
               {
