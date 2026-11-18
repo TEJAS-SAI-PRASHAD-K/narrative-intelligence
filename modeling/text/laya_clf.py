@@ -222,8 +222,33 @@ class LayaScorer:
                 kwargs["revision"] = str(revision)
             label = f"{checkpoint} ({subfolder})" if subfolder else checkpoint
             log.info("loading laya checkpoint %s revision=%s", label, revision)
-            self._agents[cache_key] = laya.load(checkpoint, **kwargs)
+            agent = laya.load(checkpoint, **kwargs)
+            if self._config.get("temperature_refit"):
+                self._apply_refit(agent, lang)
+            self._agents[cache_key] = agent
         return self._agents[cache_key]
+
+    def _apply_refit(self, agent: Any, lang: str | None) -> None:
+        """Put the refitted temperature on the agent, so the scale acts before the rounding.
+
+        The value comes from the calibrator state beside the fine-tuned checkpoint. A base
+        checkpoint has none, so a refit with no fine-tuned directory is refused.
+        """
+        from modeling.text.laya_calibration import (
+            TEMPERATURE_MISSING,
+            LayaCalibratorError,
+            read_temperature_refit,
+        )
+        from modeling.text.laya_temperature import install_noul_temperature
+
+        tuned = self.finetuned_path_for(lang)
+        if not tuned:
+            raise LayaCalibratorError(
+                TEMPERATURE_MISSING,
+                "laya.temperature_refit is on and there is no fine-tuned directory for "
+                f"lang={lang!r}",
+            )
+        install_noul_temperature(agent, read_temperature_refit(Path(tuned).expanduser()))
 
     def max_len_for(self, lang: str | None) -> int:
         if self._route_key(lang) == "multilingual_checkpoint":

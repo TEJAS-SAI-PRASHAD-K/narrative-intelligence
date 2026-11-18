@@ -133,6 +133,13 @@ laya:
   route:
     en: checkpoint
     hi: multilingual_checkpoint
+  # Re-fit the temperature of the `noul` head on validation logit gaps, over the wide range
+  # 0.05 to 100 (the vendor clamp is 0.5 to 5), and apply it inside the agent before the
+  # vendor rounds P(true) to 4 decimals. The value is stored in the calibrator state beside
+  # the checkpoint (`calibrate-laya`). Off: the checkpoint temperature stays, and served
+  # scores do not change. Turn it on only after `scripts/diagnose_laya_calibration.py` ran
+  # on the GPU host and the calibrator was fitted again with the refit.
+  temperature_refit: false
   # Hugging Face commit of convaiinnovations/laya (both checkpoints live in
   # that repo). Applied to Hub loads only. A fine-tuned local directory has no
   # revision. Update it deliberately and bump `version` with it.

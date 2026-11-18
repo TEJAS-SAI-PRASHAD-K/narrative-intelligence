@@ -565,7 +565,10 @@ def _laya_refusals(
             refused[lang] = (LayaSkipReason.CHECKPOINT_MISSING, str(exc))
             continue
         try:
-            loaded = load_calibrator(Path(tuned).expanduser())
+            loaded = load_calibrator(
+                Path(tuned).expanduser(),
+                temperature_refit=bool(scorer._config.get("temperature_refit", False)),
+            )
         except LayaCalibratorError as exc:
             refused[lang] = (exc.reason, str(exc))
             continue

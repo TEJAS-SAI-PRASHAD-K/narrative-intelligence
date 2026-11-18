@@ -1720,13 +1720,24 @@ def stage_evaluate(ctx: Context) -> None:
 # calibrate-laya
 # ---------------------------------------------------------------------------
 def stage_calibrate_laya(ctx: Context) -> None:
-    """Fit the ``misinfo_prob`` calibrator for the promoted ``laya_multi`` checkpoint.
+    """Fit the ``misinfo_prob`` calibrator for a promoted Laya checkpoint.
 
-    Reads the validation rows of ``scores/laya_multi.parquet`` and nothing else. Test rows
-    are never read. The state and a report go into ``--checkpoint-dir``, which must be a
-    directory other than the comparison's own checkpoint directory, whose identity hash
-    must not change. A rejected fit writes nothing and fails the stage.
+    Reads the validation rows of the model score file and nothing else. Test rows are never
+    read. The state and a report go into ``--checkpoint-dir``, which must be a directory
+    other than the comparison's own checkpoint directory, whose identity hash must not
+    change. A rejected fit writes nothing and fails the stage.
+
+    Group ids are required. The out-of-fold check needs them, and a fit that skips it can
+    raise the ECE unseen. A validation id with no group fails the stage.
+
+    With ``laya.temperature_refit`` on, the stage needs ``--logits``, the gap file of
+    ``scripts/diagnose_laya_calibration.py``. It refits the temperature on those gaps over the
+    wide range, refuses a fit on a bound, and fits the isotonic map on the scores that the
+    scorer gives at that temperature: ``round(sigmoid(gap / T), 4)``. The temperature goes into
+    the calibrator state, and the scorer applies it before it rounds.
     """
+    from modeling.config import module_config
+    from modeling.text import laya_temperature as lt
     from modeling.text.laya_calibration import (
         CALIBRATOR_FILES,
         LayaCalibratorError,
@@ -1735,6 +1746,9 @@ def stage_calibrate_laya(ctx: Context) -> None:
     )
 
     split_info = require_prepared(ctx)
+    model = getattr(ctx.args, "model", None) or "laya_multi"
+    which = "en" if model == "laya_en" else "multilingual"
+    refit = bool(module_config("laya").get("temperature_refit", False))
     raw = getattr(ctx.args, "checkpoint_dir", None)
     if raw is None:
         raise StageError(EXIT_USAGE, "calibrate-laya needs --checkpoint-dir")
@@ -1749,9 +1763,9 @@ def stage_calibrate_laya(ctx: Context) -> None:
             f"{models_root}. Copy the checkpoint to its own directory outside it. "
             "Nothing was written.",
         )
-    own = directory_identity(ctx.laya_checkpoint_dir("multilingual"))
+    own = directory_identity(ctx.laya_checkpoint_dir(which))
     if own is None:
-        raise StageError(EXIT_FAILED, "[calibrate-laya] the laya_multi checkpoint is not present")
+        raise StageError(EXIT_FAILED, f"[calibrate-laya] the {model} checkpoint is not present")
     served = directory_identity(target, ignore=CALIBRATOR_FILES)
     if served is None or (served["sha256"], served["files"]) != (own["sha256"], own["files"]):
         raise StageError(
@@ -1761,48 +1775,96 @@ def stage_calibrate_laya(ctx: Context) -> None:
             "Copy the checkpoint with `cp -r`. Nothing was written.",
         )
 
-    problem = provenance_problem(ctx, "laya_multi", split_info, current_inputs_hash(ctx))
-    if problem is not None:
-        raise StageError(problem[0], f"[calibrate-laya] laya_multi: {problem[1]}")
-    # The filter keeps every other part, test included, out of memory.
-    val = pd.read_parquet(
-        score_file(ctx, "laya_multi"),
-        columns=["part", "id", "score", "label"],
-        filters=[("part", "==", "val")],
+    eval_rows = pd.read_parquet(ctx.eval_rows_file)
+    val_rows = eval_rows[eval_rows["split"] == "val"].reset_index(drop=True)
+    group_of = dict(
+        zip(val_rows["id"].astype(str), val_rows["group_id"].astype(str), strict=True)
     )
-    group_of = (
-        pd.read_parquet(ctx.eval_rows_file, columns=["id", "group_id"])
-        .astype({"id": str, "group_id": str})
-        .drop_duplicates("id")
-        .set_index("id")["group_id"]
-    )
-    usable = val.loc[val["score"].notna() & val["label"].notna()]
-    dropped = len(val) - len(usable)
-    ctx.say(
-        f"[calibrate-laya] validation rows {len(val)}, with a score and a label {len(usable)}, "
-        f"dropped for a null score or label {dropped}"
-    )
-    if not len(usable):
-        raise StageError(EXIT_FAILED, "[calibrate-laya] no validation row has a score and a label")
-    try:
-        groups = usable["id"].astype(str).map(group_of)
-        if groups.isna().any():
-            ctx.say(
-                f"[calibrate-laya] {int(groups.isna().sum())} validation ids have no group, "
-                "so the out-of-fold check is skipped"
+    temperature_refit: dict[str, Any] | None = None
+    if refit:
+        logits = getattr(ctx.args, "logits", None)
+        if logits is None:
+            raise StageError(
+                EXIT_USAGE, "laya.temperature_refit is on, so calibrate-laya needs --logits"
             )
-            groups = None
+        try:
+            stored = lt.read_gap_cache(
+                logits,
+                model=model,
+                checkpoint_sha256=own["sha256"],
+                validation_ids_hash=lt.ids_hash(val_rows["id"].astype(str)),
+            )
+        except ValueError as exc:
+            raise StageError(EXIT_FAILED, f"[calibrate-laya] {exc}") from exc
+        gap = stored["gap"]
+        ids = stored["ids"].astype(str)
+        labels = val_rows.set_index(val_rows["id"].astype(str)).loc[ids, "label"].astype(int)
+        fit = lt.fit_temperature(gap, labels.to_numpy())
+        if fit.at_bound:
+            raise StageError(
+                EXIT_FAILED,
+                f"[calibrate-laya] the temperature fit ends on the {fit.bound} bound of "
+                f"{fit.lower}..{fit.upper}. It has not converged. Nothing was written.",
+            )
+        temperature_refit = {
+            **fit.as_dict(),
+            "rows": int(len(gap)),
+            "reason": lt.refit_search_reason(),
+            "source": "validation logit gaps",
+        }
+        usable = pd.DataFrame(
+            {
+                "id": ids,
+                "score": lt.served_scores(gap, fit.value),
+                "label": labels.to_numpy(),
+            }
+        )
+        dropped = 0
+        ctx.say(
+            f"[calibrate-laya] refit T {fit.value:.4g} on {len(gap)} validation gaps, "
+            f"excluded long texts {int(len(stored['long_positions']))}"
+        )
+    else:
+        problem = provenance_problem(ctx, model, split_info, current_inputs_hash(ctx))
+        if problem is not None:
+            raise StageError(problem[0], f"[calibrate-laya] {model}: {problem[1]}")
+        # The filter keeps every other part, test included, out of memory.
+        val = pd.read_parquet(
+            score_file(ctx, model),
+            columns=["part", "id", "score", "label"],
+            filters=[("part", "==", "val")],
+        )
+        usable = val.loc[val["score"].notna() & val["label"].notna()]
+        dropped = len(val) - len(usable)
+        ctx.say(
+            f"[calibrate-laya] validation rows {len(val)}, with a score and a label "
+            f"{len(usable)}, dropped for a null score or label {dropped}"
+        )
+        if not len(usable):
+            raise StageError(
+                EXIT_FAILED, "[calibrate-laya] no validation row has a score and a label"
+            )
+
+    groups = usable["id"].astype(str).map(group_of)
+    if groups.isna().any():
+        raise StageError(
+            EXIT_FAILED,
+            f"[calibrate-laya] {int(groups.isna().sum())} validation ids have no group id in "
+            f"{ctx.eval_rows_file.name}. The out-of-fold check needs a group for every row, "
+            "so a real fit does not run without them. Nothing was written.",
+        )
+    try:
         calibrator, report = fit_calibrator(
             usable["score"].to_numpy(dtype=float),
             usable["label"].to_numpy(dtype=int),
-            groups=None if groups is None else groups.to_numpy(),
+            groups=groups.to_numpy(),
         )
     except LayaCalibratorError as exc:
         raise StageError(EXIT_FAILED, f"[calibrate-laya] {exc}. Nothing was written.") from exc
     report = {
         **report,
-        "model": "laya_multi",
-        "source_score_file": score_file(ctx, "laya_multi").name,
+        "model": model,
+        "source_score_file": None if refit else score_file(ctx, model).name,
         "comparison_checkpoint": own,
         "split_sha256": split_fingerprint(split_info),
         "fit_part": "val",
@@ -1811,7 +1873,12 @@ def stage_calibrate_laya(ctx: Context) -> None:
     }
     report = json.loads(json.dumps(report, default=str))
     path = write_calibrator(
-        target, calibrator, report, demo=ctx.demo, checkpoint_identity=own
+        target,
+        calibrator,
+        report,
+        demo=ctx.demo,
+        checkpoint_identity=own,
+        temperature_refit=temperature_refit,
     )
     ctx.say(
         f"[calibrate-laya] {report['method']} on {report['rows']} rows: "
@@ -1938,9 +2005,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "calibrate-laya",
-        help="Fit the misinfo_prob calibrator of laya_multi on its validation rows.",
+        help="Fit the misinfo_prob calibrator of a Laya checkpoint on its validation rows.",
     )
     _common(p)
+    p.add_argument("--model", choices=("laya_multi", "laya_en"), default="laya_multi")
+    p.add_argument(
+        "--logits",
+        type=Path,
+        default=None,
+        help="The gap file of scripts/diagnose_laya_calibration.py. Needed when "
+        "laya.temperature_refit is on.",
+    )
     p.add_argument(
         "--checkpoint-dir",
         type=Path,

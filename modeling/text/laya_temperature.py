@@ -16,6 +16,8 @@ lives in ``scripts/diagnose_laya_calibration.py``.
 
 from __future__ import annotations
 
+import hashlib
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,6 +44,8 @@ BOUND_RTOL = 1e-3
 #: Bin counts. The repo reads P(true) in 10 bins. The vendor reads top-1 confidence in 15.
 ECE_BINS_PROB = 10
 ECE_BINS_TOP1 = 15
+#: Inverse regularisation of the intercept fit. Bounded, so a separable slice stays finite.
+PLATT_C = 1e4
 #: Size of the vendor calibration slice (``calib_max`` in configs/models.yaml).
 VENDOR_CALIB_ROWS = 400
 
@@ -137,22 +141,39 @@ def fit_temperature(
     )
 
 
-def fit_platt(gap: np.ndarray, labels: np.ndarray) -> dict[str, float]:
+def fit_platt(gap: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
     """Slope and intercept of ``sigmoid(a * g + b)``, to tell a bias from a scale problem.
 
     A temperature has no intercept. When the validation base rate differs from the
-    calibration base rate, only an intercept can correct it.
+    calibration base rate, only an intercept can correct it. The gap is standardised before
+    the fit and the result is mapped back, so a gap of large scale cannot stall the solver.
+    A convergence warning is kept in the result and never dropped.
     """
+    from sklearn.exceptions import ConvergenceWarning
     from sklearn.linear_model import LogisticRegression
 
     gap, labels = validate_inputs(gap, labels)
-    model = LogisticRegression(C=1e10, solver="lbfgs", max_iter=1000)
-    model.fit(gap.reshape(-1, 1), labels)
-    a, b = float(model.coef_[0, 0]), float(model.intercept_[0])
+    mean, std = float(gap.mean()), float(gap.std())
+    std = std if std > 0 else 1.0
+    z = (gap - mean) / std
+    model = LogisticRegression(C=PLATT_C, solver="lbfgs", max_iter=1000)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.fit(z.reshape(-1, 1), labels)
+    notes = [str(w.message) for w in caught if issubclass(w.category, ConvergenceWarning)]
+    slope_z, intercept_z = float(model.coef_[0, 0]), float(model.intercept_[0])
+    a = slope_z / std
+    b = intercept_z - slope_z * mean / std
     p = expit(a * gap + b)
     eps = 1e-12
     loss = float(-np.mean(labels * np.log(p + eps) + (1 - labels) * np.log(1 - p + eps)))
-    return {"slope": a, "intercept": b, "nll": loss}
+    return {
+        "slope": a,
+        "intercept": b,
+        "nll": loss,
+        "converged": not notes,
+        "convergence_warnings": notes,
+    }
 
 
 # --- expected calibration error ---------------------------------------------------------
@@ -230,7 +251,7 @@ def fold_ids(groups: np.ndarray, n_splits: int = 5, seed: int = SEED) -> np.ndar
     return fold_of_group[inverse]
 
 
-def _round_served(gap: np.ndarray, temperature: float) -> np.ndarray:
+def served_scores(gap: np.ndarray, temperature: float) -> np.ndarray:
     """The score that the scorer sees: ``laya`` rounds P(true) to 4 decimals."""
     return np.round(expit(gap / temperature), 4)
 
@@ -250,8 +271,8 @@ def _apply(method: str, train: tuple, test_gap: np.ndarray, t_ckpt: float) -> np
         return model.predict(test_gap / t)
     if method == "isotonic_served":
         model = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
-        model.fit(_round_served(gap, t_ckpt), labels)
-        return model.predict(_round_served(test_gap, t_ckpt))
+        model.fit(served_scores(gap, t_ckpt), labels)
+        return model.predict(served_scores(test_gap, t_ckpt))
     raise ValueError(f"unknown method {method!r}")
 
 
@@ -278,16 +299,15 @@ def out_of_fold(
     return out
 
 
-def isotonic_oof_ece(
-    scores: np.ndarray, labels: np.ndarray, groups: np.ndarray, *, n_splits: int = 5
-) -> dict[str, float]:
-    """Out-of-fold ECE of an isotonic map on served scores, against the raw scores.
+#: Fold seeds of the guard. One split of 400 rows is noisy, so the difference is averaged
+#: over several splits.
+FOLD_SEEDS = tuple(SEED + i for i in range(5))
 
-    The in-sample ECE of an isotonic fit is near zero by construction and says nothing.
-    """
-    scores = np.asarray(scores, dtype=float)
-    labels = np.asarray(labels).astype(int)
-    folds = fold_ids(groups, n_splits)
+
+def oof_isotonic(
+    scores: np.ndarray, labels: np.ndarray, groups: np.ndarray, *, n_splits: int, seed: int
+) -> np.ndarray:
+    folds = fold_ids(groups, n_splits, seed)
     out = np.empty(len(scores))
     for k in range(n_splits):
         test = folds == k
@@ -297,10 +317,66 @@ def isotonic_oof_ece(
         model = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
         model.fit(scores[train], labels[train])
         out[test] = model.predict(scores[test])
+    return out
+
+
+def isotonic_oof_ece(
+    scores: np.ndarray,
+    labels: np.ndarray,
+    groups: np.ndarray,
+    *,
+    n_splits: int = 5,
+    fold_seeds: tuple[int, ...] = FOLD_SEEDS,
+    n_boot: int = 1000,
+    seed: int = SEED,
+) -> dict[str, Any]:
+    """Out-of-fold ECE of an isotonic map on served scores, against the raw scores.
+
+    The in-sample ECE of an isotonic fit is near zero by construction and says nothing.
+    The difference ``ECE(out of fold) - ECE(raw)`` is averaged over several fold seeds. A
+    group bootstrap with the project seed gives its 95 percent interval. The calibrator
+    makes the scores worse only when the lower end of that interval is above zero. A fixed
+    tolerance would reject a calibrated input by chance on a small validation set.
+    """
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels).astype(int)
+    raw = np.clip(scores, 0.0, 1.0)
+    oofs = [
+        oof_isotonic(scores, labels, groups, n_splits=n_splits, seed=s) for s in fold_seeds
+    ]
+    _, inverse = np.unique(np.asarray(groups).astype(str), return_inverse=True)
+    order = np.argsort(inverse, kind="stable")
+    clusters = np.split(order, np.cumsum(np.bincount(inverse))[:-1])
+    rng = np.random.default_rng(seed)
+
+    def difference(rows: np.ndarray) -> float:
+        before = prob_ece(labels[rows], raw[rows])
+        return float(np.mean([prob_ece(labels[rows], o[rows]) for o in oofs]) - before)
+
+    diffs = np.empty(n_boot)
+    for i in range(n_boot):
+        pick = rng.integers(0, len(clusters), size=len(clusters))
+        diffs[i] = difference(np.concatenate([clusters[j] for j in pick]))
+    low, high = np.quantile(diffs, [0.025, 0.975])
+    everything = np.arange(len(scores))
     return {
-        "ece_before": prob_ece(labels, np.clip(scores, 0.0, 1.0)),
-        "ece_after_oof": prob_ece(labels, out),
+        "ece_before": prob_ece(labels, raw),
+        "ece_after_oof": float(np.mean([prob_ece(labels, o) for o in oofs])),
+        "difference": difference(everything),
+        "difference_low": float(low),
+        "difference_high": float(high),
+        "fold_seeds": list(fold_seeds),
+        "n_boot": int(n_boot),
+        "seed": int(seed),
     }
+
+
+def ids_hash(ids: Any) -> str:
+    """A hash of the validation ids, in order. It ties a stored gap file to its rows."""
+    digest = hashlib.sha256()
+    for value in ids:
+        digest.update(str(value).encode("utf-8") + b"\n")
+    return digest.hexdigest()
 
 
 # --- the report -------------------------------------------------------------------------
@@ -456,3 +532,77 @@ def findings(report: dict[str, Any]) -> list[str]:
     if report["checkpoint_temperature"] >= VENDOR_T_MAX - 1e-9:
         notes.append("The checkpoint temperature is on the vendor upper clamp.")
     return notes
+
+
+#: Index of the ``noul`` type in ``laya.common.QTYPES``, and its two-option bucket key.
+NOUL_TYPE = 2
+NOUL_BUCKET = "noul:2"
+
+
+def install_noul_temperature(agent: Any, temperature: float) -> None:
+    """Make a loaded agent divide its ``noul`` logits by ``temperature``.
+
+    The agent divides the raw logits and rounds P(true) to 4 decimals afterwards, so this
+    scale acts before the rounding. Re-scaling an already rounded probability would act
+    after the ties exist. ``clamp_temperature`` runs at checkpoint load only, so the wide
+    range is not clamped here. The per-bucket value is removed, because it takes priority
+    over the per-type value.
+    """
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature!r}")
+    per_type = list(agent.temperature)
+    per_type[NOUL_TYPE] = float(temperature)
+    agent.temperature = per_type
+    agent.temperature_by_options = {
+        k: v for k, v in dict(agent.temperature_by_options).items() if k != NOUL_BUCKET
+    }
+    agent.lang_temperatures = {}
+
+
+def gap_cache_path(path: Any) -> Any:
+    """The gap file name with the ``.npz`` suffix. ``numpy`` adds it on a write, so a path
+    without it would be written to one name and read from another."""
+    from pathlib import Path
+
+    path = Path(path)
+    return path if path.suffix == ".npz" else path.with_name(path.name + ".npz")
+
+
+def write_gap_cache(path: Any, **fields: Any) -> Any:
+    path = gap_cache_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **fields)
+    return path
+
+
+def read_gap_cache(
+    path: Any, *, model: str, checkpoint_sha256: str, validation_ids_hash: str
+) -> dict[str, Any]:
+    """Read a stored gap file and refuse it unless it matches the model, the weights and rows.
+
+    Raises ``ValueError`` that names every mismatch.
+    """
+    path = gap_cache_path(path)
+    if not path.is_file():
+        raise ValueError(f"{path} does not exist")
+    stored = np.load(path, allow_pickle=False)
+    problems = []
+    for key, expected in (
+        ("model", model),
+        ("checkpoint_sha256", checkpoint_sha256),
+        ("validation_ids_hash", validation_ids_hash),
+    ):
+        found = str(stored[key]) if key in stored.files else None
+        if found != expected:
+            problems.append(f"{key} is {found!r}, expected {expected!r}")
+    if problems:
+        raise ValueError(f"{path} does not match this run: " + "; ".join(problems))
+    return {key: stored[key] for key in stored.files}
+
+
+def refit_search_reason() -> str:
+    return (
+        f"Search range [{T_MIN}, {T_MAX}] is wider than the vendor clamp "
+        f"[{VENDOR_T_MIN}, {VENDOR_T_MAX}] because the vendor fit reached its upper clamp on "
+        "both fine-tunes, and a fit on a bound has not converged."
+    )
