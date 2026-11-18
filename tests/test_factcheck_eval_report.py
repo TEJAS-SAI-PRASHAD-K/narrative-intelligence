@@ -578,3 +578,36 @@ def test_a_moved_sample_with_a_space_in_its_path_prints_no_machine_local_path(en
         assert str(tmp_path) not in path.read_text(encoding="utf-8")
     markdown = paths[1].read_text(encoding="utf-8")
     assert "claim dedup sample.csv (outside the repository)) does not exist" in markdown
+
+
+def test_redaction_catches_a_path_after_a_key_and_windows_and_file_urls(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    assert redact_paths("manifest: /home/ana/m.csv", data) == (
+        "manifest: m.csv (outside the repository)"
+    )
+    assert redact_paths(r"read C:\Users\ana\data\x.csv", data) == (
+        "read x.csv (outside the repository)"
+    )
+    assert redact_paths("file:///home/ana/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths(f"file://{data}/factchecks/s.csv", data) == "factchecks/s.csv"
+
+
+def test_redaction_leaves_a_url_scheme_and_a_route_as_written(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    text = "https://example.org/a/b and /api/v1/items and /health"
+    assert redact_paths(text, tmp_path / "data") == text
+
+
+def test_redaction_rewrites_only_data_repo_and_system_root_paths(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    inside = data / "factchecks" / "s.csv"
+    assert redact_paths(f"{inside}", data) == "factchecks/s.csv"
+    assert redact_paths("/home/ana/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths("/var/lib/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths("~/notes/x.csv", data) == "x.csv (outside the repository)"
+    assert redact_paths("/etc/hosts and /usr/share/x", data) == "/etc/hosts and /usr/share/x"

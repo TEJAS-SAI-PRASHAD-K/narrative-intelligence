@@ -38,7 +38,7 @@ import logging
 import re
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import numpy as np
@@ -2288,8 +2288,19 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
 # Public paths: the report is published, so it prints no machine-local path.
 # ---------------------------------------------------------------------------
 #: An absolute POSIX path inside report text. The lookbehind skips URLs (``https://``),
-#: ratios (``1/2``) and a slash already inside a path.
-_ABSOLUTE_PATH = re.compile(r"(?<![\w./:+-])/(?:[\w.+-]+/)*[\w+-](?:[\w.+-]*[\w+-])?")
+#: ratios (``1/2``) and a slash already inside a path. A colon before the path is allowed,
+#: so ``manifest: /home/...`` is caught, and a ``scheme://`` URL is not.
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./+~-])/(?:[\w.+-]+/)*[\w+-](?:[\w.+-]*[\w+-])?")
+#: A ``file:///`` URL and the path it names.
+_FILE_URL = re.compile(r"file://(/[\w.+%/-]*[\w+-])")
+#: A Windows drive path. It cannot be inside the repository on this host, so it prints
+#: its file name only.
+_WINDOWS_PATH = re.compile(r"(?<![\w])[A-Za-z]:\\(?:[^\\\s/:*?\"<>|]+\\)*[^\\\s/:*?\"<>|]+")
+#: A path under the home directory.
+_HOME_PATH = re.compile(r"(?<![\w./~+-])~/(?:[\w.+-]+/)*[\w+-](?:[\w.+-]*[\w+-])?")
+#: First segments that mark a path as machine-local. Any other absolute path is text
+#: (an API route, a health check) and is left as written.
+SYSTEM_ROOTS = frozenset({"home", "Users", "mnt", "tmp", "var", "root", "opt", "srv"})
 
 
 def display_path(path: str | Path, data_dir: str | Path | None = None) -> str:
@@ -2322,6 +2333,26 @@ def _known_path_pattern(known: Collection[str]) -> re.Pattern[str] | None:
     )
 
 
+def _public_or_kept(path: str, data_dir: str | Path | None, kept: str) -> str:
+    """The public form of ``path`` when it is a data or repository path or starts at a
+    system root, and ``kept`` otherwise."""
+    from modeling.config import REPO_ROOT
+
+    target = Path(path).resolve()
+    for base in (REPO_ROOT, data_dir):
+        if base is not None and target.is_relative_to(Path(base).resolve()):
+            return display_path(path, data_dir)
+    parts = path.split("/")
+    if len(parts) > 1 and parts[1] in SYSTEM_ROOTS:
+        return display_path(path, data_dir)
+    return kept
+
+
+def _file_url(match: re.Match[str], data_dir: str | Path | None) -> str:
+    """A ``file:///`` URL with its path made public, or the URL as written."""
+    return _public_or_kept(match.group(1), data_dir, match.group(0))
+
+
 def redact_paths(
     value: Any, data_dir: str | Path | None = None, known: Collection[str] = ()
 ) -> Any:
@@ -2335,7 +2366,17 @@ def redact_paths(
     def text(item: str) -> str:
         if known_pattern is not None:
             item = known_pattern.sub(lambda match: display_path(match.group(0), data_dir), item)
-        return _ABSOLUTE_PATH.sub(lambda match: display_path(match.group(0), data_dir), item)
+        item = _FILE_URL.sub(lambda match: _file_url(match, data_dir), item)
+        item = _WINDOWS_PATH.sub(
+            lambda match: f"{PureWindowsPath(match.group(0)).name} (outside the repository)",
+            item,
+        )
+        item = _HOME_PATH.sub(
+            lambda match: display_path(Path(match.group(0)).expanduser(), data_dir), item
+        )
+        return _ABSOLUTE_PATH.sub(
+            lambda match: _public_or_kept(match.group(0), data_dir, match.group(0)), item
+        )
 
     def walk(item: Any) -> Any:
         if isinstance(item, str):
