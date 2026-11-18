@@ -33,6 +33,16 @@ decision.
   error rate only with `human` labels, adjudication on every row, a kappa of at least 0.6,
   30 rows per language and an unchanged pattern set. The error rate is not measured yet.
   See `docs/factcheck-tiers.md`.
+- **Per-source coordination report.** `CoordinationDetector.detect` now returns observed
+  modularity against the time-shuffled null for all eligible records and for each source.
+  Each row has the null mean, a 95 percent interval, the empirical p value and the number of
+  shuffles. A source below `min_source_authors` or `min_source_edges` gets a reason code
+  (`too_few_authors`, `no_edges`, `too_few_edges`) and stays in the report. The null seed is
+  `null_seed` in `configs/models.yaml` (20260813). The new command `modeling.cli
+  coordination-report` writes `report.md` and `report.json` and takes `--null-shuffles`.
+- **Language purity in `compare-embedder`.** The output has the majority-language share of
+  each cluster, the member-weighted mean and the count of mixed clusters for both embedders.
+  The new option `--min-cluster-size 5,10,15` runs both embedders at each size.
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
@@ -224,6 +234,11 @@ decision.
 
 ### Changed
 
+- **Telegram joins the coordination `eligible_sources`.** The coordination module is at
+  `v0.3.0`. Telegram records have a stable channel id and an exact time, and they carry
+  text, links and hashtags. They have no reply threads, so the exemption that was fixed to
+  Mastodon in code is now the config list `threading_optional_sources` (Mastodon, Telegram).
+  YouTube was already eligible.
 - **The fact-check manifest is refrozen at 4281 claims after the full Hindi archive
   read.** With the backfill fix of pull request 21, the Vishvas News sitemap backfill read
   the whole archive inside the 2022 window. The set grew from 1107 claims. 1106 old rows
