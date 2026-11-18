@@ -404,7 +404,11 @@ def freeze_factchecks(
     existing manifest without --overwrite.
     """
     _bootstrap()
-    from modeling.eval.factcheck_eval import EvalInputError, freeze_manifest_from_data
+    from modeling.eval.factcheck_eval import (
+        EvalInputError,
+        freeze_manifest_from_data,
+        publisher_shares_from_data,
+    )
 
     try:
         path, count = freeze_manifest_from_data(
@@ -414,6 +418,18 @@ def freeze_factchecks(
         console.print(f"[red]refused:[/] {exc}")
         raise typer.Exit(code=1) from exc
     console.print(f"froze {count} known-false claims -> {path}")
+    shares = publisher_shares_from_data(get_settings().data_dir)
+    console.print(
+        f"Hindi claims: {shares['n_hindi_claims']} from {shares['n_publishers']} publisher(s)"
+    )
+    for row in shares["publishers"]:
+        console.print(
+            f"  {row['publisher']}: {row['n_hindi_claims']} ({row['share']:.1%} of Hindi claims)"
+        )
+    if shares["reason"]:
+        console.print(
+            f"[yellow]{shares['reason']}[/]: Hindi claims rest on fewer than 2 publishers"
+        )
 
 
 @app.command()
