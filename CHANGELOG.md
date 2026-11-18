@@ -6,34 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The corpus is retargeted from the United States to India, in English and Hindi.
-Data layer only: the case, the sources and the language detection. The modeling
-layer still scores English only, which is now a documented gap rather than a
-decision.
-
 ### Fixed
 
-- **The fact-check comparison is rerun with all eight fact-checker domains left out.** The
-  run of 2026-11-18 used the same score files and the seed 20260813. The corpus rows that
-  the report excludes are 265 for `corpus_title` and 265 for `corpus_text`: altnews.in 34,
-  boomlive.in 66, digiteye.in 9, factcrescendo.com 24, factly.in 22, newschecker.in 29,
-  thequint.com 55 and vishvasnews.com 26. The evaluation set has 4428 claims (4334 Hindi,
-  93 English, 1 other). The Hindi gate still passes. The lift of `laya_multi` on Hindi titles
-  is 1.735 [1.331, 2.368], with a recall of 0.119 and a flag rate of 0.068. The earlier result
-  was 1.760 [1.286, 2.630] on 4180 claims with four domains left out. On Hindi full text, the
-  lift is 0.503 [0.432, 0.590]. The English lift of `misinfo` is 8.188 [6.231, 10.538]. The
-  ship decisions did not change: `laya_en` and `misinfo` ship, and `laya_multi` does not.
-  The claim dedup collapsed 29 rows with simhash and 421 rows with embeddings. The
-  precision of the embedding collapses is 0.390 (78 of 200 pairs), Wilson [0.325, 0.459].
-  It is provisional. The labeller is a model, and no person reviewed the labels.
 - **The fact-check manifest is refrozen at 4428 claims after the BOOM Hindi and Fact
   Crescendo backfill.** The Hindi claims come from three publishers: Vishvas News 3789
   (87.4 percent), BOOM 524 (12.1 percent) and Fact Crescendo 21 (0.5 percent). Earlier, Vishvas
   News gave 99.8 percent of 4180 Hindi claims.
-- **The fact-check comparison report prints no machine-local path.** The Markdown and JSON
-  reports print paths relative to the repository root, such as `configs/...` and
-  `data/...`, or relative to the data directory. A path outside both prints its file name
-  and "outside the repository". `claim_links.json` keeps its absolute sample path.
+
 - **The claim dedup precision splits direct links from chain links.** The hand-check sample
   holds every embedding link. A row can join a cluster through a chain of pairs, so its
   similarity to the representative can be below `claim_dedup.min_similarity`. Such a pair is a
@@ -57,14 +36,17 @@ decision.
   has labels from two models, and no person reviewed them. No row is positive, so the card
   reports the flag rate on negatives and the agreement. ROC-AUC, precision and recall are not
   measured. The 100-row sample of 2026-11-11 is no longer quoted as a result.
+
 - **Hindi transfer and calibration for #31, provisional.** The Laya card reports 0 of 150
   positive Hindi titles and a mean calibrated probability of 0.446 [0.401, 0.491]. Labels are
   from models and no person reviewed them. Calibration on Hindi corpus titles is poor by this
   sample. Issue #76 tracks the refit.
+
 - **Reporting negatives candidate `v0.3.0-rn` for #32, provisional and not shipped.** The
   candidate flags 0 of 8 reporting rows in the sample, against 7 of 8 for v0.2.0 (labeller:
   model, unreviewed by a person), and it meets the shipping bar. `configs/models.yaml` does not change, because the checkpoint
   registry does not hold the candidate yet.
+
 - **The claim dedup hand-check sample records who labelled it.** The sample has the new
   columns `labeller_kind`, `labeller_1`, `labeller_2`, `label_1` and `label_2`.
   `embedding_precision` returns a Wilson interval, Cohen's kappa, raw agreement and the
@@ -83,13 +65,6 @@ decision.
   row, mixed kinds and a refused sample show on the rendered line. The Wilson interval treats
   pairs as independent, and the sample is systematic over the similarity range.
 
-- **Per-domain count of the corpus rows that the fact-check comparison excludes.** The report
-  JSON has `excluded_fact_check_publisher_by_domain` for `corpus_title` and `corpus_text` of
-  each model. The Markdown report has a table with one row for each fact-checker domain, also
-  a domain with 0 rows. The counts use the same domain function as the exclusion. The code
-  fails if they do not add up to `n_excluded_fact_check_publisher`. A corpus row on a
-  subdomain of a fact-checker, such as `hindi.boomlive.in`, stays in the flag rate. The report
-  counts it under `fact_check_subdomain_not_excluded` and shows the count under the table.
 - **`relabel-eval` reports what a sample with one class can still measure.** With only
   negatives, it keeps the refusal of ROC-AUC, precision and recall (reason code
   `one_class_only`, exit code 1). It now also reports the observed positive rate with a
@@ -98,6 +73,7 @@ decision.
   probability and the ECE. The flag rate on rows that report on a false claim against the
   other rows now carries Wilson intervals and a bootstrap interval of the difference, also
   when both classes exist. A null Laya threshold prints "no threshold configured".
+
 - **Reporting articles as extra negatives for `misinfo`.** `modeling.cli train misinfo
   --extra-negatives PATH --output-version VERSION` adds the rows of a Parquet file as label 0
   and writes a candidate checkpoint to `models/misinfo/VERSION`. `--output-version` is
@@ -113,6 +89,7 @@ decision.
   --misinfo-version VERSION` score with a candidate. A candidate with no `sha256` loads only
   with `--allow-unverified-candidate`. The comparison writes `misinfo@VERSION` to its own
   file. `configs/models.yaml` does not change. The effect is not measured yet. Refs #32.
+
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
   `configs/factcheck.yaml`. A guard cancels a negated verdict, a headline that calls the
@@ -133,6 +110,7 @@ decision.
   error rate only with `human` labels, adjudication on every row, a kappa of at least 0.6,
   30 rows per language and an unchanged pattern set. The error rate is not measured yet.
   See `docs/factcheck-tiers.md`.
+
 - **Per-source coordination report.** `CoordinationDetector.detect` now returns observed
   modularity against the time-shuffled null for all eligible records and for each source.
   Each row has the null mean, a 95 percent interval, the empirical p value, its floor, the
@@ -143,32 +121,14 @@ decision.
   `report.json`. It takes `--sources`, which may name a source outside the production
   eligible set such as `telegram`, and `--null-shuffles` (default 200). It drops forwarded
   Telegram posts as `telegram_forward` and never writes to the scored tables.
+
 - **Language purity in `compare-embedder`.** The output has the majority-language share of
   each cluster, the member-weighted mean and the count of mixed clusters for both embedders.
   It also gives each language's clustered and noise counts, and the share of its clustered
   records that sit in a cluster with each other language. Both embedders cluster the same
   sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
   each size. The narratives manifest records `min_cluster_size`.
-- **Checkpoint backup and hash check.** `modeling.registry.resolve` pulls a checkpoint
-  from the private repo in `HF_REPO` and checks its sha256 against the optional `sha256`
-  map in `configs/models.yaml`, for local, Hub and Drive copies. A mismatch raises
-  `checkpoint_sha256_mismatch` and deletes a pulled copy. The Laya stage turns it into
-  the reason `laya:checkpoint_sha256_mismatch`. A pulled copy with no hash is refused and
-  deleted with `checkpoint_unverified_pull`, unless `ALLOW_UNVERIFIED_PULL=1`. A local
-  copy with no hash is used and counts `checkpoint_unverified`. A map with no value for
-  the version counts `checkpoint_sha256_missing_key`. `HF_REVISION` or `hf_revision`
-  pins the repo revision. The pull covers the Laya calibrator files and skips
-  `checkpoint_latest/` at any depth. Other new reason codes: `checkpoint_broken_symlink`,
-  `hub_token_missing`, `hub_not_installed`, `hub_pull_failed`, `hub_path_absent`.
-  New commands: `python -m modeling.cli checkpoint-hash <module> [--version <folder>]`
-  and `python -m modeling.cli checkpoint-pull <module> [--version <folder>]`. The model
-  cards and `docs/laya-finetune.md` no longer say that a new clone must train again.
-- **The checkpoint hash definition changed.** The hash now frames each path with a length
-  prefix, follows symbolic links, skips `checkpoint_latest/` at any depth and `*.tmp`
-  files, and reads `tokenizer/tokenizer_config.json` and `registry.json` in a normalized
-  form. Every value that the old function produced is replaced, including the value
-  `be9cc846...` in the misinfo model card. So the `checkpoint_stamp` suffix in
-  `model_versions` changes, and the corpus is scored once again.
+
 - **Weighted hand-labelling sample and two-labeller workflow (issues 30 and 31).**
   `modeling sample-for-labelling misinfo --lang en` and `--lang hi` now draw a stratified
   sample. The strata are posts that match a fact-check claim, one stratum for each of
@@ -187,6 +147,7 @@ decision.
   It prints how many records match a claim and warns when the count is 0. The matching
   thresholds are `claim_match` in `configs/labelling.yaml`, separate from the claim dedup.
   An embeddings file that names another model is refused (`embedding_model_mismatch`).
+
 - **Label sheet columns and agreement report.** The sheet has `label_a`, `label_b`,
   `reports_on_false_claim_a`, `reports_on_false_claim_b`, the adjudicated columns,
   `labeller_kind` and `notes`. `modeling label-agreement <sheet>` prints Cohen's kappa with
@@ -194,6 +155,7 @@ decision.
   `--fill-agreed` fills the adjudicated columns where both labellers agree.
   `docs/labelling-guide.md` is the guide for labellers, with the rule for articles that
   report on a false claim and notes for Hindi.
+
 - **`evaluate misinfo` reads `adjudicated_label`.** It refuses a sheet with labels from a
   model that no person reviewed (`labeller_kind` `model-unreviewed` or `llm-unreviewed`)
   unless `--allow-model-labels` is set. A labelled row with no valid `labeller_kind` is
@@ -207,12 +169,14 @@ decision.
   rate among rows labelled 0) for rows that report on a false claim against the other
   rows, weighted and unweighted, with intervals (the input for issue 32). The transfer
   functions need a `ResolvedSheet` and enforce the labeller rule themselves.
+
 - **`modeling evaluate-laya-hindi`.** It reads Laya values from `record_scores` and
   reports precision, recall, flag rate and ROC-AUC on Hindi titles, and the expected
   calibration error of the calibrated values, each with a bootstrap interval, for the
   sample and reweighted to the corpus. The ECE line states the bin count and `n`, and a
   caveat when `n` is below 200. With no `laya.decision_threshold`, the thresholded metrics
   are "not measured". The command runs no model.
+
 - **`make relabel-eval`.** One command that reads the filled sheets and rewrites
   `artifacts/eval/labelling/<lang>/` (agreement, disagreement ids, transfer metrics). Every
   interval uses seed 20260813, and `transfer.json` records it.
@@ -226,6 +190,7 @@ decision.
   evaluation report now lists fact-check rows per extraction tier, including a tier that
   only appears after the evaluation set was frozen. Markup fixtures are in
   `fixtures/newschecker/`.
+
 - **YouTube through yt-dlp, with transcripts.** The adapter no longer needs
   `YOUTUBE_API_KEY` and has no daily quota. The record text is title, description and
   subtitle text, so a video carries thousands of characters instead of a few hundred.
@@ -237,6 +202,7 @@ decision.
   `outside_published_window`, `comments_unavailable`). Engagement mapping is unchanged:
   a field yt-dlp returns as null stays null. Tested against recorded yt-dlp output in
   `fixtures/youtube_ytdlp_info.json`.
+
 - **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
   a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
   reaction total to `likes` and the reply count to `replies`; each is `None` when the
@@ -245,42 +211,23 @@ decision.
   with `missing_credentials`. Channels are listed under `telegram` in
   `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
   API source enums and `openapi.json`.
+
 - **`GET /keys/me`** returns the calling key's id, name, prefix and scopes
   (granted and effective, plus `can_read`/`can_write`/`can_admin`), never the
   secret or hash. It needs only `read`, so a read-only client can disable write
   actions up front. Under `DEMO_MODE` it answers as the `demo` principal
   (`read` and `write`, null prefix).
+
 - **`GET /authors/{author_id}/cohorts` and `GET /authors/{author_id}/narratives`**,
   cursor paginated, returning `CohortOut` and `NarrativeSummary`. An unknown
   author is a 404 `author_not_found`. Both are declared ahead of the
   `:path` author detail route, which would otherwise match them.
+
 - **Name lookups for filter chips.** `GET /cohorts/{cohort_id}` and
   `GET /author-groups/{group_id}` return `{id, name}` and a 404 (`cohort_not_found`,
   `author_group_not_found`) for an unknown id. Narratives already resolve through
   `GET /narratives/{narrative_id}`.
-- **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
-  in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
-  Vishvas News, DigitEye) carry a claim *and a verdict* and are the only
-  supervision in the corpus; nine mainstream outlets supply the coverage a claim
-  spreads against. Every URL probed live on 2026-10-09 and then exercised
-  through the real adapter: 548 records, 16 domains, `en`/`hi`/`te`/`id` =
-  454/90/3/1.
-- **GDELT country scoping** (`gdelt.doc_api.countries`, default `[IN]`, FIPS
-  2-letter). Without it the Indian topics return mostly US coverage.
-- **The fourteen languages of India in `LANGUAGE_CODES`**, both spellings of
-  Odia included. GDELT emits language *names*, so an unmapped name is a null
-  `lang`, not a wrong one.
-- **YouTube `regionCode`** (ISO 3166-1 alpha-2, unlike GDELT's FIPS on the same
-  corpus) and optional `relevanceLanguage`, both omitted from the call entirely
-  when unset because the client serializes an explicit `None`.
-- **Script detection** — `script_profile`, `dominant_script`, `is_code_mixed` —
-  over explicit Unicode ranges at 13.4 M chars/sec.
-- **Romanized-Hindi detection** (`looks_romanized_hindi`), a function-word
-  lexicon checked before langdetect runs.
-- **Short-text resolution by alphabet.** langdetect abstains under 20 chars, but
-  Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Oriya and Sinhala are
-  each used by one major language. Devanagari is excluded on purpose: Hindi,
-  Marathi and Nepali share it, so short Devanagari stays an honest null.
+
 - **Read-side claim deduplication by multilingual embedding, with counts per pass.**
   `collapse_duplicate_claims` links two verdicts when their claim simhashes are within
   3 bits. A reworded claim, and the same claim debunked in English and in Hindi, sit
@@ -294,9 +241,11 @@ decision.
   a hand check of the sample; the report records the precision once the sample has
   labels and `not_measured` until then. A missing `sentence-transformers` install is
   `sentence_transformers_not_installed` on the embedding pass, never a silent no-op.
+
 - **Labels for an English corpus sample.** An AI model labelled a 100-record sample from
   `modeling.cli sample-for-labelling misinfo --n 100`, and a person did not check the labels.
   The 150-row sample of #30 supersedes this sample. This entry quotes no number from it.
+
 - **BOOM Hindi and Fact Crescendo archive backfill.** BOOM Hindi lists only its newest
   day in its sitemaps, so the backfill reads the paginated `/fact-check` listing
   (`backfill.listing`) and walks about 600 articles. Fact Crescendo keeps its `rss_tag`
@@ -304,19 +253,73 @@ decision.
   ClaimReview is appearing on its recent posts. Pages without one are counted as
   `no_claimreview`. The frozen-set summary and the comparison report now print the Hindi
   claim share per publisher, so a set that still rests on one publisher is visible.
-- **`coordinated_author_ratio` on the narrative scorecard and the authors KPI.** Fusion
-  reads this ratio and not `bot_like`, so the API now serves the one it uses. The scorecard
-  stores the value fusion read at score time (new nullable column, migration `c4d8a2f6e193`),
-  and `/overview/kpis/authors` reports the same ratio over the filtered authors with the same
-  threshold. Null means no author was scored by the coordination stage, never 0. Rows scored
-  before the migration stay null until the next `score.fusion` run. `bot_like` is kept and
-  documented as an input fusion does not read.
+
 - **Cursor pagination on `/drivers/authors`, `/drivers/hashtags` and `/drivers/urls`.**
   `DriversResponse` gains `next_cursor`, `total` and `filters_applied`, with the same
   opaque cursor as the other list routes. Rows sort by post count and then by entity, so
   tied counts keep one order across pages.
 
+### Changed
+
+- **The embedder comparison result is reported and the default stays.** The multilingual model
+  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
+  English and 759 Hindi records and 72 records with other detector codes. The silhouette
+  is 0.102 against 0.45. The cluster model card has the tables.
+
+- **The coordination result is reported per source.** YouTube has an observed modularity of
+  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
+  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
+  `artifacts/model_cards/coordination.md`.
+
+- **The Laya calibration diagnosis is recorded, and the clamp at 5 stays.** The optimum
+  temperature on validation is 11.846 for the multilingual fine-tune and 11.408 for the
+  English fine-tune, inside the search of 0.05 to 100. The cause is overconfident logits.
+  `laya.temperature_refit` stays `false`. The isotonic calibrator lowers ECE prob on the
+  stored scores from 0.159 to 0.009 and from 0.151 to 0.009 out of fold. The model card holds
+  the full table. Both diagnosis reports are `valid: false`, so the card bases the decision
+  on the stored scores. Issue 33.
+
+- **The coordination null leaves out shuffles with no edges.** The coordination module
+  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
+  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
+  threading exemption that was fixed to Mastodon in code is now the config list
+  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
+  `eligible_sources`.
+
+### Removed
+
+- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
+  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
+  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
+  Data API's `regionCode` did.
+
+## [0.5.0] — 2026-11-18
+
+The corpus is retargeted from the United States to India, in English and Hindi.
+Data layer only: the case, the sources and the language detection. The modeling
+layer still scores English only, which is now a documented gap rather than a
+decision.
+
 ### Fixed
+
+- **The fact-check comparison is rerun with all eight fact-checker domains left out.** The
+  run of 2026-11-18 used the same score files and the seed 20260813. The corpus rows that
+  the report excludes are 265 for `corpus_title` and 265 for `corpus_text`: altnews.in 34,
+  boomlive.in 66, digiteye.in 9, factcrescendo.com 24, factly.in 22, newschecker.in 29,
+  thequint.com 55 and vishvasnews.com 26. The evaluation set has 4428 claims (4334 Hindi,
+  93 English, 1 other). The Hindi gate still passes. The lift of `laya_multi` on Hindi titles
+  is 1.735 [1.331, 2.368], with a recall of 0.119 and a flag rate of 0.068. The earlier result
+  was 1.760 [1.286, 2.630] on 4180 claims with four domains left out. On Hindi full text, the
+  lift is 0.503 [0.432, 0.590]. The English lift of `misinfo` is 8.188 [6.231, 10.538]. The
+  ship decisions did not change: `laya_en` and `misinfo` ship, and `laya_multi` does not.
+  The claim dedup collapsed 29 rows with simhash and 421 rows with embeddings. The
+  precision of the embedding collapses is 0.390 (78 of 200 pairs), Wilson [0.325, 0.459].
+  It is provisional. The labeller is a model, and no person reviewed the labels.
+
+- **The fact-check comparison report prints no machine-local path.** The Markdown and JSON
+  reports print paths relative to the repository root, such as `configs/...` and
+  `data/...`, or relative to the data directory. A path outside both prints its file name
+  and "outside the repository". `claim_links.json` keeps its absolute sample path.
 
 - **Two `risk_score` fields declared no range.** `HighRiskPost.risk_score` and
   `AuthorScoreExplanation.risk_score` now carry `minimum: 0` and `maximum: 100` in
@@ -330,12 +333,14 @@ decision.
   sample (superseded by the 150-row sample of #30). The `misinfo` and `laya` stages now give records from a fact-checker no value
   and the reason `fact_check_publisher`. The `misinfo` stage also clears a value it wrote
   on an earlier run when it now skips the record, and retracts its stamp.
+
 - **The fact-check comparison left only four fact-checkers out of the flag rate.** It
   read the `publishers` block, which holds the publishers with an extraction tier. Alt
   News, Factly, Newschecker and DigitEye are in the corpus too. `other_fact_checkers` in
   `configs/factcheck.yaml` lists them, and `modeling.config.fact_check_domains` returns
   all eight for the comparison and the scoring stages. The committed report predated
   this. The rerun of 2026-11-18 has its own entry in the Fixed list at the top of this section.
+
 - **The fact-check backfill spent its URL budget on pages that it had already dropped.**
   Pages with a middle rating, no ClaimReview, or an excluded claim language wrote no
   verdict, so each run found and fetched them again. On Vishvas News about 299 of the 300
@@ -353,12 +358,14 @@ decision.
   them. A page is article-like when it has an `<article>` element or an article
   `og:type`, whatever else it holds. A failed ledger write is counted as
   `ledger_write_failed` and does not stop the run.
+
 - **Sitemaps that held no new URL used the sitemap budget.** After a few runs, the newest
   sitemaps held only stored or dropped pages and used all of
   `backfill.max_sitemaps_per_publisher`, so the older sitemaps were never read. A child
   sitemap now uses the budget only when it holds a new URL. The new limit
   `backfill.max_sitemap_fetches_per_publisher` caps all sitemap requests. The report shows
   `sitemaps_exhausted`, and a sitemap that a bound skips is counted as unread.
+
 - **Chart and drilldown series reported unmeasured engagement as 0.** The timeseries,
   the drivers list, the author timeline and the narrative timeline summed engagement
   with a per-row `coalesce(..., 0)`. A bucket where no post exposes likes, shares or
@@ -385,23 +392,99 @@ decision.
   `lang in languages`, a `sw` label silently routed the record out of the
   analysis rather than merely mislabelling it, which would have quietly dropped
   most of what the YouTube, Reddit and Mastodon adapters collect.
+
 - **`gdeltdoc` silently accepts invalid country codes.** `"India"` and `"IND"`
   are emitted into the query and answered with zero rows — an empty corpus that
   reads as a quiet news week. `_country_filter` shape-checks and warns loudly
   while still passing the value through.
+
 - **NewsAPI's hardcoded `language="en"`** is config-driven, with the reason it
   stays English recorded: NewsAPI's supported set has no Hindi.
+
 - **`make seed` failed without a broker.** The graph step ran through a broker. The seed
   step now runs edges and communities in-process.
+
 - **The loader gave 879 of 957 real posts no vector.** It matched cached embeddings only by
   text. The embedder now writes `{slug}.ids.json`, and the loader maps by record id. It
   checks a text hash and loads only the configured embedder's cache. It refuses an
   inconsistent cache, and it counts each miss by reason.
+
 - **The embedding cache failed its own check and was discarded on every run.** It appended
   two rows when a batch repeated a text. It now appends one row per key. An existing cache
   with the extra row is rebuilt once.
+
 - **The engagements KPI and its breakdown reported 0 when no post measured the metric.**
   They now report null.
+
+### Added
+
+- **Per-domain count of the corpus rows that the fact-check comparison excludes.** The report
+  JSON has `excluded_fact_check_publisher_by_domain` for `corpus_title` and `corpus_text` of
+  each model. The Markdown report has a table with one row for each fact-checker domain, also
+  a domain with 0 rows. The counts use the same domain function as the exclusion. The code
+  fails if they do not add up to `n_excluded_fact_check_publisher`. A corpus row on a
+  subdomain of a fact-checker, such as `hindi.boomlive.in`, stays in the flag rate. The report
+  counts it under `fact_check_subdomain_not_excluded` and shows the count under the table.
+
+- **Checkpoint backup and hash check.** `modeling.registry.resolve` pulls a checkpoint
+  from the private repo in `HF_REPO` and checks its sha256 against the optional `sha256`
+  map in `configs/models.yaml`, for local, Hub and Drive copies. A mismatch raises
+  `checkpoint_sha256_mismatch` and deletes a pulled copy. The Laya stage turns it into
+  the reason `laya:checkpoint_sha256_mismatch`. A pulled copy with no hash is refused and
+  deleted with `checkpoint_unverified_pull`, unless `ALLOW_UNVERIFIED_PULL=1`. A local
+  copy with no hash is used and counts `checkpoint_unverified`. A map with no value for
+  the version counts `checkpoint_sha256_missing_key`. `HF_REVISION` or `hf_revision`
+  pins the repo revision. The pull covers the Laya calibrator files and skips
+  `checkpoint_latest/` at any depth. Other new reason codes: `checkpoint_broken_symlink`,
+  `hub_token_missing`, `hub_not_installed`, `hub_pull_failed`, `hub_path_absent`.
+  New commands: `python -m modeling.cli checkpoint-hash <module> [--version <folder>]`
+  and `python -m modeling.cli checkpoint-pull <module> [--version <folder>]`. The model
+  cards and `docs/laya-finetune.md` no longer say that a new clone must train again.
+
+- **The checkpoint hash definition changed.** The hash now frames each path with a length
+  prefix, follows symbolic links, skips `checkpoint_latest/` at any depth and `*.tmp`
+  files, and reads `tokenizer/tokenizer_config.json` and `registry.json` in a normalized
+  form. Every value that the old function produced is replaced, including the value
+  `be9cc846...` in the misinfo model card. So the `checkpoint_stamp` suffix in
+  `model_versions` changes, and the corpus is scored once again.
+
+- **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
+  in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
+  Vishvas News, DigitEye) carry a claim *and a verdict* and are the only
+  supervision in the corpus; nine mainstream outlets supply the coverage a claim
+  spreads against. Every URL probed live on 2026-10-09 and then exercised
+  through the real adapter: 548 records, 16 domains, `en`/`hi`/`te`/`id` =
+  454/90/3/1.
+
+- **GDELT country scoping** (`gdelt.doc_api.countries`, default `[IN]`, FIPS
+  2-letter). Without it the Indian topics return mostly US coverage.
+
+- **The fourteen languages of India in `LANGUAGE_CODES`**, both spellings of
+  Odia included. GDELT emits language *names*, so an unmapped name is a null
+  `lang`, not a wrong one.
+
+- **YouTube `regionCode`** (ISO 3166-1 alpha-2, unlike GDELT's FIPS on the same
+  corpus) and optional `relevanceLanguage`, both omitted from the call entirely
+  when unset because the client serializes an explicit `None`.
+
+- **Script detection** — `script_profile`, `dominant_script`, `is_code_mixed` —
+  over explicit Unicode ranges at 13.4 M chars/sec.
+
+- **Romanized-Hindi detection** (`looks_romanized_hindi`), a function-word
+  lexicon checked before langdetect runs.
+
+- **Short-text resolution by alphabet.** langdetect abstains under 20 chars, but
+  Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Oriya and Sinhala are
+  each used by one major language. Devanagari is excluded on purpose: Hindi,
+  Marathi and Nepali share it, so short Devanagari stays an honest null.
+
+- **`coordinated_author_ratio` on the narrative scorecard and the authors KPI.** Fusion
+  reads this ratio and not `bot_like`, so the API now serves the one it uses. The scorecard
+  stores the value fusion read at score time (new nullable column, migration `c4d8a2f6e193`),
+  and `/overview/kpis/authors` reports the same ratio over the filtered authors with the same
+  threshold. Null means no author was scored by the coordination stage, never 0. Rows scored
+  before the migration stay null until the next `score.fusion` run. `bot_like` is kept and
+  documented as an input fusion does not read.
 
 ### Changed
 
@@ -410,27 +493,7 @@ decision.
   values were stale because domain risk was missing. With domain risk, narrative 1000 moves
   from 15.28 to 24.04. The rescore then moves 1001 from 36.05 to 34.22 and 1002 from 31.18
   to 30.71. Narrative 1000 does not change. All 3 stay low priority. See `docs/roadmap.md`.
-- **The embedder comparison result is reported and the default stays.** The multilingual model
-  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
-  English and 759 Hindi records and 72 records with other detector codes. The silhouette
-  is 0.102 against 0.45. The cluster model card has the tables.
-- **The coordination result is reported per source.** YouTube has an observed modularity of
-  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
-  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
-  `artifacts/model_cards/coordination.md`.
-- **The Laya calibration diagnosis is recorded, and the clamp at 5 stays.** The optimum
-  temperature on validation is 11.846 for the multilingual fine-tune and 11.408 for the
-  English fine-tune, inside the search of 0.05 to 100. The cause is overconfident logits.
-  `laya.temperature_refit` stays `false`. The isotonic calibrator lowers ECE prob on the
-  stored scores from 0.159 to 0.009 and from 0.151 to 0.009 out of fold. The model card holds
-  the full table. Both diagnosis reports are `valid: false`, so the card bases the decision
-  on the stored scores. Issue 33.
-- **The coordination null leaves out shuffles with no edges.** The coordination module
-  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
-  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
-  threading exemption that was fixed to Mastodon in code is now the config list
-  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
-  `eligible_sources`.
+
 - **The fact-check manifest is refrozen at 4281 claims after the full Hindi archive
   read (2026-11-14, superseded by the refreeze at 4428 claims on 2026-11-18).** The figures
   in this entry are the state of 2026-11-14. With the backfill fix of pull request 21, the Vishvas News sitemap backfill read
@@ -441,21 +504,20 @@ decision.
   [1.116, 3.981] on 1016 claims. 99.8 percent of the Hindi claims come from one
   publisher. On Hindi full text, the lift upper limit is still below 1 (0.476
   [0.401, 0.573]). The stage scores titles only. Ship decisions did not change.
+
 - `configs/topics.yaml` replaced: four Indian topic areas (communal, electoral,
   health, scams and synthetic media) with English and Hindi seeds, replacing the
   US vaccine/election/climate case.
+
 - `news_rss.fulltext.max_articles` 60 → 120, and
   `youtube.discovery.max_searches_per_run` 4 → 12 so one run covers the case
   (1,200 of 10,000 daily quota units).
+
 - `topics.yaml`'s `languages:` key is marked declarative, because nothing reads
   it. The three real enforcement points are named instead.
 
 ### Removed
 
-- `YOUTUBE_API_KEY`, `YOUTUBE_MAX_SEARCHES_PER_DAY`, `YOUTUBE_DAILY_QUOTA_UNITS` and the
-  `google-api-python-client` dependency. `youtube.discovery.region_code` is now passed to
-  yt-dlp as `geo_bypass_country`, which does not re-rank search results the way the
-  Data API's `regionCode` did.
 - **The deepfake module.** The code, the API, the table, the dependency tree, the
   training path and the evaluation artifacts are gone.
   - `POST /api/v1/media/check`, `GET /api/v1/media/check/{job_id}` and
@@ -483,14 +545,17 @@ decision.
 - **The GDELT country filter is not verified live.** GDELT's stateful penalty
   window refused every attempt across ~30 minutes of spacing. The query form is
   pinned offline by tests; the end-to-end check is owed.
+
 - **Romanized-Hindi recall is not a measured number.** Zero false positives on
   454 real English records is measured; the 20/20 on positives is circular,
   since the probe set and the lexicon share an author. Hindi/Urdu only —
   romanized Tamil, Telugu and Malayalam score zero by construction.
+
 - **Hindi is ingested but not scored.** `modeling/config.py` still sets
   `languages = ("en",)`, so the scored tables cover a subset of the corpus and
   Hindi-vs-English volume comparisons are invalid until a multilingual
   checkpoint lands.
+
 - **No WhatsApp, Telegram, X, ShareChat, Instagram or Facebook.** For an Indian
   case this is the largest gap, not a minor one. The corpus is public web
   discourse *about* Indian misinformation, not the misinformation itself.
