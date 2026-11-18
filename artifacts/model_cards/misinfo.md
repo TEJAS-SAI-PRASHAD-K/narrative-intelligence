@@ -158,34 +158,64 @@ the calibrated probability, and `configs/models.yaml` does not store this thresh
 The files under `artifacts/eval/misinfo/v0.1.0/` are from the 55-row demo fixture.
 They are not a result.
 
-### Corpus sample labels
+### History of the first corpus sample
 
-The 100-record English sample from `modeling.cli sample-for-labelling misinfo --n 100`
-(2026-11-11) now has labels. An AI model wrote the labels, not a person. The sheet marks
-every row `labeller=llm-unreviewed`. A person did not check the labels.
+The first sample had 100 English records (2026-11-11). An AI model wrote its labels, and a
+person did not check them. Every label was 0. The sample is history. It is not a result, and
+this card does not quote any rate from it. The next section replaces it.
 
-Every label is 0. Of the 100 rows, 20 are fact-check articles that debunk a claim
-(DigitEye, Newschecker, Alt News, BOOM, The Quint). The other 80 are news reports,
-features or opinion. No row pushes a false claim. The 95 percent Wilson interval for the
-positive rate is [0.000, 0.037].
+## Transfer to the corpus (#30)
 
-At its configured `decision_threshold` of 0.5, on the calibrated `record_scores`
-values, `misinfo` v0.2.0 flags 42 of the 100 rows (Wilson [0.328, 0.518]). Against these
-labels, every flag is a false positive. The model flags all 20 debunks (20 of 20,
-[0.839, 1.000]) and 22 of the 80 other articles (0.275, [0.189, 0.381]). The model
-reacts to articles about false claims, not only to articles that push one.
+Status: provisional, needs person labels. Every label in this section is from models, and no
+person reviewed it. Each number from the label sheets carries the note "labeller: model,
+unreviewed by a person". The label sheet and the corpus text are not in git.
 
-The scoring stage gives records from a fact-checker no value and the reason
-`misinfo:fact_check_publisher`, the same domains that the fact-check comparison leaves
-out of its corpus. Without that skip, fusion would read a debunk as misinformation with
-the weight `misinfo_likelihood_agg` (0.40) in `configs/fusion.yaml`. The skip does not
-fix the cause: the model still flags articles about false claims from outlets that are
-not fact-checkers, 22 of the 80 in this sample.
+What the sample measures. The sample has 150 English rows. It comes from
+`modeling.cli sample-for-labelling misinfo --lang en --n 150`. The seed is 20260813, and the
+record embeddings come from the claim dedup model. The strata are the pool of YouTube records
+(S4, pool 54) and the remaining records (S6, pool 5652). The claim-match stratum is empty.
+No English record matches a false claim at cosine 0.85 or by simhash. The Reddit, Mastodon
+and Telegram strata are empty too, because the corpus has no such records. Fact-checker
+domains are not in the sample. Two independent model labellers labelled every row. They did
+not see the scores or each other's labels. The command was `relabel-eval
+--allow-model-labels --n-bootstrap 2000`. It ran on 2026-11-18 (UTC) with `misinfo` v0.2.0 at
+its threshold of 0.5.
 
-`modeling.cli evaluate misinfo` refuses transfer metrics on this sheet, because the
-labelled rows hold one class. The transfer gap stays unmeasured. A useful next sample
-needs more likely positives, for example social posts or posts that fact-checkers
-debunked, and a person must label it. The label sheet and the corpus text are not in git.
+Agreement before adjudication (labeller: model, unreviewed by a person):
+
+| field | rows | raw agreement | Cohen kappa | disagreements |
+|---|---|---|---|---|
+| label | 150 | 1.000 | undefined (both labellers used one class) | 0 |
+| reports_on_false_claim | 150 | 0.993 | 0.938 [0.759, 1.000] | 1 |
+
+One disagreement on `reports_on_false_claim` was settled, and the label was set to 0.
+
+The positive rate is 0 of 150, 0.000 [0.000, 0.025] (Wilson 95%). Both labellers gave every
+row the label 0, so the sample holds one class. ROC-AUC, precision and recall need both
+classes. They are not measured (reason `one_class_only`), and `modeling.cli` refuses to print
+them. The transfer gap of the ranking and of the precision stays unmeasured. A sample with
+real positives and a person as labeller must close it.
+
+What the sample still measures is the flag rate on negatives. Every flag is a false positive
+against these labels (labeller: model, unreviewed by a person).
+
+| measure at threshold 0.5, n 150 | value | 95% interval |
+|---|---|---|
+| flag rate, unweighted | 47 of 150, 0.313 | [0.245, 0.391] (Wilson) |
+| flag rate, unweighted | 0.313 | [0.233, 0.387] (bootstrap) |
+| flag rate, reweighted to the corpus | 0.089 | [0.038, 0.151] (bootstrap, n_eff 97.8) |
+| flag rate, S4 (YouTube, pool 54) | 39 of 54, 0.722 | [0.591, 0.824] (Wilson) |
+| flag rate, S6 (pool 5652) | 8 of 96, 0.083 | [0.043, 0.156] (Wilson) |
+| mean predicted probability | 0.373 | [0.320, 0.422] |
+| mean predicted probability, reweighted | 0.211 | [0.171, 0.253] |
+
+The unweighted rate is high because the sample over-represents YouTube, where the model
+flags 39 of 54 rows. The reweighted rate gives each stratum the weight of its pool. Read the
+reweighted rate as the estimate for the corpus. Read the per-stratum rates as the cause of
+the gap between the two. The reweighted interval is wide, because the pool of S4 has only 54
+rows. With one class, the calibration error equals the mean predicted probability. It is
+0.373 [0.320, 0.422], and 0.211 [0.171, 0.253] reweighted (n_eff 97.8). With n below 200 the
+ECE is noisy, so read the interval and not the point.
 
 ## Calibration
 
@@ -220,19 +250,19 @@ length distribution, and a different relationship between text and claim.
 holdout is run and reported. That number is more honest than in-domain F1
 because house style is memorizable and the underlying task is not.
 
-**The transfer gap is currently UNMEASURED.** A first sample is labelled, but the labels
-come from an AI model and hold one class (see "Corpus sample labels"). A person must close
-the gap:
+**The transfer gap is only partly measured.** The 150-row English sample has labels from
+models and no positive row (see "Transfer to the corpus (#30)"). It measures the flag rate on
+negatives. It cannot measure ROC-AUC, precision or recall. A person must label a sample that
+holds positives:
 
 ```bash
-python -m modeling.cli sample-for-labelling misinfo --lang en --n 100
+python -m modeling.cli sample-for-labelling misinfo --lang en --n 150
 # two labellers fill in the sheet (docs/labelling-guide.md), adjudicate, set labeller_kind, then:
 python -m modeling.cli evaluate misinfo   # or: make relabel-eval
 ```
 
-That single table is worth more than any hyperparameter sweep, and until it
-exists the honest statement is that production accuracy is unknown and expected
-to be substantially below the benchmark numbers.
+Until that table exists, production accuracy is unknown. Expect it to be substantially below
+the benchmark numbers.
 
 ## Error analysis
 
@@ -254,8 +284,8 @@ journalist-adjacent prose and is applied to conversational text.
 
 ## Reporting articles as negatives (candidate option)
 
-Result: not measured yet. No candidate checkpoint is trained, and no candidate score exists.
-The numbers need the GPU host and the corpus on disk. This section describes the option only.
+Result: the candidate `v0.3.0-rn` is trained and measured. See "Articles that report on a
+false claim (#32)" below. This section describes the option.
 
 The problem. The model reacts to the subject of an article. A news report or a rebuttal
 names a false claim, and the model scores it as if it pushed the claim.
@@ -370,7 +400,83 @@ check runs before the weights load.
 
 The shipping bar does not change. A candidate must not lower recall at precision 0.85 on the
 fact-check set beyond its interval. The false-positive rate on reporting articles, before
-and after, is added here when the run exists.
+and after, is in the next section.
+
+## Articles that report on a false claim (#32)
+
+Status: provisional, needs person labels. Every label of the sample is from models, and no
+person reviewed it (labeller: model, unreviewed by a person). The comparison run with the
+candidate is dated 2026-11-18. It is not the published results report.
+
+The problem. The model flags articles that report on a false claim. On the 150-row English
+sample, 8 rows have the label 0 and report on a false claim. The model `misinfo` v0.2.0 flags
+7 of them (0.875). The other rows have a flag rate of 0.271.
+
+The candidate. `v0.3.0-rn` trains `misinfo` with 93 reporting negatives from 6 fact-checker
+domains, after the leak guards. The guards dropped 107 articles, because each has a claim row.
+The extra rows split by publisher. There are 46 rows in train and 29 in the report-only
+validation part. There are 18 rows held out from 2 publishers. The benchmark split is the
+same as for v0.2.0.
+
+Flag rate on the sample at threshold 0.5 (labeller: model, unreviewed by a person):
+
+| rows | v0.2.0 | candidate `v0.3.0-rn` |
+|---|---|---|
+| reporting rows (8) | 7 of 8, 0.875, Wilson [0.529, 0.978] | 0 of 8, 0.000, Wilson [0.000, 0.324] |
+| other rows (133) | 36 of 133, 0.271, Wilson [0.202, 0.352] | 35 of 133, 0.263, Wilson [0.196, 0.344] |
+| difference, reporting minus other | 0.604 [0.318, 0.788] (bootstrap) | -0.263 [-0.339, -0.192] (bootstrap) |
+| all 150 rows, unweighted, including the 9 rows left out above | 47 of 150, 0.313 [0.245, 0.391] | 38 of 150, 0.253 [0.190, 0.328] |
+| all 150 rows, reweighted to the corpus | 0.089 [0.038, 0.151] | 0.088 [0.037, 0.143] |
+| S4 (YouTube) | 39 of 54 | 30 of 54 |
+| S6 | 8 of 96 | 8 of 96 |
+
+Both columns use the same rows. The reporting rows and the other rows leave out the 9 rows
+with the reason `unchecked_claim`, as `relabel-eval` does. The bootstrap uses the seed
+20260813 and 2000 resamples on the stored scores, run on 2026-11-18 (UTC). With 8 reporting
+rows, the interval of the reporting rate is wide.
+The candidate lowers the flag rate on these 8 rows from 7 to 0. The rate on the other rows
+does not change in a way that the intervals show (0.271 and 0.263).
+
+Held-out fact-checker articles. The same 18 held-out rows come from 2 publishers. Neither
+publisher is in training. This table has the flag counts of the two checkpoints on them.
+
+| threshold | v0.2.0 | candidate `v0.3.0-rn` |
+|---|---|---|
+| 0.5 | 17 of 18, row-level Wilson [0.742, 0.990] | 2 of 18, row-level Wilson [0.031, 0.328] |
+| 0.7143 (precision 0.85 on the candidate validation rows; the same threshold for both columns) | 15 of 18, row-level Wilson [0.608, 0.942] | 0 of 18, row-level Wilson [0.000, 0.176] |
+
+The publisher interval is not meaningful with 2 publishers, so the table gives no publisher
+bootstrap interval. The row-level Wilson interval is too narrow, because rows of one
+publisher are not independent. Live scoring already skips fact-checker domains. The test
+shows transfer to fact-checker publishers that were not in training. It does not show the
+effect on other outlets. Only the 8 sample rows show that effect.
+
+The shipping bar. The bar is recall on the English fact-check claims at precision 0.85. It
+comes from the comparison run with the candidate, 2026-11-18, on the same score files and
+the same seed.
+
+| measure, English titles | v0.2.0 | candidate `v0.3.0-rn` |
+|---|---|---|
+| validation threshold | 0.7389 | 0.7143 |
+| validation precision, recall | 0.851, 0.482 | 0.869, 0.451 |
+| recall on known-false claims | 0.516 [0.419, 0.613] | 0.495 [0.398, 0.591] |
+| flag rate on 2205 scored corpus titles | 0.063 [0.053, 0.074] | 0.034 [0.026, 0.041] |
+| lift | 8.188 [6.231, 10.538] | 14.738 [10.900, 19.901] |
+| shared test macro-F1 at its own threshold | 0.753 [0.741, 0.764] | 0.739 [0.727, 0.751] |
+| difference to TF-IDF | 0.150 [0.135, 0.164] | 0.136 [0.121, 0.150] |
+| ship decision against TF-IDF (macro-F1) | ship | ship |
+
+The recall of the candidate is inside the interval of v0.2.0, so the bar is kept. The
+benchmark macro-F1 at the default threshold of 0.5 is 0.7967 [0.7862, 0.8078] for v0.2.0 and
+0.804 [0.794, 0.813] for the candidate. The candidate PR-AUC is 0.789 [0.772, 0.804].
+
+Fix (a), the stance down-weight. Stance exists only for narrative members. The fix could not
+be tested on this sample, because no sampled row has a stance (150 rows have none). It is not
+shipped.
+
+Decision. The candidate meets the shipping bar. It is not shipped yet: the checkpoint
+registry must hold it before `configs/models.yaml` can name it, and the upload is waiting for
+the owner (see the roadmap). `configs/models.yaml` does not change.
 
 ## Get the weights on a fresh clone
 
