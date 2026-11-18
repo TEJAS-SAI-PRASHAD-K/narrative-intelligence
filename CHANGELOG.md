@@ -67,13 +67,17 @@ decision.
   when both classes exist. A null Laya threshold prints "no threshold configured".
 - **Reporting articles as extra negatives for `misinfo`.** `modeling.cli train misinfo
   --extra-negatives PATH --output-version VERSION` adds the rows of a Parquet file as label 0
-  and writes a candidate checkpoint to `models/misinfo/VERSION`. The benchmark split does not
-  change. The report records the file name, sha256, and row and group counts. `modeling.cli
-  reporting-negatives --out PATH` builds the file from the fact-check articles of the corpus.
+  and writes a candidate checkpoint to `models/misinfo/VERSION`. `--output-version` is
+  required with it, and `fine_tune` refuses a folder that holds files. The benchmark split
+  and the calibration set do not change. The report records the file name, sha256, rows,
+  publishers per side and a publisher bootstrap interval of the held-out flag rate. The run
+  saves the held-out ids, and `modeling.cli score-reporting-heldout` scores any checkpoint on
+  them. `modeling.cli reporting-negatives --out PATH` builds the file from the fact-check
+  articles of the corpus and drops every article that the fact-check evaluation scores.
   `modeling.cli score --misinfo-version VERSION` and `scripts/run_comparison.py score
   --misinfo-version VERSION` score with a candidate. A candidate with no `sha256` loads only
-  with `--allow-unverified-candidate`. `configs/models.yaml` does not change. The effect is
-  not measured yet. Refs #32.
+  with `--allow-unverified-candidate`. The comparison writes `misinfo@VERSION` to its own
+  file. `configs/models.yaml` does not change. The effect is not measured yet. Refs #32.
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
   `configs/factcheck.yaml`. A guard cancels a negated verdict, a headline that calls the
