@@ -701,3 +701,44 @@ def test_a_fact_check_article_scored_earlier_loses_its_value_and_stamp(
     assert prob_of(row) is None
     assert "laya" not in _as_version_dict(row["model_versions"])
     assert reasons_of(row) == ["laya:fact_check_publisher"]
+
+
+# ---------------------------------------------------------------------------
+# registry reasons in the refusal note, and resolve only when a record needs it
+# ---------------------------------------------------------------------------
+def _relative_setting(monkeypatch):
+    monkeypatch.setenv("LAYA_HI_CHECKPOINT", f"laya/multi-{LAYA_VERSION}")
+    C.get_settings.cache_clear()
+    return C.get_settings()
+
+
+def test_a_failed_pull_puts_the_registry_reason_in_the_refusal_note(
+    tmp_path, monkeypatch, checkpoint
+):
+    import modeling.registry as registry
+
+    new_settings = _relative_setting(monkeypatch)
+    monkeypatch.setattr(new_settings, "models_dir", tmp_path / "empty-models")
+    registry._LAST_REASON[("laya", f"multi-{LAYA_VERSION}")] = "hub_pull_failed"
+    monkeypatch.setattr(registry, "resolve", lambda *a, **k: None)
+    out = S._laya_stage(make_ctx(tmp_path, new_settings))
+    assert out[0]["refused"] == {"hi": "checkpoint_missing"}
+    assert "laya:checkpoint_missing (reason: hub_pull_failed)" in out[0]["note"]
+    registry._LAST_REASON.clear()
+
+
+def test_the_registry_is_not_asked_when_no_record_needs_the_checkpoint(
+    tmp_path, monkeypatch, checkpoint
+):
+    import modeling.registry as registry
+
+    new_settings = _relative_setting(monkeypatch)
+    asked = []
+    monkeypatch.setattr(registry, "resolve", lambda *a, **k: asked.append(a))
+    english_only = records().loc[lambda f: f["lang"] == "en"]
+    S._laya_stage(make_ctx(tmp_path, new_settings, frame=english_only))
+    only_checked = records().loc[lambda f: f["lang"] == "hi"].iloc[0:0]
+    S._laya_stage(make_ctx(tmp_path, new_settings, frame=only_checked))
+    assert asked == []
+    S._laya_stage(make_ctx(tmp_path, new_settings))
+    assert asked == [("laya", f"multi-{LAYA_VERSION}")]
