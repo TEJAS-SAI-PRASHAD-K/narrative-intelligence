@@ -363,6 +363,7 @@ def score_fusion(self, *, job_id: str | None = None, project_id: str = "", **par
                         "narrative_id": narrative_id,
                         "priority": result.priority,
                         "bot_like": item.bot_like_ratio,
+                        "coordinated_author_ratio": item.coordinated_author_ratio,
                         "anomalous": item.temporal_burstiness,
                         "toxicity": item.toxicity,
                         "compass_risk": _band(item.compass_status, config),
@@ -380,17 +381,19 @@ def score_fusion(self, *, job_id: str | None = None, project_id: str = "", **par
                 text(
                     """
                     INSERT INTO narrative_scorecards (
-                        narrative_id, priority, bot_like, anomalous, toxicity,
-                        compass_risk, negative_sentiment, fusion_score, components,
-                        scoring_version, computed_at
+                        narrative_id, priority, bot_like, coordinated_author_ratio,
+                        anomalous, toxicity, compass_risk, negative_sentiment,
+                        fusion_score, components, scoring_version, computed_at
                     ) VALUES (
-                        cast(:narrative_id AS uuid), :priority, :bot_like, :anomalous,
-                        :toxicity, :compass_risk, :negative_sentiment, :fusion_score,
-                        cast(:components AS jsonb), :scoring_version, :computed_at
+                        cast(:narrative_id AS uuid), :priority, :bot_like,
+                        :coordinated_author_ratio, :anomalous, :toxicity, :compass_risk,
+                        :negative_sentiment, :fusion_score, cast(:components AS jsonb),
+                        :scoring_version, :computed_at
                     )
                     ON CONFLICT (narrative_id) DO UPDATE SET
                         priority = EXCLUDED.priority,
                         bot_like = EXCLUDED.bot_like,
+                        coordinated_author_ratio = EXCLUDED.coordinated_author_ratio,
                         anomalous = EXCLUDED.anomalous,
                         toxicity = EXCLUDED.toxicity,
                         compass_risk = EXCLUDED.compass_risk,

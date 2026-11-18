@@ -22,6 +22,7 @@ REGISTRY: dict[str, str] = {
     "news_rss": "ingest.sources.news_rss:NewsRssSource",
     "mastodon": "ingest.sources.mastodon:MastodonSource",
     "youtube": "ingest.sources.youtube:YouTubeSource",
+    "telegram": "ingest.sources.telegram:TelegramSource",
     "reddit_kaggle": "ingest.sources.reddit_kaggle:RedditKaggleSource",
 }
 

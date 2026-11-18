@@ -12,7 +12,7 @@ from app.schemas.common import Camel
 #: Phase 1's five source values. Six adapters converge on them (ConvoKit and
 #: Kaggle both write `reddit`), which is why this list is shorter than the
 #: adapter count in the ingest package.
-SourceName = Literal["reddit", "mastodon", "news", "gdelt", "youtube"]
+SourceName = Literal["reddit", "mastodon", "news", "gdelt", "youtube", "telegram"]
 
 
 class ProjectCreate(Camel):

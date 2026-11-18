@@ -62,6 +62,27 @@ mastodon:
     # Bounded by --minutes on the CLI so a grading run cannot hang.
     default_minutes: 2
 
+telegram:
+  # Public broadcast channels, read by username (no leading @). This list is
+  # unverified: the handles are well-known Indian news and political channels
+  # listed as examples, none has been resolved against the live API, and a
+  # renamed or private channel is skipped with a reason code rather than failing
+  # the run. Replace or extend it before relying on the corpus.
+  channels:
+    - ndtv
+    - the_hindu
+    - indiatoday
+    - timesofindia
+    - bjp4india
+    - incindia
+  backfill:
+    # Newest messages read per channel per run; later runs resume from the
+    # newest id already seen (checkpoint key last_id.<channel>).
+    messages_per_channel: 200
+    # Channel history and resolve calls per second. Telegram answers faster
+    # reads with flood waits.
+    requests_per_sec: 0.5
+
 gdelt:
   doc_api:
     # gdeltdoc package; keyword/domain/language-filtered article search.

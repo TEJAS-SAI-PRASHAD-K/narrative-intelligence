@@ -56,6 +56,9 @@ def settings(tmp_path) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
         mastodon_access_token=None,
+        telegram_api_id=None,
+        telegram_api_hash=None,
+        telegram_session=None,
         newsapi_key=None,
         _env_file=None,
     )

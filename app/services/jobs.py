@@ -40,7 +40,6 @@ TASK_NAMES: dict[str, str] = {
     "domain.enrich": "domain.enrich",
     "alerts.evaluate": "alerts.evaluate",
     "reports.render": "reports.render",
-    "maint.purge_uploads": "maint.purge_uploads",
 }
 
 

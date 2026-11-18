@@ -13,7 +13,7 @@ the module being quietly described as present.
 | component | state | notes |
 |---|---|---|
 | canonical schema | done | `ingest/schema.py`, the contract everything converges on |
-| source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube (yt-dlp, with subtitles) |
+| source adapters | done | Reddit (ConvoKit, Kaggle), Mastodon, GDELT, news RSS, YouTube (yt-dlp, with subtitles), Telegram |
 | India retarget | done | 18 Indian feeds, 4 topic areas, English and Hindi |
 | script and language detection | done | Indic scripts, romanized Hindi, code-mix flag |
 | fact-check verdicts | partial | 4311 verdicts, 2 of 4 extraction tiers, 4 of 8 publishers, Vishvas News archive read inside the 2022 window |
@@ -27,7 +27,7 @@ the module being quietly described as present.
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation, coordination input is the weak coordination score, not the bot ratio |
 | API | done | 66 paths, 77 operations, contract tested under `DEMO_MODE` |
 | database | done | 26 tables, 5 migrations, round-trip asserted in CI |
-| deepfake module | removed | code, API, table and dependency tree are gone. `maint.purge_uploads` stays until every deployment has passed one retention window |
+| deepfake module | removed | code, API, table and dependency tree are gone |
 | first real load into Postgres | done | 957 news records, 3 narratives, scored by all four layers, fusion `fusion-v1.2.0` runs, see below |
 | dashboard | done | separate repo, built against the committed contract |
 | CI | done | lint, suite on 3.11 and 3.12, OpenAPI drift, Postgres suite |
@@ -188,9 +188,12 @@ the honest entry in that cell, not a zero.
   the target domain, and the cheapest large source still missing.
 - **Cross-publisher claim deduplication over longer windows.** A 96-claim
   set measured earlier had zero near-duplicates at the project's own Hamming threshold.
-  The freeze collapsed 29 duplicate false verdicts among 4310 by exact claim hash. Near-duplicates are not measured. Several publishers often debunk the same claim
-  within days, so a longer collection window will produce near-duplicates. Only
-  `claim_simhash` is stored today, and no code compares claims yet.
+  The freeze collapsed 29 duplicate false verdicts among 4310. It reads
+  `read_deduplicated_factchecks`, and `collapse_duplicate_claims` links claims whose
+  `claim_simhash` values differ in 3 bits or fewer, so near-duplicates within that radius
+  are collapsed. A claim reworded past 3 bits, or translated, is not caught. Several
+  publishers often debunk the same claim within days, so a longer collection window
+  will produce more of both.
 
 ### Modeling
 
@@ -211,22 +214,23 @@ the honest entry in that cell, not a zero.
   claims, not only to articles that push one. The command `evaluate misinfo` refuses
   transfer metrics here, because the labelled rows hold one class. The next sample needs
   more likely positives, for example social posts or posts that fact-checkers debunked.
-  A person must label it. The fact-check comparison excludes fact-check publishers from
-  its corpus, but the live scoring stage scores them. In the live corpus, fact-check
-  articles receive high `misinfo` values, and fusion inherits them. The label sheet and
+  A person must label it. The `misinfo` and `laya` scoring stages give records from a
+  fact-checker no score (reason `fact_check_publisher`), so fusion no longer reads a
+  debunk as misinformation. The list of fact-checker domains is
+  `configs/factcheck.yaml`, `publishers` plus `other_fact_checkers`. The label sheet and
   the corpus text are not in git.
+- **Rerun the fact-check comparison report.** The report in
+  [results/factcheck-comparison.md](results/factcheck-comparison.md) left only the four
+  publishers with an extraction tier out of the corpus flag rate. Alt News, Factly,
+  Newschecker and DigitEye articles stayed in it. `modeling.cli evaluate-factchecks`
+  on the same score files and seed now leaves out all eight. It needs no GPU. The flag
+  rates and lifts can change. The ship decisions use macro F1 on the benchmark split and
+  do not change. The Hindi gate uses the Hindi title lift, and Alt News Hindi articles
+  were in that flag rate, so the gate result has to be read again from the new report.
 - **Reframe bot detection as coordinated behaviour detection.** Supervised
   per-account classification trained on Twitter data does not transfer, and there
   are no labels for the platforms in this corpus. The unsupervised coordination
   path needs no labels and is validated against a time-shuffled null.
-
-### Backend and frontend
-
-- **Remove `maint.purge_uploads`.** The deepfake module is gone, together with its
-  API, its table and its dependency tree. The upload sweep stays only to delete
-  files that a deployment stored before the removal. Remove the task, its beat
-  schedule, `uploads_dir` and `media_retention_hours` after every deployment has
-  passed one retention window.
 
 ### Known gaps that are not scheduled
 

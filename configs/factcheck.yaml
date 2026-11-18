@@ -85,6 +85,20 @@ publishers:
     tier: rss_tag
     languages: [hi, en]
 
+# Fact-checkers that the news feeds collect but that have no extraction tier
+# here. Together with `publishers` above, this is every fact-checker domain in
+# the corpus. Their articles quote a false claim in order to debunk it, so a
+# misinformation model reads them as misinformation. Two readers depend on the
+# complete list: the fact-check comparison leaves these domains out of the
+# corpus flag rate, and the `misinfo` and `laya` scoring stages give their
+# records no score (reason `fact_check_publisher`). A fact-checker added to
+# `configs/sources.yaml` belongs here or under `publishers`.
+other_fact_checkers:
+  - altnews.in
+  - factly.in
+  - newschecker.in
+  - digiteye.in
+
 # ---------------------------------------------------------------------------
 # Archive backfill
 # ---------------------------------------------------------------------------
