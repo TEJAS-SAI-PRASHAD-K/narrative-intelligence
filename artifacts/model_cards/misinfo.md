@@ -399,7 +399,82 @@ check runs before the weights load.
 
 The shipping bar does not change. A candidate must not lower recall at precision 0.85 on the
 fact-check set beyond its interval. The false-positive rate on reporting articles, before
-and after, is added here when the run exists.
+and after, is in the next section.
+
+## Articles that report on a false claim (#32)
+
+Status: provisional, needs person labels. Every label of the sample is from models, and no
+person reviewed it (labeller: model, unreviewed by a person). The comparison run with the
+candidate is dated 2026-11-18. It is not the published results report.
+
+The problem. The model flags articles that report on a false claim. On the 150-row English
+sample, 8 rows have the label 0 and report on a false claim. Of these, `misinfo` v0.2.0 flags
+7 (0.875). The other rows have a flag rate of 0.271.
+
+The candidate. `v0.3.0-rn` trains `misinfo` with 93 reporting negatives from 6 fact-checker
+domains, after the leak guards. The guards dropped 107 articles, because each has a claim row.
+The extra rows split by publisher: 46 rows in train, 29 in the report-only validation part and
+18 held out from 2 publishers. The benchmark split is the same as for v0.2.0.
+
+Flag rate on the sample at threshold 0.5 (labeller: model, unreviewed by a person):
+
+| rows | v0.2.0 | candidate `v0.3.0-rn` |
+|---|---|---|
+| reporting rows (8) | 7 of 8, 0.875, Wilson [0.529, 0.978] | 0 of 8, 0.000, Wilson [0.000, 0.324] |
+| other rows (133) | 36 of 133, 0.271, Wilson [0.202, 0.352] | 35 of 133, 0.263, Wilson [0.196, 0.344] |
+| difference, reporting minus other | 0.604 [0.318, 0.788] (bootstrap) | -0.263 [-0.339, -0.192] (bootstrap) |
+| all 150 rows, unweighted, including the 9 rows left out above | 47 of 150, 0.313 [0.245, 0.391] | 38 of 150, 0.253 [0.191, 0.329] |
+| all 150 rows, reweighted to the corpus | 0.089 [0.038, 0.151] | 0.088 [0.037, 0.143] |
+| S4 (YouTube) | 39 of 54 | 30 of 54 |
+| S6 | 8 of 96 | 8 of 96 |
+
+Both columns use the same rows. The reporting rows and the other rows leave out the 9 rows
+with the reason `unchecked_claim`, as `relabel-eval` does. The bootstrap uses the seed
+20260813 and 2000 resamples on the stored scores, run on 2026-11-18 (UTC). With 8 reporting
+rows, the interval of the reporting rate is wide.
+The candidate lowers the flag rate on these 8 rows from 7 to 0. It does not change the rate on
+the other rows in a way that the intervals show (0.271 and 0.263).
+
+Held-out fact-checker articles. The same 18 held-out rows come from 2 publishers. This table
+has the flag counts of the two checkpoints on them.
+
+| threshold | v0.2.0 | candidate `v0.3.0-rn` |
+|---|---|---|
+| 0.5 | 17 of 18, row-level Wilson [0.742, 0.990] | 2 of 18, row-level Wilson [0.031, 0.328] |
+| 0.7143 (precision 0.85 on the candidate validation rows) | 15 of 18, row-level Wilson [0.608, 0.942] | 0 of 18, row-level Wilson [0.000, 0.176] |
+
+The publisher interval is not meaningful with 2 publishers, so the table gives no publisher
+bootstrap interval. The row-level Wilson interval is too narrow, because rows of one
+publisher are not independent. Live scoring already skips fact-checker domains. This test
+shows that the model learned the negatives that it saw. It does not show the effect on other
+outlets. Only the 8 sample rows show that effect.
+
+The shipping bar. The bar is recall on the English fact-check claims at precision 0.85. It
+comes from the comparison run with the candidate, 2026-11-18, on the same score files and
+the same seed.
+
+| measure, English titles | v0.2.0 | candidate `v0.3.0-rn` |
+|---|---|---|
+| validation threshold | 0.7389 | 0.7143 |
+| validation precision, recall | 0.851, 0.482 | 0.869, 0.451 |
+| recall on known-false claims | 0.516 [0.419, 0.613] | 0.495 [0.398, 0.591] |
+| flag rate on 2205 scored corpus titles | 0.063 [0.053, 0.074] | 0.034 [0.026, 0.041] |
+| lift | 8.188 [6.231, 10.538] | 14.738 [10.900, 19.901] |
+| shared test macro-F1 at its own threshold | 0.753 [0.741, 0.764] | 0.739 [0.727, 0.751] |
+| difference to TF-IDF | 0.150 [0.135, 0.164] | 0.136 [0.121, 0.150] |
+| ship decision against TF-IDF | ship | ship |
+
+The recall of the candidate is inside the interval of v0.2.0, so the bar is kept. The
+benchmark macro-F1 at the default threshold of 0.5 is 0.7967 [0.7862, 0.8078] for v0.2.0 and
+0.804 [0.794, 0.813] for the candidate. The candidate PR-AUC is 0.789 [0.772, 0.804].
+
+Fix (a), the stance down-weight. No sampled row has a deny stance, because stance exists only
+for narrative members. The sample has 0 deny rows, so the fix has no effect on it. It is not
+shipped.
+
+Decision. The candidate meets the shipping bar. It is not shipped yet: the checkpoint
+registry must hold it before `configs/models.yaml` can name it, and the upload is waiting for
+the owner (see the roadmap). `configs/models.yaml` does not change.
 
 ## Get the weights on a fresh clone
 
