@@ -317,7 +317,8 @@ bot:
 coordination:
   # v0.2.0: coordination_score is 0.0, not null, for an account the detector saw
   # and linked to nobody.
-  version: v0.2.0
+  # v0.2.1: the time-shuffled null leaves out shuffles that have no edges.
+  version: v0.2.1
   # Simhash, shared URLs, hashtags and timing. Language agnostic.
   languages: ["*"]
   window_minutes: 60
@@ -331,6 +332,11 @@ coordination:
   # Sources whose records carry real threading and stable author identity.
   # Kaggle-flat Reddit has parent_id=None honestly and is excluded.
   eligible_sources: [reddit, mastodon, youtube]
+  # Sources kept although no record has a parent_id. The code default is [mastodon].
+  threading_optional_sources: [mastodon, telegram]
+  # A source below either floor gets a reason code in the per-source report.
+  min_source_authors: 10
+  min_source_edges: 10
   evidence_weights:
     near_dup: 1.0
     cotweet: 0.8

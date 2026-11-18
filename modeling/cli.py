@@ -568,6 +568,57 @@ def ablate(
     console.print(result.render())
 
 
+@app.command(name="coordination-report")
+def coordination_report_command(
+    sources: str | None = typer.Option(
+        None,
+        help="Comma-separated sources to measure. May include sources that the production "
+        "eligible set leaves out, such as telegram. This is a research measurement.",
+    ),
+    null_shuffles: int = typer.Option(200, help="Time shuffles per null. Must be 1 or more."),
+    out: Path | None = typer.Option(
+        None, help="Output directory. Default: artifacts/eval/coordination."
+    ),
+    demo: bool = typer.Option(False, "--demo"),
+    limit: int | None = typer.Option(None),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Observed against time-shuffled modularity, overall and for each source.
+
+    Reads the corpus and writes only report.md and report.json under --out. It
+    never writes to data/scored, so a source outside the production eligible set
+    cannot reach author scores. A source with too few authors or edges appears
+    with a reason code. Telegram posts that carry `forwarded_from` are dropped and
+    counted as `telegram_forward`. The p value cannot fall below 1 / (1 + shuffles).
+    """
+    _bootstrap(verbose)
+    from modeling.accounts.coordination import CoordinationDetector, write_report
+    from modeling.scoring import _reader_for
+
+    if null_shuffles < 1:
+        raise typer.BadParameter("--null-shuffles must be 1 or more")
+    settings = get_settings()
+    wanted = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+    records = _reader_for(demo, settings).records(sources=wanted, limit=limit)
+    if not len(records):
+        console.print("[red]no records for that source filter[/red]")
+        raise typer.Exit(code=1)
+    detector = CoordinationDetector(settings)
+    detector.null_shuffles = null_shuffles
+    if wanted:
+        # Research only: the report reads the sources the operator names.
+        detector.eligible_sources = set(wanted)
+    if 1 / (1 + null_shuffles) > 0.05:
+        console.print(
+            f"[yellow]p floor {1 / (1 + null_shuffles):.3f} is above 0.05 with "
+            f"{null_shuffles} shuffles; no p value in this run can reach 0.05[/yellow]"
+        )
+    result = detector.detect(records, per_source=True)
+    target = out or settings.eval_dir / ("coordination_demo" if demo else "coordination")
+    for path in write_report(result, target):
+        console.print(f"wrote {path}", soft_wrap=True, highlight=False)
+
+
 @app.command(name="compare-embedder")
 def compare_embedder_command(
     model: str = typer.Option(
@@ -580,6 +631,11 @@ def compare_embedder_command(
     demo: bool = typer.Option(False, "--demo"),
     sources: str | None = typer.Option(None, help="Comma-separated source filter."),
     limit: int | None = typer.Option(None),
+    min_cluster_size: str | None = typer.Option(
+        None,
+        "--min-cluster-size",
+        help="Comma-separated sweep, for example 5,10,15. Both embedders run at each size.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Cluster with another embedder and print the checks and ablation beside the default.
@@ -592,12 +648,21 @@ def compare_embedder_command(
     from modeling.text.embed import EmbeddingDimensionMismatch
 
     try:
+        sweep = (
+            [int(v) for v in min_cluster_size.split(",") if v.strip()]
+            if min_cluster_size
+            else None
+        )
+    except ValueError as exc:
+        raise typer.BadParameter("--min-cluster-size takes whole numbers, such as 5,10,15") from exc
+    try:
         result = compare_embedder(
             model,
             demo=demo,
             out_dir=out,
             sources=[s.strip() for s in sources.split(",")] if sources else None,
             limit=limit,
+            min_cluster_sizes=sweep,
         )
     except (EmbeddingDimensionMismatch, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")

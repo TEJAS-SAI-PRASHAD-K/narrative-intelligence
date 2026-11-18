@@ -33,6 +33,22 @@ decision.
   error rate only with `human` labels, adjudication on every row, a kappa of at least 0.6,
   30 rows per language and an unchanged pattern set. The error rate is not measured yet.
   See `docs/factcheck-tiers.md`.
+- **Per-source coordination report.** `CoordinationDetector.detect` now returns observed
+  modularity against the time-shuffled null for all eligible records and for each source.
+  Each row has the null mean, a 95 percent interval, the empirical p value, its floor, the
+  number of shuffles, the empty shuffles and the null mean edge count. `per_source=True`
+  turns it on, and only `coordination-report` does that. A source below `min_source_authors` or `min_source_edges` gets a reason code
+  (`too_few_authors`, `no_edges`, `too_few_edges`) and stays in the report. The seed is the settings seed
+  (20260813). The new command `modeling.cli coordination-report` writes `report.md` and
+  `report.json`. It takes `--sources`, which may name a source outside the production
+  eligible set such as `telegram`, and `--null-shuffles` (default 200). It drops forwarded
+  Telegram posts as `telegram_forward` and never writes to the scored tables.
+- **Language purity in `compare-embedder`.** The output has the majority-language share of
+  each cluster, the member-weighted mean and the count of mixed clusters for both embedders.
+  It also gives each language's clustered and noise counts, and the share of its clustered
+  records that sit in a cluster with each other language. Both embedders cluster the same
+  sources and limit. The new option `--min-cluster-size 5,10,15,25` runs both embedders at
+  each size. The narratives manifest records `min_cluster_size`.
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict
@@ -224,6 +240,12 @@ decision.
 
 ### Changed
 
+- **The coordination null leaves out shuffles with no edges.** The coordination module
+  is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
+  pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
+  threading exemption that was fixed to Mastodon in code is now the config list
+  `threading_optional_sources`, with the code default `[mastodon]`. Telegram stays outside
+  `eligible_sources`.
 - **The fact-check manifest is refrozen at 4281 claims after the full Hindi archive
   read.** With the backfill fix of pull request 21, the Vishvas News sitemap backfill read
   the whole archive inside the 2022 window. The set grew from 1107 claims. 1106 old rows

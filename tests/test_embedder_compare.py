@@ -145,3 +145,133 @@ def test_cli_exits_nonzero_with_the_reason_for_a_wrong_width(env):
     )
     assert result.exit_code == 1
     assert "768-dim" in result.output
+
+
+def _membership(pairs):
+    import pandas as pd
+
+    return pd.DataFrame(pairs, columns=["record_id", "narrative_id"])
+
+
+def test_language_purity_per_cluster_weighted_mean_and_mixed_count():
+    lang = {f"a{i}": "hi" for i in range(9)} | {"a9": "en"}
+    lang |= {f"b{i}": "en" for i in range(4)} | {f"c{i}": "hi" for i in range(2)}
+    lang |= {"c2": "en", "c3": "en"}
+    pairs = [(f"a{i}", "n-a") for i in range(10)]
+    pairs += [(f"b{i}", "n-b") for i in range(4)]
+    pairs += [(f"c{i}", "n-c") for i in range(4)]
+    purity = X.language_purity(_membership(pairs), lang)
+
+    by_id = {row["narrative_id"]: row for row in purity["clusters"]}
+    assert by_id["n-a"]["purity"] == 0.9 and by_id["n-a"]["majority_lang"] == "hi"
+    assert by_id["n-b"]["purity"] == 1.0
+    assert by_id["n-c"]["purity"] == 0.5
+    assert purity["mixed_clusters"] == 1
+    assert purity["weighted_mean_purity"] == pytest.approx((9 + 4 + 2) / 18, abs=1e-4)
+    assert purity["n_clusters"] == 3
+
+
+def test_language_purity_counts_members_without_a_language_and_never_hides_them():
+    lang = {"a": "hi", "b": "hi", "c": "und", "d": None}
+    pairs = [("a", "n1"), ("b", "n1"), ("c", "n1"), ("d", "n2"), ("zz", "n2")]
+    purity = X.language_purity(_membership(pairs), lang)
+
+    assert purity["lang_unknown"] == 3
+    rows = {row["narrative_id"]: row for row in purity["clusters"]}
+    assert rows["n1"]["purity"] == 1.0 and rows["n1"]["lang_unknown"] == 1
+    assert rows["n2"]["purity"] is None
+    assert purity["weighted_mean_purity"] == 1.0
+    assert X.language_purity(_membership([]), lang)["status"] == "no_clusters"
+
+
+def test_language_purity_reports_noise_and_cross_language_sharing():
+    lang = {f"h{i}": "hi" for i in range(6)} | {f"e{i}": "en" for i in range(6)}
+    pairs = [(f"h{i}", "n1") for i in range(4)] + [(f"e{i}", "n1") for i in range(2)]
+    pairs += [(f"e{i}", "n2") for i in range(2, 6)]
+    purity = X.language_purity(_membership(pairs), lang, noise_ids=["h4", "h5"])
+
+    hi, en = purity["by_language"]["hi"], purity["by_language"]["en"]
+    assert (hi["clustered"], hi["noise"], hi["noise_share"]) == (4, 2, pytest.approx(2 / 6, 1e-3))
+    assert (en["clustered"], en["noise"]) == (6, 0)
+    assert hi["shares_cluster_with"] == {"en": 1.0}
+    assert en["shares_cluster_with"] == {"hi": pytest.approx(2 / 6, abs=1e-4)}
+
+
+def test_a_run_that_keeps_one_language_and_drops_the_other_is_not_pure_by_accident():
+    lang = {f"h{i}": "hi" for i in range(4)} | {f"e{i}": "en" for i in range(4)}
+    pairs = [(f"e{i}", "n1") for i in range(4)]
+    purity = X.language_purity(_membership(pairs), lang, noise_ids=[f"h{i}" for i in range(4)])
+
+    assert purity["weighted_mean_purity"] == 1.0
+    assert purity["by_language"]["hi"]["noise_share"] == 1.0
+    assert purity["by_language"]["hi"]["clustered"] == 0
+
+
+def test_missing_values_of_every_kind_are_unknown_languages():
+    import numpy as np
+    import pandas as pd
+
+    lang = {"a": "hi", "b": pd.NA, "c": np.nan, "d": "und", "e": None, "f": ""}
+    pairs = [(k, "n1") for k in lang]
+    purity = X.language_purity(_membership(pairs), lang)
+
+    assert purity["lang_unknown"] == 5
+    assert purity["clusters"][0]["known_members"] == 1
+    assert purity["by_language"]["hi"]["clustered"] == 1
+
+
+def test_baseline_clusters_the_same_input_as_the_alternative(env):
+    settings, tmp_path, loaded = env
+    out = tmp_path / "same"
+    result = X.compare_embedder(ALTERNATIVE, demo=True, out_dir=out, settings=settings)
+
+    assert (out / "baseline_scored" / "narratives").exists()
+    assert result.baseline_checks["embed_model"] == DEFAULT
+    assert result.baseline_checks["min_cluster_size"] == result.alternative_checks[
+        "min_cluster_size"
+    ] == 5
+    assert DEFAULT in loaded and ALTERNATIVE in loaded
+
+
+def test_sweep_runs_both_embedders_at_each_size_and_reports_purity(env):
+    settings, tmp_path, loaded = env
+    out = tmp_path / "sweep"
+    result = X.compare_embedder(
+        ALTERNATIVE, demo=True, out_dir=out, min_cluster_sizes=[4, 6], settings=settings
+    )
+
+    assert [(r["embedder"], r["min_cluster_size"]) for r in result.sweep] == [
+        ("baseline", 4), ("alternative", 4), ("baseline", 6), ("alternative", 6),
+    ]
+    for row in result.sweep:
+        assert row["checks"]["min_cluster_size"] == row["min_cluster_size"]
+        assert row["checks"]["embed_model"] == row["model"]
+        assert row["purity"]["status"] == "measured"
+        assert 0.0 < row["purity"]["weighted_mean_purity"] <= 1.0
+        assert set(row["purity"]["by_language"]) >= {"en"}
+        assert "store" not in row
+    payload = json.loads((out / "clustering.json").read_text())
+    assert len(payload["sweep"]) == 4
+    assert "language_purity" in payload
+    text = (out / "comparison.md").read_text()
+    assert "## Language purity" in text and "## Sweep over min_cluster_size" in text
+    assert (out / "sweep" / "alternative-mcs4").exists()
+
+
+def test_cli_accepts_a_sweep_and_rejects_a_bad_size(env):
+    import re
+
+    _, tmp_path, _ = env
+    ok = CliRunner().invoke(
+        app,
+        ["compare-embedder", "--model", ALTERNATIVE, "--demo", "--out", str(tmp_path / "s"),
+         "--min-cluster-size", "4,6"],
+    )
+    assert ok.exit_code == 0, ok.output
+    bad = CliRunner().invoke(
+        app,
+        ["compare-embedder", "--model", ALTERNATIVE, "--demo", "--out", str(tmp_path / "t"),
+         "--min-cluster-size", "four"],
+    )
+    assert bad.exit_code != 0
+    assert "whole numbers" in re.sub(r"\x1b\[[0-9;]*m", "", bad.output)

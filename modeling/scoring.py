@@ -59,6 +59,13 @@ class StageContext:
     #: Overrides ``embed.model_name`` for the cluster stage. Only the embedder
     #: comparison sets it, together with a store of its own.
     embed_model: str | None = None
+    #: Overrides ``cluster.min_cluster_size`` for the cluster stage. Only the
+    #: embedder sweep sets it.
+    min_cluster_size: int | None = None
+    #: A dict the cluster stage fills with its ``ClusteringResult`` under
+    #: ``"cluster"``. The embedder comparison reads noise ids from it, because the
+    #: membership table holds clustered records only.
+    capture: dict[str, Any] | None = None
 
     def note(self, message: str) -> str:
         return f"[demo] {message}" if self.demo else message
@@ -182,10 +189,12 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
     previous = ctx.store.read("narratives")
     scores = ctx.store.read("record_scores")
 
-    clusterer = NarrativeClusterer(ctx.settings)
+    clusterer = NarrativeClusterer(ctx.settings, min_cluster_size=ctx.min_cluster_size)
     result = clusterer.fit(
         records, embeddings, record_scores=scores if len(scores) else None, previous=previous
     )
+    if ctx.capture is not None:
+        ctx.capture["cluster"] = result
     if not result.narratives:
         return [
             {
@@ -279,6 +288,7 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
             "is_demo": ctx.demo,
             "embedding_dim": embeddings.dim,
             "embed_model": embedder.model_name,
+            "min_cluster_size": clusterer.min_cluster_size,
             "diagnostics": result.diagnostics,
             "transitions": {k: len(v) for k, v in result.transitions.items()},
         },
@@ -1574,11 +1584,14 @@ def run_stages(
     settings: ModelingSettings | None = None,
     store: ScoredStore | None = None,
     embed_model: str | None = None,
+    min_cluster_size: int | None = None,
+    capture: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the named stages over the corpus and return a per-stage summary.
 
-    ``store`` and ``embed_model`` exist for the embedder comparison, which runs
-    the cluster stage with another model into a store of its own.
+    ``store``, ``embed_model`` and ``min_cluster_size`` exist for the embedder
+    comparison, which runs the cluster stage with another model, and another
+    cluster size, into a store of its own.
     """
     settings = settings or get_settings()
     settings.ensure_dirs()
@@ -1612,6 +1625,8 @@ def run_stages(
         reader=reader,
         store=store or _store_for(demo, settings),
         embed_model=embed_model,
+        min_cluster_size=min_cluster_size,
+        capture=capture,
         records=records,
         authors=authors,
         demo=demo,
