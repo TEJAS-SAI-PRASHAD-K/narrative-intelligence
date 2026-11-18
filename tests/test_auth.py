@@ -229,3 +229,96 @@ def test_healthz_and_readyz_need_no_key(client):
     """An orchestrator probe must not require a credential."""
     assert client.get("/healthz").status_code == 200
     assert client.get("/readyz").status_code in (200, 503)
+
+
+# ---------------------------------------------------------------------------
+# GET /keys/me -- principal injected, no database needed
+# ---------------------------------------------------------------------------
+def _client_as(monkeypatch, tmp_path, scopes, prefix="nip_abcd"):
+    from fastapi.testclient import TestClient
+
+    from app.config import get_api_settings
+    from app.deps import Principal, get_principal
+
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("API_KEY_PEPPER", "a-test-pepper")
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path / "uploads"))
+    get_api_settings.cache_clear()
+
+    from app.main import create_app
+
+    app = create_app()
+    principal = Principal(
+        key_id="k-1", name="dashboard", scopes=frozenset(scopes), prefix=prefix
+    )
+    app.dependency_overrides[get_principal] = lambda: principal
+    return TestClient(app)
+
+
+@pytest.fixture(autouse=False)
+def _reset_settings():
+    from app.config import get_api_settings
+
+    yield
+    get_api_settings.cache_clear()
+
+
+def test_keys_me_for_a_read_only_key(monkeypatch, tmp_path, _reset_settings):
+    client = _client_as(monkeypatch, tmp_path, ["read"])
+    response = client.get("/api/v1/keys/me")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scopes"] == ["read"]
+    assert body["effective_scopes"] == ["read"]
+    assert (body["can_read"], body["can_write"], body["can_admin"]) == (True, False, False)
+    assert body["id"] == "k-1"
+    assert body["prefix"] == "nip_abcd"
+    assert not {"key", "key_hash", "hash"} & set(body)
+
+
+def test_keys_me_for_a_write_key(monkeypatch, tmp_path, _reset_settings):
+    client = _client_as(monkeypatch, tmp_path, ["write", "read"])
+    body = client.get("/api/v1/keys/me").json()
+    assert body["scopes"] == ["read", "write"]
+    assert (body["can_read"], body["can_write"], body["can_admin"]) == (True, True, False)
+
+
+def test_keys_me_expands_admin_but_reports_granted_scopes(monkeypatch, tmp_path, _reset_settings):
+    client = _client_as(monkeypatch, tmp_path, ["admin"])
+    body = client.get("/api/v1/keys/me").json()
+    assert body["scopes"] == ["admin"]
+    assert body["effective_scopes"] == ["read", "write", "admin"]
+    assert body["can_write"] is True
+
+
+def test_keys_me_is_not_swallowed_by_the_key_id_route(monkeypatch, tmp_path, _reset_settings):
+    """DELETE /keys/{key_id} must not capture GET /keys/me."""
+    client = _client_as(monkeypatch, tmp_path, ["read"])
+    assert client.get("/api/v1/keys/me").status_code == 200
+    # A read-only key still cannot reach the admin routes.
+    assert client.get("/api/v1/keys").status_code == 403
+
+
+def test_keys_me_without_a_key_is_401(monkeypatch, tmp_path, _reset_settings):
+    from fastapi.testclient import TestClient
+
+    from app.config import get_api_settings
+
+    monkeypatch.setenv("DEMO_MODE", "0")
+    monkeypatch.setenv("API_KEY_PEPPER", "a-test-pepper")
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("REDIS_URL", "")
+    get_api_settings.cache_clear()
+    from app.db import get_session
+    from app.main import create_app
+
+    async def no_session():
+        yield None
+
+    app = create_app()
+    app.dependency_overrides[get_session] = no_session
+    response = TestClient(app).get("/api/v1/keys/me")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
