@@ -190,9 +190,12 @@ the honest entry in that cell, not a zero.
   dependency and the 10,000 unit daily quota, and additionally yields subtitles.
 - **Cross-publisher claim deduplication over longer windows.** A 96-claim
   set measured earlier had zero near-duplicates at the project's own Hamming threshold.
-  The freeze collapsed 29 duplicate false verdicts among 4310 by exact claim hash. Near-duplicates are not measured. Several publishers often debunk the same claim
-  within days, so a longer collection window will produce near-duplicates. Only
-  `claim_simhash` is stored today, and no code compares claims yet.
+  The freeze collapsed 29 duplicate false verdicts among 4310. It reads
+  `read_deduplicated_factchecks`, and `collapse_duplicate_claims` links claims whose
+  `claim_simhash` values differ in 3 bits or fewer, so near-duplicates within that radius
+  are collapsed. A claim reworded past 3 bits, or translated, is not caught. Several
+  publishers often debunk the same claim within days, so a longer collection window
+  will produce more of both.
 
 ### Modeling
 
