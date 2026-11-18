@@ -11,6 +11,17 @@ Data layer only: the case, the sources and the language detection. The modeling
 layer still scores English only, which is now a documented gap rather than a
 decision.
 
+### Fixed
+
+- **The claim dedup precision counts only pairs at or above the threshold.** The hand-check
+  sample spans similarities below `claim_dedup.min_similarity`, because a row can join a
+  cluster through a chain of pairs. `embedding_precision` counted all labelled pairs, so the
+  number was too low for the threshold that the pass uses. It now reads the threshold of the
+  run from `claim_links.json` (the config is the fallback, and the line says so). It counts
+  the labelled pairs below the threshold apart, gives the share of same-claim pairs below it,
+  and gives precision per similarity band with Wilson intervals. A pair below the threshold
+  is in the links and is not stale.
+
 ### Added
 
 - **The claim dedup hand-check sample records who labelled it.** The sample has the new

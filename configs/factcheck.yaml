@@ -507,6 +507,12 @@ claim_dedup:
   # until then. Raising this lowers recall of duplicates; lowering it lowers
   # precision. Neither direction is free.
   #
+  # The sample holds every embedding link, including rows that join a cluster through a
+  # chain and score below this threshold against their representative. The precision
+  # counts only labelled pairs at or above the threshold of the run that made the links.
+  # Labelled pairs below it are counted apart, and so is the share of same-claim pairs
+  # that lie below it. The report also gives precision per similarity band.
+  #
   # Columns of the sample that a labeller fills in:
   #   labeller_kind  human, model-reviewed or model-unreviewed (same list as tier 4).
   #                  Only human gives a measured precision. A model label gives a
