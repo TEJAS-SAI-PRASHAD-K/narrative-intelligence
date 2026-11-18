@@ -136,11 +136,18 @@ class ClusteringResult:
 class NarrativeClusterer:
     module = "cluster"
 
-    def __init__(self, settings: ModelingSettings | None = None):
+    def __init__(
+        self, settings: ModelingSettings | None = None, *, min_cluster_size: int | None = None
+    ):
         self.settings = settings or get_settings()
         self.config = module_config(self.module)
         self.version = str(self.config.get("version", "v0.0.0-unset"))
-        self.min_cluster_size = int(self.config.get("min_cluster_size", 15))
+        # The override exists for the embedder sweep. Production reads the config.
+        self.min_cluster_size = int(
+            min_cluster_size
+            if min_cluster_size is not None
+            else self.config.get("min_cluster_size", 15)
+        )
         self.min_samples = int(self.config.get("min_samples", 5))
         self.selection_method = str(self.config.get("cluster_selection_method", "eom"))
         self.selection_epsilon = float(self.config.get("cluster_selection_epsilon", 0.0))

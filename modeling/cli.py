@@ -619,6 +619,11 @@ def compare_embedder_command(
     demo: bool = typer.Option(False, "--demo"),
     sources: str | None = typer.Option(None, help="Comma-separated source filter."),
     limit: int | None = typer.Option(None),
+    min_cluster_size: str | None = typer.Option(
+        None,
+        "--min-cluster-size",
+        help="Comma-separated sweep, for example 5,10,15. Both embedders run at each size.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Cluster with another embedder and print the checks and ablation beside the default.
@@ -631,12 +636,21 @@ def compare_embedder_command(
     from modeling.text.embed import EmbeddingDimensionMismatch
 
     try:
+        sweep = (
+            [int(v) for v in min_cluster_size.split(",") if v.strip()]
+            if min_cluster_size
+            else None
+        )
+    except ValueError as exc:
+        raise typer.BadParameter("--min-cluster-size takes whole numbers, such as 5,10,15") from exc
+    try:
         result = compare_embedder(
             model,
             demo=demo,
             out_dir=out,
             sources=[s.strip() for s in sources.split(",")] if sources else None,
             limit=limit,
+            min_cluster_sizes=sweep,
         )
     except (EmbeddingDimensionMismatch, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")

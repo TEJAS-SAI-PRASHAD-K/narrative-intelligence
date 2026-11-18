@@ -111,6 +111,17 @@ view of the claim.
 **The audit is the evaluation. The other three are triage.** `modeling cluster
 --audit 20` renders the sample.
 
+## Language purity
+
+`python -m modeling.cli compare-embedder --min-cluster-size 5,10,15,25` clusters again
+with the default embedder and with the candidate at each size. For each run it reports
+the purity of each cluster, which is the share of its members in the majority language.
+It also reports the member-weighted mean purity and the number of mixed clusters, which
+are clusters below 0.9. Members with no language code are counted and left out of the
+share. The default changes only if clusters group by topic across languages.
+
+Result for both embedders: not measured. The run needs the larger corpus and the GPU host.
+
 ## Known limitations
 
 - **English-only.** Non-English text is embedded by an English model and will

@@ -59,6 +59,9 @@ class StageContext:
     #: Overrides ``embed.model_name`` for the cluster stage. Only the embedder
     #: comparison sets it, together with a store of its own.
     embed_model: str | None = None
+    #: Overrides ``cluster.min_cluster_size`` for the cluster stage. Only the
+    #: embedder sweep sets it.
+    min_cluster_size: int | None = None
 
     def note(self, message: str) -> str:
         return f"[demo] {message}" if self.demo else message
@@ -182,7 +185,7 @@ def _cluster_stage(ctx: StageContext) -> list[dict[str, Any]]:
     previous = ctx.store.read("narratives")
     scores = ctx.store.read("record_scores")
 
-    clusterer = NarrativeClusterer(ctx.settings)
+    clusterer = NarrativeClusterer(ctx.settings, min_cluster_size=ctx.min_cluster_size)
     result = clusterer.fit(
         records, embeddings, record_scores=scores if len(scores) else None, previous=previous
     )
@@ -1574,11 +1577,13 @@ def run_stages(
     settings: ModelingSettings | None = None,
     store: ScoredStore | None = None,
     embed_model: str | None = None,
+    min_cluster_size: int | None = None,
 ) -> list[dict[str, Any]]:
     """Run the named stages over the corpus and return a per-stage summary.
 
-    ``store`` and ``embed_model`` exist for the embedder comparison, which runs
-    the cluster stage with another model into a store of its own.
+    ``store``, ``embed_model`` and ``min_cluster_size`` exist for the embedder
+    comparison, which runs the cluster stage with another model, and another
+    cluster size, into a store of its own.
     """
     settings = settings or get_settings()
     settings.ensure_dirs()
@@ -1612,6 +1617,7 @@ def run_stages(
         reader=reader,
         store=store or _store_for(demo, settings),
         embed_model=embed_model,
+        min_cluster_size=min_cluster_size,
         records=records,
         authors=authors,
         demo=demo,
