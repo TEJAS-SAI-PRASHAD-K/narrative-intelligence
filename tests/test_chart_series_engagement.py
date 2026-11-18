@@ -388,3 +388,26 @@ def test_demo_timeseries_reports_none_for_an_unmeasured_engagement_bucket(demo_c
     values = [p["value"] for p in body["points"]]
     assert None in values
     assert any(v for v in values if v is not None)
+
+
+@requires_postgres
+def test_drivers_authors_walk_returns_each_tied_row_once(client, migrated_db, admin_key):
+    # Every seeded author has one post, so the whole list is one big tie and only
+    # the entity tiebreaker keeps the pages from overlapping.
+    project_id = uuid.uuid4()
+    _seed_engagement(project_id, ROWS)
+
+    walked, cursor = [], None
+    for _ in range(10):
+        params = {"limit": 1}
+        if cursor:
+            params["cursor"] = cursor
+        body = _get(client, admin_key, "/drivers/authors", project_id, **params)
+        assert body["total"] == len(ROWS)
+        walked.extend(item["entity"] for item in body["items"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+
+    assert sorted(walked) == sorted(set(walked))
+    assert len(walked) == len(ROWS)

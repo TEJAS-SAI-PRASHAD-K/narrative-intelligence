@@ -441,6 +441,43 @@ def test_drivers(demo_client, demo_ids):
         assert payload.definition
 
 
+def test_drivers_pages_return_each_row_once(demo_client, demo_ids):
+    from app.schemas.drivers import DriversResponse
+
+    base = f"?project_id={demo_ids['project_id']}"
+
+    def walk(tab: str, limit: int) -> tuple[list[str], int | None]:
+        entities, cursor, total = [], None, None
+        for _ in range(1000):
+            url = f"/api/v1/drivers/{tab}{base}&limit={limit}"
+            if cursor:
+                url += f"&cursor={cursor}"
+            body = DriversResponse.model_validate(demo_client.get(url).json())
+            assert body.filters_applied["project_id"] == demo_ids["project_id"]
+            total = body.total
+            entities.extend(item.entity for item in body.items)
+            cursor = body.next_cursor
+            if cursor is None:
+                return entities, total
+        raise AssertionError("cursor never terminated")
+
+    for tab in ("authors", "hashtags", "urls"):
+        small, total = walk(tab, 7)
+        large, _ = walk(tab, 200)
+        assert len(small) > 7
+        assert len(set(small)) == len(small)
+        assert total == len(small)
+        assert small == large
+
+
+def test_drivers_order_breaks_ties_on_entity(demo_client, demo_ids):
+    body = demo_client.get(
+        f"/api/v1/drivers/hashtags?project_id={demo_ids['project_id']}&limit=200"
+    ).json()
+    keys = [(-item["post_count"], item["entity"]) for item in body["items"]]
+    assert keys == sorted(keys)
+
+
 def test_domains(demo_client, demo_ids):
     from app.schemas.common import JobAccepted, PageResponse
     from app.schemas.domains import DomainNarrativeLink, DomainOut

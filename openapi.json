@@ -2360,12 +2360,40 @@
             "title": "Entity Type",
             "type": "string"
           },
+          "filters_applied": {
+            "additionalProperties": true,
+            "title": "Filters Applied",
+            "type": "object"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/DriverItem"
             },
             "title": "Items",
             "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Distinct entities matching the filters. Null when counting would cost more than the page itself.",
+            "title": "Total"
           }
         },
         "required": [
