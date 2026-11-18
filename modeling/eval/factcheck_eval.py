@@ -662,6 +662,8 @@ class ClaimUniverse:
     #: Deduplicated fact-check rows per extraction tier, including rows outside the
     #: frozen set, so a tier that only appears after freezing is still counted.
     tier_counts: dict[str, int] = field(default_factory=dict)
+    #: Paths the run read, as strings. The public report redacts each by its exact value.
+    read_paths: tuple[str, ...] = ()
     #: Evaluation claims per extraction tier. A row with no tier is counted under
     #: `unknown`, never dropped from the count.
     eval_tier_counts: dict[str, int] = field(default_factory=dict)
@@ -872,7 +874,7 @@ def load_claim_universe(
         settings, result, links, path
     )
     manifest_file = Path(manifest_path) if manifest_path else default_manifest_path()
-    return build_claim_universe(
+    universe = build_claim_universe(
         kept,
         result.collapsed,
         manifest=read_manifest(manifest_file),
@@ -882,6 +884,14 @@ def load_claim_universe(
         claim_dedup=block,
         title_predicate=tier4,
     )
+    sample_file = cd.resolve_sample_path(links, path)[0] if links else None
+    recorded = (links or {}).get("sample")
+    universe.read_paths = tuple(
+        str(item)
+        for item in (settings.data_dir, path, manifest_file, sample_file, recorded)
+        if item
+    )
+    return universe
 
 
 def freeze_manifest_from_data(
@@ -2299,34 +2309,69 @@ def display_path(path: str | Path, data_dir: str | Path | None = None) -> str:
     return f"{target.name} (outside the repository)"
 
 
-def redact_paths(value: Any, data_dir: str | Path | None = None) -> Any:
+def _known_path_pattern(known: Collection[str]) -> re.Pattern[str] | None:
+    """One alternation over the exact known paths, longest first, each with its tail."""
+    strings = sorted({str(path) for path in known if path}, key=len, reverse=True)
+    if not strings:
+        return None
+    return re.compile(
+        "|".join(
+            rf"{re.escape(text)}(?![\w+-]|\.\w)(?:/[^\s`'\"<>()]*[^\s`'\"<>().,;:])?"
+            for text in strings
+        )
+    )
+
+
+def redact_paths(
+    value: Any, data_dir: str | Path | None = None, known: Collection[str] = ()
+) -> Any:
     """A copy of ``value`` with every absolute path in its strings made public.
 
-    Keys and numbers pass through. A path inside a sentence, such as the one in a
-    refusal message, is rewritten in place by :func:`display_path`.
+    ``known`` holds the exact paths the run read or wrote. They are replaced first,
+    so a path with a space in it is handled too. Keys and numbers pass through.
     """
-    if isinstance(value, str):
-        return _ABSOLUTE_PATH.sub(lambda match: display_path(match.group(0), data_dir), value)
-    if isinstance(value, dict):
-        return {key: redact_paths(item, data_dir) for key, item in value.items()}
-    if isinstance(value, list):
-        return [redact_paths(item, data_dir) for item in value]
-    return value
+    known_pattern = _known_path_pattern(known)
+
+    def text(item: str) -> str:
+        if known_pattern is not None:
+            item = known_pattern.sub(lambda match: display_path(match.group(0), data_dir), item)
+        return _ABSOLUTE_PATH.sub(lambda match: display_path(match.group(0), data_dir), item)
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, str):
+            return text(item)
+        if isinstance(item, dict):
+            return {key: walk(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        return item
+
+    return walk(value)
 
 
 def write_factcheck_report(
-    result: dict[str, Any], *, label: str = "comparison", settings: Any = None
+    result: dict[str, Any],
+    *,
+    label: str = "comparison",
+    settings: Any = None,
+    data_dir: str | Path | None = None,
+    known_paths: Collection[str] = (),
 ) -> list[Path]:
-    """Write the JSON result and the Markdown report under ``artifacts/eval/factcheck/<label>/``."""
+    """Write the JSON result and the Markdown report under ``artifacts/eval/factcheck/<label>/``.
+
+    ``data_dir`` and ``known_paths`` tell the redaction which paths the run read, so
+    each prints in its public form.
+    """
     from datetime import datetime, timezone
 
     from modeling.config import get_settings, run_fingerprint
     from modeling.eval.report import eval_dir
 
     settings = settings or get_settings()
+    data_dir = data_dir or settings.data_dir
     target = eval_dir(EVAL_MODULE, label, settings)
     fingerprint = run_fingerprint(result["seed"])
-    public = redact_paths(result, settings.data_dir)
+    public = redact_paths(result, data_dir, known_paths)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run": fingerprint,
@@ -2387,5 +2432,18 @@ def run_comparison(
         split_description=split_description,
         controls=controls,
     )
-    paths = write_factcheck_report(result, label=label, settings=settings) if write else []
+    known = [str(data_dir or settings.data_dir), *universe.read_paths]
+    known += [str(path) for path in (links_path, manifest_path, publishers_path) if path]
+    known += [str(score_dir)] + [str(m.path) for m in models.values() if m.path]
+    paths = (
+        write_factcheck_report(
+            result,
+            label=label,
+            settings=settings,
+            data_dir=data_dir or settings.data_dir,
+            known_paths=known,
+        )
+        if write
+        else []
+    )
     return result, paths

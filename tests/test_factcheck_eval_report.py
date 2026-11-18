@@ -534,3 +534,47 @@ def test_redact_paths_rewrites_paths_in_nested_values_only(tmp_path):
         "url": "https://example.org/a/b",
         "ratio": "1/2 and 3 / 4",
     }
+
+
+def test_known_paths_with_a_space_are_redacted_by_value(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    spaced = tmp_path / "with space"
+    data = spaced / "data"
+    manifest = spaced / "manifest file.csv"
+    text = f"Sample `{data}/factchecks/s.csv` and manifest {manifest}."
+    assert redact_paths(
+        {"text": text, "sample": f"{data}/factchecks/s.csv"},
+        data,
+        known=[str(data), str(manifest)],
+    ) == {
+        "text": (
+            "Sample `factchecks/s.csv` and manifest manifest file.csv (outside the repository)."
+        ),
+        "sample": "factchecks/s.csv",
+    }
+
+
+def test_a_moved_sample_with_a_space_in_its_path_prints_no_machine_local_path(env, tmp_path):
+    from tests.test_claim_dedup_embedding import write_links
+
+    sample = env["data"] / "factchecks" / "claim_dedup_sample.csv"
+    sample.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,"
+        "labeller_kind,labeller_1,labeller_2,label_1,label_2,is_same_claim\n"
+        "c2,c1,0.91,false,x,false,y,human,ana,raj,yes,yes,yes\n",
+        encoding="utf-8",
+    )
+    write_links(
+        env["data"],
+        {"c1": "c1", "c2": "c1", "c3": "c3", "c4": "c4", "c5": "c5"},
+        sample=tmp_path / "old place" / "claim dedup sample.csv",
+    )
+    _, paths = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2
+    )
+
+    for path in paths:
+        assert str(tmp_path) not in path.read_text(encoding="utf-8")
+    markdown = paths[1].read_text(encoding="utf-8")
+    assert "claim dedup sample.csv (outside the repository)) does not exist" in markdown
