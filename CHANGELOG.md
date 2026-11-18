@@ -16,8 +16,9 @@ decision.
 - **`PostScores.model_versions` on the API.** The field is a map from module name to
   version stamp, read from the stored `model_versions` column. A Hindi post scored by Laya
   carries a `laya` key and an English post carries `misinfo`, so a client can tell which
-  model produced `misinfo_likelihood`. Null means the row carries no map. `DEMO_MODE=1` and
-  `openapi.json` carry the field.
+  model produced `misinfo_likelihood`. Null means no module stamped the row, and an empty stored map reads as null. The live
+  `score.posts` upsert now writes `model_versions`, so a rescore replaces a stale map.
+  `DEMO_MODE=1` and `openapi.json` carry the field.
 - **Fact-check tier 3, `dom_block`, for Newschecker.** The rating is read from the
   visible result block and the claim from the `Claim` block, in English and Hindi, with
   the selectors in `configs/factcheck.yaml` rather than in code. A page where the verdict

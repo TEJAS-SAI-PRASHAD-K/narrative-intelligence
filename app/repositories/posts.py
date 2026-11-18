@@ -85,7 +85,8 @@ def _to_scores(score) -> PostScores | None:
         emotion=score.emotion,
         emotion_scores=score.emotion_scores,
         scoring_version=score.scoring_version,
-        model_versions=dict(score.model_versions) if score.model_versions is not None else None,
+        # An empty map means no module stamped the row. The API reports that as null.
+        model_versions=dict(score.model_versions or {}) or None,
         scored_at=score.scored_at,
         skip_reasons=list(score.skip_reasons or ()),
     )

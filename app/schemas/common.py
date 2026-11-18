@@ -23,7 +23,11 @@ class Camel(BaseModel):
     for the two sides to disagree about a field name.
     """
 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    # `protected_namespaces=()` lets a field start with `model_`. Pydantic before 2.10 warns
+    # about that prefix by default.
+    model_config = ConfigDict(
+        from_attributes=True, populate_by_name=True, protected_namespaces=()
+    )
 
 
 class NamedRef(Camel):

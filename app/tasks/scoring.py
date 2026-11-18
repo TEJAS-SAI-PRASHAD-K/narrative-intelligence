@@ -65,6 +65,7 @@ def score_posts(self, *, job_id: str | None = None, project_id: str = "", **para
         }
 
     version = scorer.info.version
+    module_versions = dict(getattr(scorer, "versions", None) or {})
     scored = skipped = 0
 
     with sync_session() as session:
@@ -102,7 +103,7 @@ def score_posts(self, *, job_id: str | None = None, project_id: str = "", **para
                     # left absent. Absent is indistinguishable from "not reached
                     # yet" and would make the resume query pick it up forever.
                     skipped += 1
-                payload.append(_score_row(post.id, result, version))
+                payload.append(_score_row(post.id, result, version, module_versions))
 
             session.execute(text(_UPSERT_POST_SCORES), payload)
             scored += len(payload)
@@ -123,11 +124,12 @@ _UPSERT_POST_SCORES = """
 INSERT INTO post_scores (
     post_id, toxicity, is_toxic, anomaly, is_anomalous, misinfo_likelihood,
     stance, stance_confidence, sentiment, sentiment_score, emotion, emotion_scores,
-    skip_reasons, scoring_version, scored_at
+    skip_reasons, model_versions, scoring_version, scored_at
 ) VALUES (
     :post_id, :toxicity, :is_toxic, :anomaly, :is_anomalous, :misinfo_likelihood,
     :stance, :stance_confidence, :sentiment, :sentiment_score, :emotion,
-    cast(:emotion_scores AS jsonb), :skip_reasons, :scoring_version, :scored_at
+    cast(:emotion_scores AS jsonb), :skip_reasons, cast(:model_versions AS jsonb),
+    :scoring_version, :scored_at
 )
 ON CONFLICT (post_id) DO UPDATE SET
     toxicity = EXCLUDED.toxicity, is_toxic = EXCLUDED.is_toxic,
@@ -136,18 +138,38 @@ ON CONFLICT (post_id) DO UPDATE SET
     stance = EXCLUDED.stance, stance_confidence = EXCLUDED.stance_confidence,
     sentiment = EXCLUDED.sentiment, sentiment_score = EXCLUDED.sentiment_score,
     emotion = EXCLUDED.emotion, emotion_scores = EXCLUDED.emotion_scores,
-    skip_reasons = EXCLUDED.skip_reasons, scoring_version = EXCLUDED.scoring_version,
-    scored_at = EXCLUDED.scored_at
+    skip_reasons = EXCLUDED.skip_reasons, model_versions = EXCLUDED.model_versions,
+    scoring_version = EXCLUDED.scoring_version, scored_at = EXCLUDED.scored_at
 """
 
+#: The module that wrote each score field. The live aux scorer fills only these four. It
+#: writes no misinfo or stance, so a rescore never leaves a stale stamp for those.
+_LIVE_MODULE_FIELDS = {
+    "toxicity": "toxicity",
+    "sentiment": "sentiment",
+    "emotion": "emotion",
+    "anomaly": "anomaly",
+}
 
-def _score_row(post_id: str, result: dict, version: str) -> dict:
-    """One scorer output as an upsert row. Nulls stay null."""
+
+def _score_row(
+    post_id: str, result: dict, version: str, module_versions: dict[str, str] | None = None
+) -> dict:
+    """One scorer output as an upsert row. Nulls stay null.
+
+    ``model_versions`` holds a stamp only for a module that produced a value for this post.
+    A row with no such module gets NULL, which clears a stale map from an earlier load.
+    """
     from app.db import utcnow
 
     emotion_scores = result.get("emotion_scores") or {}
     toxicity = result.get("toxicity")
     anomaly = result.get("anomaly")
+    stamps = {
+        module: stamp
+        for module, stamp in (module_versions or {}).items()
+        if module in _LIVE_MODULE_FIELDS and result.get(_LIVE_MODULE_FIELDS[module]) is not None
+    }
     return {
         "post_id": post_id,
         "toxicity": toxicity,
@@ -162,6 +184,7 @@ def _score_row(post_id: str, result: dict, version: str) -> dict:
         "emotion": result.get("emotion"),
         "emotion_scores": json.dumps(emotion_scores) if emotion_scores else None,
         "skip_reasons": ([result["skip_reason"]] if result.get("skip_reason") else []),
+        "model_versions": json.dumps(stamps) if stamps else None,
         "scoring_version": version,
         "scored_at": utcnow(),
     }
