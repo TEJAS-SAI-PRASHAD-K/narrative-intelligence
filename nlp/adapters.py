@@ -131,6 +131,11 @@ class _PostScorerAdapter:
         )
         self._versions = dict(versions)
 
+    @property
+    def versions(self) -> dict[str, str]:
+        """The per-module version map that ``info.version`` is a digest of."""
+        return dict(self._versions)
+
     def predict(self, texts: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         import pandas as pd
 

@@ -21,6 +21,70 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 
+#: Stamps are built from `version` in configs/models.yaml, in the shapes the scorers write.
+#: misinfo and stance append `+<sha8>` of the checkpoint (`checkpoint_stamp`). laya appends
+#: `+finetuned:<directory>+<calibration method>@<sha8>` (`LayaScorer.model_version_for` and
+#: `LoadedCalibrator.stamp`). The hashes below are fixture values, not real checkpoint hashes.
+MOCK_CHECKPOINT_SHA8 = {"misinfo": "3f9a1c2e", "stance": "a41d07bb"}
+MOCK_LAYA_SUFFIX = "+finetuned:multi-v0.2.1+isotonic@5c0de1ab"
+MOCK_HINDI_TEXT = "चुनाव आयोग के नाम पर फैलाया गया यह वीडियो पुराना है, दावा भ्रामक है"
+
+#: Modules that write a per-post score the API serves, and the score field each one fills.
+_STAMPED_FIELDS = {
+    "toxicity": ("toxicity", "is_toxic"),
+    "sentiment": ("sentiment", "sentiment_score"),
+    "emotion": ("emotion", "emotion_scores"),
+    "anomaly": ("anomaly", "is_anomalous"),
+    "stance": ("stance",),
+    "misinfo": ("misinfo_likelihood",),
+}
+
+
+def _module_accepts(config: dict[str, Any], lang: str | None) -> bool:
+    languages = config.get("languages") or []
+    return "*" in languages or (lang is not None and lang in languages)
+
+
+def _mock_model_versions(post: MockPost) -> dict[str, str]:
+    """The `model_versions` map a real run would stamp on this post, from the config."""
+    from app.config import load_yaml
+
+    models = load_yaml("models")
+    versions: dict[str, str] = {}
+    for module in _STAMPED_FIELDS:
+        config = models.get(module) or {}
+        if not _module_accepts(config, post.lang):
+            continue
+        version = str(config["version"])
+        sha = MOCK_CHECKPOINT_SHA8.get(module)
+        versions[module] = f"{version}+{sha}" if sha else version
+    if post.lang == "hi" and "hi" in (models.get("laya") or {}).get("scoring_languages", []):
+        versions["laya"] = f"{models['laya']['version']}{MOCK_LAYA_SUFFIX}"
+    return versions
+
+
+def _apply_language_gates(post: MockPost) -> None:
+    """Null the scores a module did not write for this language, as the scorer does.
+
+    A module whose `languages` list excludes the post's language skips it, so the field is
+    null and carries no stamp. Hindi misinfo_likelihood comes from laya, not misinfo.
+    """
+    from app.config import load_yaml
+
+    models = load_yaml("models")
+    scores = post.scores
+    for module, fields in _STAMPED_FIELDS.items():
+        if _module_accepts(models.get(module) or {}, post.lang):
+            continue
+        if module == "misinfo" and post.lang == "hi":
+            continue
+        for name in fields:
+            scores[name] = None
+        if module == "misinfo":
+            scores["skip_reasons"] = [*scores["skip_reasons"], "unsupported_language"]
+    scores["model_versions"] = _mock_model_versions(post)
+
+
 #: Everything stochastic here derives from this. Changing it changes every
 #: fixture id, so it is a deliberate act.
 SEED = 20260820
@@ -493,6 +557,20 @@ def corpus() -> MockCorpus:
                     narrative.top_hashtags.append(tag)
             if source not in narrative.platforms:
                 narrative.platforms.append(source)
+
+    # One Hindi post scored by laya, chosen by the lowest id among scored English posts that
+    # sit in no narrative, so its text cannot contradict a narrative. Its misinfo_likelihood
+    # comes from a different model than the English posts, which is the case model_versions
+    # exists to expose. The next such post keeps its scores but carries no map at all.
+    scored = [p for p in posts if p.scores and p.scores.get("scoring_version")]
+    loose_en = sorted((p for p in scored if p.lang == "en" and not p.narrative_ids),
+                      key=lambda p: p.id)
+    hindi, legacy = loose_en[0], loose_en[1]
+    hindi.lang = "hi"
+    hindi.text = MOCK_HINDI_TEXT
+    for post in scored:
+        _apply_language_gates(post)
+    legacy.scores["model_versions"] = None
 
     # Threading: give some replies a real parent inside their conversation, so
     # /posts/{id}/thread has something to reconstruct.

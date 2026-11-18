@@ -865,3 +865,64 @@ def test_a_missing_required_project_id_is_a_422_not_a_500(demo_client):
     response = demo_client.get("/api/v1/posts")
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_post_scores_expose_the_model_that_scored_each_post(demo_client, demo_ids):
+    import yaml
+
+    from app.mock.corpus import corpus
+    from app.schemas.posts import PostOut, PostScores
+
+    models = yaml.safe_load((REPO_ROOT / "configs" / "models.yaml").read_text())
+    project_id = demo_ids["project_id"]
+
+    def fetch(post_id: str) -> PostOut:
+        response = demo_client.get(f"/api/v1/posts/{post_id}?project_id={project_id}")
+        assert response.status_code == 200
+        return PostOut.model_validate(response.json())
+
+    scored = [p for p in corpus().posts if p.scores and p.scores.get("scoring_version")]
+    hindi = next(p for p in scored if p.lang == "hi")
+    english = next(p for p in scored if p.lang == "en" and p.scores["model_versions"])
+    unmapped = next(p for p in scored if p.scores["model_versions"] is None)
+
+    laya = fetch(hindi.id).scores.model_versions
+    assert laya is not None and "laya" in laya and "misinfo" not in laya
+    assert laya["laya"].startswith(models["laya"]["version"])
+    # Only modules whose `languages` list names hi run on a Hindi post.
+    assert set(laya) == {"anomaly", "laya"}
+    hindi_scores = fetch(hindi.id).scores
+    assert hindi_scores.misinfo_likelihood is not None
+    assert hindi_scores.toxicity is None and hindi_scores.stance is None
+
+    misinfo = fetch(english.id).scores.model_versions
+    assert misinfo is not None and "misinfo" in misinfo and "laya" not in misinfo
+    assert misinfo["misinfo"].startswith(models["misinfo"]["version"])
+    assert "stance" in misinfo and "laya" not in misinfo
+
+    # No post in another language carries a misinfo stamp.
+    others = [p for p in scored if p.lang not in {"en", "hi"} and p.scores["model_versions"]]
+    assert others and all("misinfo" not in p.scores["model_versions"] for p in others)
+
+    # A row with no map is null on the wire, never an empty map.
+    body = demo_client.get(f"/api/v1/posts/{unmapped.id}?project_id={project_id}").json()
+    assert body["scores"]["model_versions"] is None
+    assert PostScores().model_versions is None
+
+
+def test_post_scores_model_versions_pass_through_the_repository():
+    from types import SimpleNamespace
+
+    from app.repositories.posts import _to_scores
+
+    def row(versions):
+        return SimpleNamespace(
+            toxicity=None, is_toxic=None, anomaly=None, is_anomalous=None,
+            misinfo_likelihood=0.4, stance=None, sentiment=None, sentiment_score=None,
+            emotion=None, emotion_scores=None, scoring_version="phase2:abc",
+            model_versions=versions, scored_at=None, skip_reasons=[],
+        )  # fmt: skip
+
+    assert _to_scores(row({"laya": "v0.2.1+base"})).model_versions == {"laya": "v0.2.1+base"}
+    assert _to_scores(row(None)).model_versions is None
+    assert _to_scores(row({})).model_versions is None

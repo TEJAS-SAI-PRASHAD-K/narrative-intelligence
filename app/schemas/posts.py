@@ -59,6 +59,20 @@ class PostScores(Camel):
     emotion: str | None = None
     emotion_scores: dict[str, float] | None = None
     scoring_version: str | None = None
+    model_versions: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Version stamp of each module that wrote a score for this post, keyed by module "
+            "name. Keys: toxicity, sentiment, emotion, anomaly (the aux pass), misinfo "
+            "(English, roberta-base), laya (Hindi, the Laya multilingual model on the title "
+            "only) and stance. A module that skipped the post has no key. Values are opaque "
+            "stamps: compare them for equality and do not parse them. A stamp can end in a "
+            "checkpoint hash, as in `v0.2.0+3f9a1c2e`. The laya stamp has the shape "
+            "`<version>+finetuned:<directory>+<method>@<hash>`. misinfo_likelihood from "
+            "misinfo and from laya are not comparable, so read the key to learn which model "
+            "produced it. Null means no module stamped this row."
+        ),
+    )
     scored_at: datetime | None = None
     skip_reasons: list[str] = Field(
         default_factory=list,
