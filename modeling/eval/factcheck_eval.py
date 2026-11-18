@@ -323,6 +323,7 @@ def check_shared_inputs(models: dict[str, ModelScores]) -> None:
 # ---------------------------------------------------------------------------
 #: Reason codes for a claim id that is in a score file and is left out of recall.
 CLAIM_COLLAPSED_DUPLICATE = "collapsed_duplicate"
+CLAIM_COLLAPSED_EMBEDDING = "collapsed_duplicate_embedding"
 CLAIM_NOT_KNOWN_FALSE = "label_not_false"
 CLAIM_NOT_IN_FROZEN_SET = "not_in_frozen_set"
 #: The id is in no fact-check row that the reader returned, kept or collapsed.
@@ -441,19 +442,23 @@ def verify_manifest(
     manifest: list[dict[str, str]],
     kept_rows: list[dict[str, Any]],
     collapsed: list[tuple[str, str, int]],
+    *,
+    collapsed_embedding: dict[str, str] | None = None,
 ) -> None:
     """Stop unless every manifest row is present and unchanged in the current rows.
 
     Checks, for each manifest row: the record exists as a kept row (a row that is
     now a collapsed duplicate counts as missing, because the set it was frozen in
     has changed), the URL is the same, the claim hash is the same, and the verdict
-    is the same. Raises
-    ``ManifestMismatch`` listing every problem category with examples.
+    is the same. A row removed by either claim dedup pass is reported under that
+    pass. Raises ``ManifestMismatch`` listing every problem category with examples.
     """
     kept = {str(r["record_id"]): r for r in kept_rows}
     collapsed_into = {record_id: rep for record_id, rep, _ in collapsed}
+    embedding_into = dict(collapsed_embedding or {})
     missing: list[str] = []
     now_duplicate: list[str] = []
+    now_embedding_duplicate: list[str] = []
     hash_changed: list[str] = []
     url_changed: list[str] = []
     verdict_changed: list[str] = []
@@ -464,6 +469,9 @@ def verify_manifest(
             if record_id in collapsed_into:
                 rep = collapsed_into[record_id]
                 now_duplicate.append(f"{record_id} (now a duplicate of {rep})")
+            elif record_id in embedding_into:
+                rep = embedding_into[record_id]
+                now_embedding_duplicate.append(f"{record_id} (now a duplicate of {rep})")
             else:
                 missing.append(record_id)
             continue
@@ -478,6 +486,7 @@ def verify_manifest(
     for label, items in (
         ("missing from the fact-check rows", missing),
         ("no longer kept after claim deduplication", now_duplicate),
+        ("no longer kept after the embedding claim pass", now_embedding_duplicate),
         ("claim hash differs", hash_changed),
         ("URL differs", url_changed),
         ("verdict differs", verdict_changed),
@@ -508,6 +517,8 @@ class ClaimUniverse:
     manifest_rows: int = 0
     #: Counts from the deduplicating reader, for the report.
     dedup_counts: dict[str, int] = field(default_factory=dict)
+    #: Per-pass collapse counts and the embedding pass's hand-check precision.
+    claim_dedup: dict[str, Any] = field(default_factory=dict)
 
     def reason_for_exclusion(self, claim_id: str) -> str | None:
         """The reason code if ``claim_id`` is not an evaluation claim, else ``None``."""
@@ -523,6 +534,8 @@ def build_claim_universe(
     manifest: list[dict[str, str]] | None = None,
     manifest_path: Path | None = None,
     dedup_counts: dict[str, int] | None = None,
+    collapsed_embedding: dict[str, str] | None = None,
+    claim_dedup: dict[str, Any] | None = None,
 ) -> ClaimUniverse:
     """Decide which ids are evaluation claims.
 
@@ -530,15 +543,34 @@ def build_claim_universe(
     one, the manifest is verified first (a mismatch raises) and the set is
     exactly the manifest ids: a row added to the data after freezing is not part
     of the frozen set and is counted as ``not_in_frozen_set``.
+
+    ``collapsed`` is the simhash pass's output. ``collapsed_embedding`` maps a
+    row removed by the embedding pass to the row that absorbed it, so the two
+    passes keep separate reason codes in the report.
     """
+    collapsed = list(collapsed)
     if manifest is not None:
-        verify_manifest(manifest, kept_rows, collapsed)
+        verify_manifest(
+            manifest,
+            kept_rows,
+            collapsed,
+            collapsed_embedding=collapsed_embedding,
+        )
     frozen_ids = {entry["record_id"] for entry in manifest} if manifest is not None else None
 
     eval_ids: set[str] = set()
     excluded: dict[str, str] = {}
     for record_id, _, _ in collapsed:
         excluded[record_id] = CLAIM_COLLAPSED_DUPLICATE
+    overlap = set(collapsed_embedding or {}) & set(excluded)
+    if overlap:
+        raise EvalInputError(
+            "claim dedup classified "
+            f"{len(overlap)} row(s) as both a simhash and an embedding duplicate, "
+            f"for example {sorted(overlap)[0]!r}"
+        )
+    for record_id in collapsed_embedding or {}:
+        excluded[record_id] = CLAIM_COLLAPSED_EMBEDDING
     for item in kept_rows:
         record_id = str(item["record_id"])
         if not _is_false(item):
@@ -554,39 +586,153 @@ def build_claim_universe(
         manifest_path=manifest_path,
         manifest_rows=len(manifest) if manifest is not None else 0,
         dedup_counts=dict(dedup_counts or {}),
+        claim_dedup=dict(claim_dedup or {}),
     )
 
 
-def load_claim_universe(data_dir: Path, manifest_path: Path | None = None) -> ClaimUniverse:
-    """Read ``factchecks.parquet`` through the deduplicating reader and build the set.
+def _claim_dedup_block(
+    settings: Any, result: Any, links: dict[str, Any] | None, links_path: Path
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, int], dict[str, Any]]:
+    """Apply a links artifact to a simhash read, or report the pass as not run.
+
+    Returns ``(kept_rows, collapsed_embedding, dedup_counts, claim_dedup)``.
+    ``links`` may be ``None``, in which case nothing is applied and the
+    embedding pass is recorded as ``not_run`` with a reason code. A stale or
+    malformed artifact raises rather than silently falling back to simhash.
+    """
+    from modeling.eval import claim_dedup as cd
+
+    base_counts = {
+        cd.DedupPass.SIMHASH.value: len(result.collapsed),
+        "unhashed_kept": int(result.counts.get("unhashed_kept", 0)),
+        "label_conflict": int(result.counts.get("label_conflict", 0)),
+    }
+    source = settings.data_dir / "factchecks" / "factchecks.parquet"
+    sample_path = (
+        Path(links["sample"]) if links and links.get("sample") else cd.hand_check_sample_path(
+            settings.data_dir
+        )
+    )
+    if links is None:
+        block = cd.embedding_report(
+            None,
+            simhash_count=len(result.collapsed),
+            simhash_considered=len(result.kept) + len(result.collapsed),
+            reason=cd.EmbeddingReason.LINKS_ABSENT.value,
+            sample_path=sample_path,
+        )
+        return result.kept, {}, base_counts, block
+
+    try:
+        cd.ensure_source_matches(links, source)
+        ids = {str(row["record_id"]) for row in result.kept}
+        ids |= {record_id for record_id, _, _ in result.collapsed}
+        clusters = cd.clusters_for_ids(links["clusters"], ids, path=links_path)
+        kept, collapsed_embedding = cd.final_rows_and_embedding_collapses(
+            result.kept, result.collapsed, clusters
+        )
+    except cd.ClaimLinksError as exc:
+        raise EvalInputError(str(exc)) from exc
+    counts = dict(base_counts)
+    for key, value in (links.get("counts") or {}).items():
+        counts[str(key)] = int(value)
+    block = cd.embedding_report(
+        links,
+        simhash_count=len(result.collapsed),
+        simhash_considered=len(result.kept) + len(result.collapsed),
+        reason=None,
+        sample_path=sample_path,
+    )
+    return kept, collapsed_embedding, counts, block
+
+
+def load_claim_universe(
+    data_dir: Path, manifest_path: Path | None = None, *, links_path: Path | None = None
+) -> ClaimUniverse:
+    """Read ``factchecks.parquet`` through the deduplicating readers and build the set.
 
     ``ingest`` is imported here and nowhere else in this module. Uses the manifest
     at ``manifest_path`` (default ``configs/factcheck_eval_manifest.csv``) when it
     exists, and raises ``ManifestMismatch`` if the data disagrees with it.
+
+    When ``data/factchecks/claim_links.json`` exists, the embedding pass's
+    cluster ids are applied on read: ``factchecks.parquet`` is not modified and
+    the rows the pass collapses carry their own exclusion reason. With no
+    artifact the simhash pass alone decides the set and the report records the
+    embedding pass as ``not_run``.
     """
     from ingest.config import Settings
     from ingest.factcheck import read_deduplicated_factchecks
+    from modeling.eval import claim_dedup as cd
 
-    result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
-    path = Path(manifest_path) if manifest_path else default_manifest_path()
+    settings = Settings(data_dir=Path(data_dir), _env_file=None)
+    result = read_deduplicated_factchecks(settings)
+    path = Path(links_path) if links_path else cd.claim_links_path(settings.data_dir)
+    try:
+        links = cd.read_claim_links(path)
+    except cd.ClaimLinksError as exc:
+        raise EvalInputError(str(exc)) from exc
+    kept, collapsed_embedding, counts, block = _claim_dedup_block(
+        settings, result, links, path
+    )
+    manifest_file = Path(manifest_path) if manifest_path else default_manifest_path()
     return build_claim_universe(
-        result.kept,
+        kept,
         result.collapsed,
-        manifest=read_manifest(path),
-        manifest_path=path,
-        dedup_counts=result.counts,
+        manifest=read_manifest(manifest_file),
+        manifest_path=manifest_file,
+        dedup_counts=counts,
+        collapsed_embedding=collapsed_embedding,
+        claim_dedup=block,
     )
 
 
 def freeze_manifest_from_data(
-    data_dir: Path, path: Path | None = None, *, overwrite: bool = False
+    data_dir: Path,
+    path: Path | None = None,
+    *,
+    overwrite: bool = False,
+    links_path: Path | None = None,
 ) -> tuple[Path, int]:
-    """Write the manifest for the deduplicated known-false claims on disk."""
+    """Write the manifest for the deduplicated known-false claims on disk.
+
+    When a claim links artifact exists, the frozen set is the final rows after
+    both passes, so the manifest agrees with what the harness will read. With no
+    artifact the simhash pass alone decides the set, and a later embedding run
+    will make the harness refuse the stale manifest rather than shrink the set
+    quietly.
+    """
     from ingest.config import Settings
     from ingest.factcheck import read_deduplicated_factchecks
+    from modeling.eval import claim_dedup as cd
 
-    result = read_deduplicated_factchecks(Settings(data_dir=Path(data_dir), _env_file=None))
-    rows = build_manifest(result.kept)
+    settings = Settings(data_dir=Path(data_dir), _env_file=None)
+    result = read_deduplicated_factchecks(settings)
+    kept = result.kept
+    links_file = Path(links_path) if links_path else cd.claim_links_path(settings.data_dir)
+    try:
+        links = cd.read_claim_links(links_file)
+    except cd.ClaimLinksError as exc:
+        raise EvalInputError(str(exc)) from exc
+    if links is None:
+        log.warning(
+            "no claim links artifact at %s; freezing the set on the simhash pass alone. "
+            "A later embedding pass over these rows will make the harness refuse this "
+            "manifest until it is rebuilt.",
+            links_file,
+        )
+    else:
+        try:
+            cd.ensure_source_matches(links, settings.data_dir / "factchecks" / "factchecks.parquet")
+            ids = {str(row["record_id"]) for row in result.kept}
+            ids |= {record_id for record_id, _, _ in result.collapsed}
+            clusters = cd.clusters_for_ids(links["clusters"], ids, path=links_file)
+            kept, _ = cd.final_rows_and_embedding_collapses(
+                result.kept, result.collapsed, clusters
+            )
+        except cd.ClaimLinksError as exc:
+            raise EvalInputError(str(exc)) from exc
+    rows = build_manifest(kept)
     target = write_manifest(rows, path or default_manifest_path(), overwrite=overwrite)
     return target, len(rows)
 
@@ -1247,6 +1393,27 @@ def evaluate(
     notices: list[str] = []
     if not universe.frozen:
         notices.append(NOT_FROZEN_NOTICE)
+    embedding = (universe.claim_dedup.get("passes") or {}).get("embedding") or {}
+    if embedding and embedding.get("status") != "ok":
+        notices.append(
+            f"the embedding claim dedup pass is {embedding.get('status')} "
+            f"({embedding.get('reason')}); only the simhash pass collapsed claims"
+        )
+    elif embedding.get("threshold") is not None:
+        from modeling.eval.claim_dedup import claim_dedup_config
+
+        try:
+            configured_threshold = claim_dedup_config().min_similarity
+        except ValueError:
+            configured_threshold = None
+        if configured_threshold is not None and float(embedding["threshold"]) != float(
+            configured_threshold
+        ):
+            notices.append(
+                f"the claim links artifact used cosine >= {embedding['threshold']}, but "
+                f"`claim_dedup.min_similarity` is now {configured_threshold}; rerun "
+                "`python -m modeling.cli dedup-claims` before citing this report"
+            )
     for name in sorted(set(models) & controls):
         notices.append(f"{name}: {CONTROL_REASON}")
     for name, scores in models.items():
@@ -1360,6 +1527,7 @@ def evaluate(
             "manifest_rows": universe.manifest_rows,
             "n_evaluation_claims": len(universe.eval_ids),
             "dedup_counts": universe.dedup_counts,
+            "claim_dedup": universe.claim_dedup,
             "statement": EVALUATION_SET_STATEMENT,
             "corpus_text_notice": CORPUS_TEXT_NOTICE,
         },
@@ -1410,6 +1578,68 @@ def _interval_text(interval: dict[str, Any] | None) -> str:
     return f"{interval['value']:.3f} [{low:.3f}, {high:.3f}]"
 
 
+def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
+    """The read-side dedup table: one row per pass, then the precision."""
+    passes = block.get("passes") or {}
+    lines = [
+        "## Claim deduplication (read side)",
+        "",
+        "`factchecks.parquet` is never modified. Each collapsed row is counted under the pass "
+        "that removed it. A pass that did not run has no count, which is not the same as a "
+        "measured zero.",
+        "",
+        "| pass | status | collapsed | detail |",
+        "|---|---|---|---|",
+    ]
+    for name in ("simhash", "embedding"):
+        outcome = passes.get(name) or {}
+        if not outcome:
+            lines.append(f"| {name} | not reported | not measured | |")
+            continue
+        collapsed = outcome.get("collapsed")
+        collapsed_text = "not measured" if collapsed is None else str(collapsed)
+        details: list[str] = []
+        if outcome.get("considered") is not None:
+            details.append(f"{outcome['considered']} rows considered")
+        if outcome.get("radius") is not None:
+            details.append(f"hamming radius {outcome['radius']}")
+        if outcome.get("threshold") is not None:
+            details.append(f"cosine >= {outcome['threshold']:g}")
+        if outcome.get("model_name"):
+            details.append(f"`{outcome['model_name']}`")
+        if outcome.get("embedded") is not None:
+            details.append(f"{outcome['embedded']} embedded")
+        skipped = outcome.get("skipped") or {}
+        if skipped:
+            details.append("skipped " + ", ".join(f"{k}={v}" for k, v in sorted(skipped.items())))
+        if outcome.get("reason"):
+            details.append(f"reason code `{outcome['reason']}`")
+        lines.append(
+            f"| {name} | {outcome.get('status', 'n/a')} | {collapsed_text} | "
+            f"{_escape('; '.join(details))} |"
+        )
+    precision = block.get("precision") or {}
+    if precision.get("status") == "measured":
+        value = float(precision["precision"])
+        lines += [
+            "",
+            f"Embedding pass precision: {value:.3f} "
+            f"({precision['n_same']} of {precision['n_labelled']} labelled pairs are the same "
+            f"claim; sample `{precision['sample']}`).",
+        ]
+    elif precision:
+        reason = precision.get("reason") or "not_measured"
+        sample = precision.get("sample")
+        tail = f"; sample `{sample}`" if sample else ""
+        lines += [
+            "",
+            f"Embedding pass precision: **not measured** (reason code `{reason}`{tail}). "
+            "Label `is_same_claim` with yes or no and rerun the evaluation.",
+        ]
+    lines.append("")
+    return lines
+
+
 def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None = None) -> str:
     """The report table set. Every number shown has its sample size beside it."""
     lines: list[str] = ["# Fact-check evaluation: three-way comparison", ""]
@@ -1430,6 +1660,10 @@ def render_markdown(result: dict[str, Any], fingerprint: dict[str, Any] | None =
         ),
         "",
     ]
+
+    claim_dedup = evaluation_set.get("claim_dedup") or {}
+    if claim_dedup:
+        lines += _claim_dedup_lines(claim_dedup)
 
     notices = [n for n in result["notices"] if n != NOT_FROZEN_NOTICE]
     if notices:
@@ -1642,6 +1876,7 @@ def run_comparison(
     *,
     data_dir: Path | None = None,
     manifest_path: Path | None = None,
+    links_path: Path | None = None,
     publishers_path: Path | None = None,
     baseline: str = DEFAULT_BASELINE,
     precision_target: float = DEFAULT_PRECISION_TARGET,
@@ -1667,7 +1902,9 @@ def run_comparison(
     settings = settings or get_settings()
     if models is None:
         models = load_score_dir(score_dir)
-    universe = load_claim_universe(data_dir or settings.data_dir, manifest_path)
+    universe = load_claim_universe(
+        data_dir or settings.data_dir, manifest_path, links_path=links_path
+    )
     result = evaluate(
         models,
         universe=universe,

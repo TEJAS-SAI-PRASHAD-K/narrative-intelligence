@@ -344,6 +344,9 @@ def evaluate_factchecks(
     manifest: Path | None = typer.Option(
         None, help="Frozen evaluation set CSV. Default configs/factcheck_eval_manifest.csv."
     ),
+    links: Path | None = typer.Option(
+        None, help="Claim links artifact. Default data/factchecks/claim_links.json."
+    ),
     split: str | None = typer.Option(None, help="How val and test were split, in one line."),
     label: str = typer.Option("comparison", help="Output goes to artifacts/eval/factcheck/LABEL."),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
@@ -366,6 +369,7 @@ def evaluate_factchecks(
         result, paths = run_comparison(
             scores,
             manifest_path=manifest,
+            links_path=links,
             baseline=baseline,
             precision_target=precision,
             n_bootstrap=n_bootstrap,
@@ -389,10 +393,89 @@ def evaluate_factchecks(
         console.print(f"wrote {path}")
 
 
+@app.command(name="dedup-claims")
+def dedup_claims(
+    data_dir: Path | None = typer.Option(
+        None, "--data-dir", help="Fact-check data directory to read. Default: DATA_DIR."
+    ),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Directory for claim_links.json and the sample. Default: DATA_DIR.",
+    ),
+    sample_size: int | None = typer.Option(
+        None, "--sample-size", help="Pairs in the hand-check sample."
+    ),
+    no_embedding: bool = typer.Option(
+        False, "--no-embedding", help="Run only the simhash pass."
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Link claims by simhash and multilingual embedding similarity, read side.
+
+    Writes `claim_links.json` (cluster ids, links, counts per pass) and a
+    hand-check sample CSV under the output directory. `factchecks.parquet` is
+    read and never modified; a pass that cannot run is reported with a reason
+    code and no collapse count.
+    """
+    _bootstrap(verbose)
+    from ingest.config import Settings
+    from ingest.factcheck import FACTCHECKS_FILENAME, read_factcheck_rows
+    from modeling.eval import claim_dedup as cd
+
+    read_dir = Path(data_dir) if data_dir else get_settings().data_dir
+    out_dir = Path(out) if out else get_settings().data_dir
+    ingest_settings = Settings(data_dir=read_dir, _env_file=None)
+    source = ingest_settings.data_dir / "factchecks" / FACTCHECKS_FILENAME
+    rows = read_factcheck_rows(ingest_settings)
+    if not rows:
+        console.print(f"[yellow]no fact-check rows at {source}.")
+        raise typer.Exit(code=0)
+    try:
+        config = cd.claim_dedup_config()
+    except cd.ClaimDedupConfigError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    if no_embedding:
+        config = cd.config_without_embedding(config)
+
+    result = cd.run_claim_dedup(rows, config=config)
+    links_path = cd.claim_links_path(out_dir)
+    sample_path = cd.hand_check_sample_path(out_dir)
+    cd.write_claim_links(
+        result,
+        links_path,
+        source=source if source.exists() else None,
+        sample_path=sample_path,
+    )
+    cd.write_hand_check_sample(result, rows, sample_path, size=sample_size or config.sample_size)
+
+    for name in ("simhash", "embedding"):
+        outcome = result.outcome(name)
+        if outcome is None:
+            continue
+        count = "not measured" if outcome.collapsed is None else str(outcome.collapsed)
+        reason = f" ({outcome.reason})" if outcome.reason else ""
+        console.print(f"{name}: {count} collapsed{reason}")
+    precision = cd.embedding_precision(sample_path)
+    if precision.precision is None:
+        console.print(f"embedding precision: not measured ({precision.reason})")
+    else:
+        console.print(
+            f"embedding precision: {precision.precision:.3f} on "
+            f"{precision.n_labelled} labelled pair(s)"
+        )
+    console.print(f"wrote {links_path}")
+    console.print(f"wrote {sample_path}")
+
+
 @app.command(name="freeze-factchecks")
 def freeze_factchecks(
     out: Path | None = typer.Option(
         None, help="Manifest path. Default configs/factcheck_eval_manifest.csv."
+    ),
+    links: Path | None = typer.Option(
+        None, help="Claim links artifact. Default data/factchecks/claim_links.json."
     ),
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Replace an existing manifest. Say why in the commit."
@@ -401,14 +484,15 @@ def freeze_factchecks(
     """Write the frozen evaluation set (record id, URL, claim SHA-256) from factchecks.parquet.
 
     The claim text is hashed and never written. Commit the CSV. Refuses to replace an
-    existing manifest without --overwrite.
+    existing manifest without --overwrite. A claim links artifact, when present,
+    decides the set together with the simhash pass.
     """
     _bootstrap()
     from modeling.eval.factcheck_eval import EvalInputError, freeze_manifest_from_data
 
     try:
         path, count = freeze_manifest_from_data(
-            get_settings().data_dir, out, overwrite=overwrite
+            get_settings().data_dir, out, overwrite=overwrite, links_path=links
         )
     except EvalInputError as exc:
         console.print(f"[red]refused:[/] {exc}")

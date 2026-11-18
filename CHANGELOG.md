@@ -36,6 +36,19 @@ decision.
   Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Oriya and Sinhala are
   each used by one major language. Devanagari is excluded on purpose: Hindi,
   Marathi and Nepali share it, so short Devanagari stays an honest null.
+- **Read-side claim deduplication by multilingual embedding, with counts per pass.**
+  `collapse_duplicate_claims` links two verdicts when their claim simhashes are within
+  3 bits. A reworded claim, and the same claim debunked in English and in Hindi, sit
+  outside that radius. `python -m modeling.cli dedup-claims` writes
+  `data/factchecks/claim_links.json` with cluster ids, links and a collapse count for
+  the simhash pass and for a second pass over the cosine similarity of
+  `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` claim embeddings. It
+  also writes a hand-check sample. `factchecks.parquet` is never modified. The
+  evaluation report states how many claims each pass collapsed. The threshold is
+  `claim_dedup.min_similarity` in `configs/factcheck.yaml`, provisionally 0.85 pending
+  a hand check of the sample; the report records the precision once the sample has
+  labels and `not_measured` until then. A missing `sentence-transformers` install is
+  `sentence_transformers_not_installed` on the embedding pass, never a silent no-op.
 - **Labels for the English corpus sample, with a one-class result.** An AI model labelled
   the 100-record sample from `modeling.cli sample-for-labelling misinfo --n 100`. A person
   did not check the labels (`labeller=llm-unreviewed`). Every label is 0. `misinfo` v0.2.0

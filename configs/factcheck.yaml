@@ -198,6 +198,33 @@ ratings:
 on_unknown_rating: report
 
 # ---------------------------------------------------------------------------
+# Claim deduplication, read side
+# ---------------------------------------------------------------------------
+# `ingest.factcheck.collapse_duplicate_claims` links two rows when their claim
+# simhashes are within 3 bits. A claim reworded past that radius, or the same
+# claim debunked in English by one publisher and in Hindi by another, is not
+# caught. This second pass links claims by the cosine similarity of their
+# multilingual sentence embeddings. It never writes factchecks.parquet. Run
+# `python -m modeling.cli dedup-claims` to write the cluster ids, the links, the
+# per-pass counts and the hand-check sample.
+claim_dedup:
+  enabled: true
+  # Cosine similarity at or above which two claims are the same claim.
+  # PROVISIONAL: 0.85 was chosen from the cosine distribution on 2026-11-18 over
+  # the 96 stored claims. The three highest pairs score 0.985, 0.910 and 0.856;
+  # the next, which describes two different building collapses, scores 0.806.
+  # The threshold sits in that gap, not at a hand-checked value. Label
+  # data/factchecks/claim_dedup_sample.csv (`is_same_claim` = yes or no) and set
+  # this to the value the labelled sample supports. The evaluation report records
+  # the measured precision once the sample has labels, and says "not measured"
+  # until then. Raising this lowers recall of duplicates; lowering it lowers
+  # precision. Neither direction is free.
+  min_similarity: 0.85
+  # Pairs written to the hand-check sample, taken at evenly spaced positions
+  # across the similarity range rather than only the most obvious duplicates.
+  sample_size: 200
+
+# ---------------------------------------------------------------------------
 # Fetching
 # ---------------------------------------------------------------------------
 # Tier-1 extraction needs the article HTML, which the news adapter does not
