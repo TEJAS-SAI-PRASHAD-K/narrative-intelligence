@@ -21,7 +21,7 @@ the module being quietly described as present.
 | misinformation classifier | clears baseline | roberta-base fine-tune v0.2.0, see the comparison result |
 | stance classifier | fine-tuned | macro-F1 0.797 on the FNC-1 competition test set, see the model card |
 | bot classifier | does not generalize | see below |
-| coordination detection | no signal on this corpus | see below |
+| coordination detection | no signal on news or YouTube | Telegram not measured, see below |
 | auxiliary scorers | done | toxicity, sentiment, emotion, anomaly, all off the shelf |
 | Laya scorer | Hindi titles only | calibrated stage in modeling/scoring.py, English stays with roberta, see the model card |
 | fusion scoring | done | `configs/fusion.yaml`, returns its own explanation, coordination input is the weak coordination score, not the bot ratio |
@@ -146,11 +146,18 @@ the training ones. Quote the per-fold mean. Human recall is 0.608, so 39 percent
 of genuine accounts are flagged at the chosen threshold. For this reason the fusion
 formula does not read `bot_like_ratio`. It reads `coordinated_author_ratio`.
 
-**Coordination modularity does not exceed the time-shuffled null.** Observed
-0.912 against 0.979 for the null. Any graph has communities; on this corpus the
-communities found are not evidence of coordination. The detector does recover a
-planted coordinated burst on the demo fixture, so the mechanism works and the
-corpus simply does not contain the phenomenon at a detectable level.
+**Coordination modularity does not exceed the time-shuffled null.** On the news corpus,
+the observed value is 0.912 against 0.979 for the null. Any graph has communities. On
+this corpus the communities found are not evidence of coordination. The detector does
+recover a planted coordinated burst on the demo fixture, so the mechanism works.
+
+The per-source report (issue #47) measured YouTube comments. The YouTube graph has 87
+records, 71 channels, 350 edges and 5 communities. The observed modularity is 0.5334.
+The time-shuffled null is 0.5331 with a 95 percent interval of [0.5285, 0.5380] over 200
+shuffles, and the empirical p value is 0.7512. The observed value is inside the null
+interval. YouTube has no coordination signal above the null. News and GDELT are excluded
+with the reason `no_threading`, 3184 and 3598 records. Telegram is not measured, because
+no session credentials exist. Telegram stays research only.
 
 **The default embedder groups by language, and the multilingual model merges.** The corpus
 counts come from the `compare-embedder` run log of 2026-11-19. The corpus has 6869
@@ -286,6 +293,11 @@ the honest entry in that cell, not a zero.
 
 ### Modeling
 
+- **Measure coordination again on social data (#47). Done.** The YouTube result is
+  observed modularity 0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p
+  0.7512), so there is no signal above the null. Telegram is not measured, because no
+  session credentials exist. The run needs credentials and a Telegram session on the data
+  host. See `artifacts/model_cards/coordination.md`.
 - **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
   statements, CoAID is COVID-era health claims, and this corpus is Indian
   recontextualised media. The gap is still unmeasured. `modeling.cli sample-for-labelling`
