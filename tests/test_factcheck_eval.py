@@ -626,3 +626,52 @@ def test_every_corpus_text_flag_rate_and_lift_carries_the_notice_and_title_does_
         assert lift_cell.endswith("(not like for like)"), row
     assert "(not like for like)" not in title_part
     assert result["evaluation_set"]["corpus_text_notice"] == CORPUS_TEXT_NOTICE
+
+
+def _domain_rows():
+    return [
+        r("corpus_title", "d1", 0.1, source="www.BoomLive.in"),
+        r("corpus_title", "d2", 0.1, source="boomlive.in"),
+        r("corpus_title", "d3", 0.1, source="thequint.com"),
+        r("corpus_text", "d4", 0.1, source="boomlive.in"),
+        r("corpus_text", "d5", 0.1, source="news.example"),
+    ]
+
+
+def test_exclusions_are_counted_per_domain_with_a_zero_domain():
+    models = pair(_domain_rows())
+    publishers = frozenset({"boomlive.in", "thequint.com", "altnews.in"})
+    result = run(models, publishers=publishers)
+    corpus = result["models"]["cand"]["corpus"]
+    assert corpus["corpus_title"]["excluded_fact_check_publisher_by_domain"] == {
+        "altnews.in": 0, "boomlive.in": 2, "thequint.com": 1,
+    }
+    assert corpus["corpus_text"]["excluded_fact_check_publisher_by_domain"] == {
+        "altnews.in": 0, "boomlive.in": 1, "thequint.com": 0,
+    }
+    for part in ("corpus_title", "corpus_text"):
+        info = corpus[part]
+        assert sum(info["excluded_fact_check_publisher_by_domain"].values()) == (
+            info["n_excluded_fact_check_publisher"]
+        )
+
+
+def test_exclusion_sum_check_fails_loudly_on_a_mismatch():
+    from modeling.eval import factcheck_eval as fe
+
+    fe._check_domain_sum("corpus_title", {"a.in": 1, "b.in": 2}, 3)
+    with pytest.raises(fe.EvalInputError, match="add up"):
+        fe._check_domain_sum("corpus_title", {"a.in": 1, "b.in": 2}, 4)
+
+
+def test_markdown_has_one_table_row_per_fact_checker_domain():
+    from modeling.eval.factcheck_eval import render_markdown
+
+    publishers = frozenset({"boomlive.in", "thequint.com", "altnews.in"})
+    md = render_markdown(run(pair(_domain_rows()), publishers=publishers))
+    assert "### Corpus rows excluded per fact-checker domain" in md
+    assert "| domain | corpus_title | corpus_text |" in md
+    assert "| altnews.in | 0 | 0 |" in md
+    assert "| boomlive.in | 2 | 1 |" in md
+    assert "| thequint.com | 1 | 0 |" in md
+    assert "| total | 3 | 1 |" in md
