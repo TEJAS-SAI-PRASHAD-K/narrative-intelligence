@@ -384,6 +384,14 @@ class TestDiscovery:
         assert wrong_tier.candidates(DOMAIN) == []
         assert wrong_tier.stats[DOMAIN].dropped[DropReason.NO_BACKFILL_CONFIG.value] == 1
 
+    def test_an_rss_tag_publisher_can_opt_in_to_the_claimreview_backfill(self, tmp_path, web):
+        config = make_config()
+        config["publishers"][DOMAIN]["tier"] = "rss_tag"
+        config["publishers"][DOMAIN]["backfill"]["claimreview"] = True
+        backfill = make_backfill(tmp_path, config)
+        assert backfill.candidates(DOMAIN)
+        assert DropReason.NO_BACKFILL_CONFIG.value not in backfill.stats[DOMAIN].dropped
+
 
 class BoundedStream(Response):
     """A body of unlimited length that fails the test when read past a limit."""
@@ -559,6 +567,18 @@ class TestRun:
         dropped = backfill.stats[DOMAIN].dropped
         assert dropped[DropReason.NO_CLAIMREVIEW.value] == 1
         assert dropped[DropReason.FETCH_FAILED.value] == 1
+
+    def test_an_opted_in_rss_tag_publisher_counts_pages_without_a_claimreview(
+        self, tmp_path, web
+    ):
+        config = make_config()
+        config["publishers"][DOMAIN]["tier"] = "rss_tag"
+        config["publishers"][DOMAIN]["backfill"]["claimreview"] = True
+        for url in (NEW_URL, NEWER_URL, NO_LASTMOD_URL, STORED_URL):
+            web.routes[url] = Response(200, ARTICLE_NO_CLAIMREVIEW)
+        backfill = make_backfill(tmp_path, config)
+        assert list(backfill.run()) == []
+        assert backfill.stats[DOMAIN].dropped[DropReason.NO_CLAIMREVIEW.value] == 4
 
     def test_a_page_robots_disallow_is_counted(self, tmp_path, web):
         web.routes[ROBOTS_URL] = Response(200, b"User-agent: *\nDisallow: /viral/\n")

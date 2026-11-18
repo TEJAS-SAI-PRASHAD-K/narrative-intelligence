@@ -341,6 +341,8 @@ def factchecks(
                 f"empty loc {stat.empty_loc}, duplicate loc {stat.duplicate_loc}, "
                 f"sitemaps left unread {stat.sitemaps_unread}, "
                 f"sitemaps with no new URL {stat.sitemaps_exhausted}, "
+                f"listing pages read {stat.listing_pages_read}, "
+                f"listing links found {stat.listing_links_found}, "
                 f"stale ledger rows {stat.ledger_stale}"
             )
             if stat.language_excluded:
