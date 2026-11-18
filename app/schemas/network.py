@@ -30,7 +30,7 @@ class GraphNode(Camel):
     x: float | None = None
     y: float | None = None
     community_id: str | None = None
-    bot_score: float | None = None
+    bot_score: float | None = Field(default=None, ge=0.0, le=1.0)
     is_bot_like: bool | None = None
     post_count: int = 0
     cohort_ids: list[str] = Field(default_factory=list)

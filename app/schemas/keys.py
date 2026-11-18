@@ -42,6 +42,24 @@ class ApiKeyOut(Camel):
     is_active: bool
 
 
+class ApiKeySelf(Camel):
+    """The calling key as it sees itself. Never contains the secret or the hash."""
+
+    id: str = Field(description="Key id, or 'demo' when DEMO_MODE answers without a key.")
+    name: str
+    prefix: str | None = Field(
+        default=None,
+        description="First 8 characters of the key. Null when the caller is not a stored key.",
+    )
+    scopes: list[str] = Field(description="Scopes granted to the key, sorted.")
+    effective_scopes: list[str] = Field(
+        description="Scopes the key can exercise: `admin` implies `read` and `write`."
+    )
+    can_read: bool
+    can_write: bool
+    can_admin: bool
+
+
 class ApiKeyCreated(ApiKeyOut):
     """The mint response.
 

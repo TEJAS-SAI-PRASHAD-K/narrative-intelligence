@@ -33,7 +33,7 @@ If you want the same content as a designed, presentable page, see the
 
 ## 1. What this project does
 
-The system collects public posts from five online platforms, cleans them into one
+The system collects public posts from six online platforms, cleans them into one
 common format, runs machine learning models over them, groups similar posts into
 "narratives" (stories that are spreading), draws a map of which accounts interact
 with each other, and gives every narrative a risk score from 0 to 100.
@@ -74,7 +74,7 @@ Postgres) is the database. Both are explained more below.
 
 ## 2. Where the data comes from
 
-Five platforms. Each one is included because it gives something the others don't —
+Six platforms. Each one is included because it gives something the others don't —
 and each one is documented with what it *can't* tell you, which is just as important.
 
 | Source | What it gives you | What it costs | What it can't tell you |
@@ -82,9 +82,10 @@ and each one is documented with what it *can't* tell you, which is just as impor
 | **Reddit** (ConvoKit) | Full conversation threads, stable user IDs, subreddit, scores | Free — just disk space and a slow first download | Anything about Reddit *today*. These are old snapshots. **The Reddit API is never used** — no PRAW, no Pushshift |
 | **Reddit** (Kaggle dumps) | Lots of volume | A free Kaggle account | Who replied to whom. These dumps have no reply links, so they're **useless for the network graph** and are marked as such |
 | **Mastodon** | Live posts, account age, follower counts, the platform's own "is this a bot" flag | 300 requests per 5 minutes, enforced by the server | Anything from servers that don't federate. Thread roots cost an extra API call, so that field is left empty rather than guessed |
+| **Telegram** | Public channel posts with view and forward counts, plus reply and reaction counts where the channel shows them | Free, with an API id and a stored login session. Flood waits throttle fast reads | Anything from private groups, who viewed a post, or the discussion under it. A counter the channel hides is empty, never zero |
 | **GDELT** | Which news outlets covered a story, in what language, on what day, plus tone and themes | Free, but it throttles hard | What the article actually *said*. GDELT gives metadata only, so the text field is just the headline |
 | **News** (RSS feeds) | Headlines, summaries, publication time, outlet name, full text when the outlet allows it | Free | How many people read it. No feed reports readership, so all engagement numbers are empty |
-| **YouTube** | The only source that reports **view counts**. Channel identity, comment threads, video URLs | 10,000 "quota units" per day, hard limit | Who watched. And nothing about videos with comments turned off — which happens to correlate with the political content this project cares about |
+| **YouTube** | The only source that reports **view counts**. Channel identity, subtitles (manual when available, else auto), comments, video URLs | Free, no key. Read through yt-dlp, so YouTube may answer a burst with a bot check | Who watched. And nothing about videos with comments turned off, which happens to correlate with the political content this project cares about |
 
 ### How each source is fetched
 
@@ -98,22 +99,21 @@ Everything else (saving files, removing duplicates, counting rejects, updating t
 manifest) is shared code. That way six adapters can't drift apart and start
 behaving differently.
 
-**Every credential is optional.** If you don't have a YouTube key, the YouTube
-adapter is skipped with a warning. The run doesn't fail.
+**Every credential is optional.** YouTube needs none: it is read through yt-dlp. If
+yt-dlp is not installed, the YouTube adapter is skipped with a warning. The run doesn't
+fail.
 
-### Budget control (YouTube example)
+### Subtitles (YouTube example)
 
-YouTube charges different amounts for different calls:
+A video's title and description are a few hundred characters. Its transcript is
+thousands. The YouTube adapter puts all three into the record text.
 
-| Call | Cost | Used for |
-|---|---|---|
-| `search.list` | 100 units | Finding videos — expensive, so it's strictly budgeted |
-| `videos.list` | 1 unit | Getting video details (50 at a time) |
-| `commentThreads.list` | 1 unit | Getting comments |
-
-Every call is charged to a ledger **before** it happens, and the run stops cleanly
-when the budget runs out. A real test run collected 25 videos plus their comments —
-250 records — for only 105 units.
+It prefers a human-written subtitle track in the video's language, then the
+original auto-generated track. YouTube also offers machine translations of the
+auto track into every other language, and those are never used, because they would
+put one language's words under a record labelled with another. The record says which
+track it used (`subtitle_kind`: manual, auto or none), and the run summary counts
+records with subtitles. A video with no subtitles is kept and counted, not dropped.
 
 ---
 
@@ -952,7 +952,6 @@ There are four queues, split by *what the work competes for*, not by feature.
 |---|---|---|
 | 15 min | Alert evaluation | Check alert rules against current scores |
 | 1 hour | Domain enrichment | Look up registration and certificate info. Never blocks — a domain page must render regardless |
-| 1 hour | Purge uploads | Delete files older than the retention window from the uploads folder. An earlier version of the service accepted uploads of images of real people. This task clears files that remain |
 | 6 hours | Rebuild graph edges | Then automatically re-detect communities |
 | 24 hours | Rescore narratives | Recompute every fusion score |
 | 7 days | Re-cluster | Find narratives again, carrying IDs forward |

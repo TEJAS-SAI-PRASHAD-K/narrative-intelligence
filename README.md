@@ -194,7 +194,7 @@ never need to know which platform a record came from. Platform-specific fields l
 | field | notes |
 |---|---|
 | `id` | `f"{source}:{native_id}"` — namespaced, so a cross-source union cannot collide |
-| `source` | `reddit \| mastodon \| news \| gdelt \| youtube` |
+| `source` | `reddit \| mastodon \| news \| gdelt \| youtube \| telegram` |
 | `source_detail` | subreddit, instance domain, outlet domain, or channel id |
 | `content_type` | `post \| comment \| article \| video \| video_comment` |
 | `text` | cleaned plaintext, HTML stripped, **original surface form preserved** |
@@ -292,6 +292,32 @@ Pushshift (shut down). Reddit data comes from static pre-collected corpora only.
   coverage is therefore hashtag-driven and topic-biased by construction. The adapter warns
   and flags `timeline_empty` rather than failing silently.
 
+### Telegram
+
+- **Gives you:** posts from public broadcast channels, with measured view and forward
+  counts (`views`, `shares`), the reply count where the channel exposes replies, the
+  reaction total (`likes`) where it shows reactions, forward provenance and edit times.
+  Permalink is `https://t.me/<username>/<id>`.
+- **Costs:** free. Needs an API id and hash from my.telegram.org and a Telethon
+  `StringSession` string, generated once, so nothing is interactive at fetch time. Telegram
+  answers aggressive reads with flood waits, so channels are read one at a time at
+  `telegram.backfill.requests_per_sec`.
+- **Cannot tell you:** anything about private groups or channels, who viewed a post, or
+  the discussion under it (comments live in a linked group that is not read).
+- A metric the channel does not expose is `None`, never `0`. Message ids restart in every
+  channel, so `native_id` is `<channel_id>:<message_id>`.
+- Setup: put `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_SESSION` in `.env`, list
+  channels under `telegram.channels` in `configs/sources.yaml` (the seeded list is
+  unverified), then:
+
+  ```bash
+  python -m ingest.cli fetch telegram --limit 200
+  ```
+
+  With any of the three missing the source is skipped with `missing_credentials`. Channels
+  that are renamed or private are skipped and counted as `channel_not_found` or
+  `channel_private`; a long flood wait is counted as `flood_wait`.
+
 ### GDELT
 
 Two access paths, because they answer different questions.
@@ -329,7 +355,7 @@ Three things learned by running it, which contradict the documentation:
 India scoping, as of this phase:
 
 - `gdelt.doc_api.countries: [IN]` — **FIPS 2-letter**, not ISO 3166. They agree on `IN`,
-  which is exactly what makes the distinction easy to miss; YouTube's `regionCode` on the
+  which is exactly what makes the distinction easy to miss; YouTube's region setting on the
   same corpus *is* ISO. Without the filter, the Indian topics return mostly US coverage,
   because that is how GDELT's crawl is weighted.
 - It filters on the **publisher's** country, not the subject. So it buys Indian outlets
@@ -431,32 +457,29 @@ Eighteen Indian feeds in two roles, and the roles are not interchangeable:
 ### YouTube
 
 - **Gives you:** view/like/comment counts (the only source here that reports views at
-  all), channel identity, and threaded comments. `media_urls` is the watchable video URL.
-- **Costs:** 10,000 quota units per UTC day, hard. The costs are wildly asymmetric:
-
-  | call | units | use |
-  |---|---|---|
-  | `search.list` | 100 | discovery only, budgeted hard |
-  | `videos.list` | 1 | hydration (50 ids per call) |
-  | `commentThreads.list` | 1 | comments |
-
-  Every call is charged to a ledger (`ingest/checkpoint.py`) **before** it is made, and the
-  run stops cleanly when the budget is gone. Discovered video ids are checkpointed, so a
-  later run can skip discovery entirely and spend its budget on the cheap calls. A verified
-  run of 25 videos plus their comments produced 250 records for **105 units**.
+  all), channel identity, comments, and **subtitles**. The record text is title,
+  description and transcript. `media_urls` is the watchable video URL.
+- **Costs:** no API key and no quota. It is read through yt-dlp, which fetches the public
+  watch pages. Discovery is one search request per query in `topics.yaml`, then one
+  extraction request per video. YouTube can still answer a burst with a bot check; that
+  is counted per video as `extract_failed` and does not fail the run.
+- **Subtitles:** a manual track in the video's language is preferred, then the original
+  auto caption track. Machine translations are never used. `raw.subtitle_kind` is
+  `manual`, `auto` or `none` and `raw.subtitle_lang` names the track. Auto captions are
+  speech recognition and are noisier on Hindi and code-mixed speech. The run summary
+  prints `with_subtitles`, `subtitles_manual`, `subtitles_auto` and `no_subtitles`.
 - **Cannot tell you:** who watched. And nothing at all about videos with comments
-  disabled — which correlates with exactly the political content of interest, so comment
+  disabled, which correlates with exactly the political content of interest, so comment
   coverage is non-random. Counted as `comments_unavailable`.
-- India scoping: `region_code: IN` localizes the result set, and costs nothing —
-  `search.list` is 100 units with or without it. This is **ISO 3166-1 alpha-2**, unlike
-  GDELT's FIPS code on the same corpus. `relevance_language` is supported but unset on
-  purpose: it takes a single code, and `topics.yaml` deliberately mixes English and Hindi
-  query strings, so any one global value would be wrong for half of them. The query's own
-  language is the stronger signal and it is already in the query.
-- `max_searches_per_run` is 12, so one run covers four topics × three queries = 1,200
-  units of a 10,000/day quota. The binding limit is `YOUTUBE_MAX_SEARCHES_PER_DAY`
-  (default 20): one full run plus most of a second per UTC day. Enough for a daily
-  collector, not enough to re-run interactively.
+- India scoping: `region_code: IN` is passed to yt-dlp as `geo_bypass_country`. That
+  lets a geo-blocked video be read. It does **not** localize or re-rank search results,
+  so scoping to India rests on the query strings and on the language recorded per
+  record. `relevance_language` is unset on purpose (one code cannot fit a mixed English
+  and Hindi query list) and, when set, only changes the interface language of YouTube's
+  responses.
+- Engagement is as yt-dlp reports it: a field it returns as null stays null, never 0.
+- `published_within_days` is applied after extraction, because a search result carries
+  no upload time. Videos outside the window are counted as `outside_published_window`.
 
 ---
 
@@ -507,7 +530,7 @@ find yourself editing an adapter to add a source, the config is wrong.
 The India retarget is the test of that claim, and it mostly held: the case, the feeds, the
 queries and the hashtags are all config. Three code changes were needed, and each one
 added a *capability* the config could not express rather than a hardcoded value —
-`country` on GDELT, `regionCode` on YouTube, and script-aware language detection.
+`country` on GDELT, `region_code` on YouTube, and script-aware language detection.
 
 One trap worth knowing before editing: `topics.yaml`'s `languages:` key is **declarative
 and read by nothing**. The three real enforcement points are

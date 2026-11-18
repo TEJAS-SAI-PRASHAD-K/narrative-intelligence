@@ -25,10 +25,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-Source = Literal["reddit", "mastodon", "news", "gdelt", "youtube"]
+Source = Literal["reddit", "mastodon", "news", "gdelt", "youtube", "telegram"]
 ContentType = Literal["post", "comment", "article", "video", "video_comment"]
 
-SOURCES: tuple[str, ...] = ("reddit", "mastodon", "news", "gdelt", "youtube")
+SOURCES: tuple[str, ...] = ("reddit", "mastodon", "news", "gdelt", "youtube", "telegram")
 
 #: Sentinel used when a platform has removed the author but kept the content.
 #: We keep the record (the text is still evidence) but the author is unusable
