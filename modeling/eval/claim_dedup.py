@@ -48,6 +48,12 @@ from typing import Any
 import numpy as np
 
 from ingest.factcheck import CLAIM_HAMMING_RADIUS, collapse_duplicate_claims
+from ingest.title_predicate_eval import (
+    LABELLER_KINDS,
+    MEASURED_KINDS,
+    _cohen_kappa,
+    wilson,
+)
 from modeling.config import ModelingSettings, load_yaml, module_config
 
 log = logging.getLogger(__name__)
@@ -62,7 +68,9 @@ LINKS_SCHEMA_VERSION = 1
 #: block only bounds the size of the temporary (block, n) matrix.
 _SIMILARITY_BLOCK = 512
 
-#: Columns of the hand-check sample. ``is_same_claim`` is left blank on write.
+#: Columns of the hand-check sample. The label and labeller columns are left blank on
+#: write. ``is_same_claim`` is the adjudicated value. ``label_1`` and ``label_2`` hold the
+#: two labellers' own answers, and ``labeller_kind`` says who they are.
 SAMPLE_COLUMNS = (
     "record_id",
     "kept_record_id",
@@ -71,8 +79,27 @@ SAMPLE_COLUMNS = (
     "claim",
     "kept_label",
     "kept_claim",
+    "labeller_kind",
+    "labeller_1",
+    "labeller_2",
+    "label_1",
+    "label_2",
     "is_same_claim",
 )
+
+#: The kind reported for a sample with no ``labeller_kind`` column. It is never measured.
+KIND_UNKNOWN = "unknown"
+#: The kind reported when the labelled rows name more than one kind.
+KIND_MIXED = "mixed"
+
+#: The words a report prints for each kind of labeller.
+LABELLER_NOTES = {
+    "human": "labeller: human",
+    "model-reviewed": "labeller: model, reviewed by a person",
+    "model-unreviewed": "labeller: model, unreviewed by a person",
+    KIND_UNKNOWN: "labeller: not recorded",
+    KIND_MIXED: "labeller: mixed kinds",
+}
 
 TRUE_LABELS = frozenset({"y", "yes", "true", "1", "same"})
 FALSE_LABELS = frozenset({"n", "no", "false", "0", "different"})
@@ -122,12 +149,16 @@ class PrecisionReason(str, Enum):
 
     SAMPLE_ABSENT = "sample_absent"
     SAMPLE_NOT_LABELLED = "sample_not_labelled"
+    #: Labels exist, but the labeller is not (only) a person, so the number is provisional.
+    LABELLER_NOT_HUMAN = "labeller_not_human"
 
 
 class PrecisionStatus(str, Enum):
     """Whether the hand-check sample settled the precision."""
 
     MEASURED = "measured"
+    #: A number from labels that a person did not give. It is not a measured precision.
+    PROVISIONAL = "provisional"
     NOT_MEASURED = "not_measured"
 
 
@@ -833,7 +864,11 @@ def final_rows_and_embedding_collapses(
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class EmbeddingPrecision:
-    """The embedding pass's precision on labelled pairs, or why it has none."""
+    """The embedding pass's precision on labelled pairs, or why it has none.
+
+    Only labels from a person give status ``measured``. A number from any other
+    labeller is ``provisional`` with the reason ``labeller_not_human``.
+    """
 
     status: str
     #: ``None`` means not measured, never a made-up zero.
@@ -842,16 +877,64 @@ class EmbeddingPrecision:
     n_same: int
     sample: str
     reason: str | None = None
+    #: Wilson 95 percent interval on ``precision``.
+    ci_low: float | None = None
+    ci_high: float | None = None
+    #: Cohen's kappa and raw agreement of ``label_1`` and ``label_2``, over the rows where
+    #: both are filled. ``None`` means not computed.
+    kappa: float | None = None
+    agreement: float | None = None
+    n_double_labelled: int = 0
+    labeller_kind: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
             "precision": self.precision,
+            "ci_low": self.ci_low,
+            "ci_high": self.ci_high,
             "n_labelled": int(self.n_labelled),
             "n_same": int(self.n_same),
+            "kappa": self.kappa,
+            "agreement": self.agreement,
+            "n_double_labelled": int(self.n_double_labelled),
+            "labeller_kind": self.labeller_kind,
             "sample": self.sample,
             "reason": self.reason,
         }
+
+
+def describe_precision(precision: dict[str, Any]) -> str:
+    """One line of text for a precision block, for the CLI and the report.
+
+    A number that is not measured always carries its labeller note and its reason
+    code, so a model label cannot read as a measured precision.
+    """
+    status = precision.get("status")
+    reason = precision.get("reason") or "not_measured"
+    if precision.get("precision") is None:
+        return f"embedding precision: not measured (reason code {reason})."
+    kind = precision.get("labeller_kind")
+    note = LABELLER_NOTES.get(str(kind), f"labeller: {kind}")
+    value = float(precision["precision"])
+    text = (
+        f"embedding precision: {value:.3f} "
+        f"({precision['n_same']} of {precision['n_labelled']} labelled pairs are the same claim)"
+    )
+    if precision.get("ci_low") is not None:
+        text += f", Wilson 95% interval [{precision['ci_low']:.3f}, {precision['ci_high']:.3f}]"
+    if precision.get("kappa") is not None:
+        text += (
+            f", kappa {precision['kappa']:.3f}, agreement {precision['agreement']:.3f} "
+            f"on {precision['n_double_labelled']} double-labelled pairs"
+        )
+    elif precision.get("n_double_labelled"):
+        text += f", agreement {precision['agreement']:.3f}, kappa undefined"
+    if status == PrecisionStatus.MEASURED.value:
+        return f"{text}. {note}."
+    return (
+        f"{text}. PROVISIONAL, not a measured precision. {note}. Reason code {reason}."
+    )
 
 
 def write_hand_check_sample(
@@ -867,7 +950,7 @@ def write_hand_check_sample(
     and its distance returned. Pairs are ordered by similarity and taken at
     evenly spaced positions, so the sample covers the range rather than only the
     most obvious duplicates. A blank ``is_same_claim`` is the signal that
-    nothing has been labelled yet.
+    nothing has been labelled yet. The labeller columns are blank too.
     """
     by_id: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -906,6 +989,11 @@ def write_hand_check_sample(
                         "claim": row.get("claim") or "",
                         "kept_label": kept.get("label") or "",
                         "kept_claim": kept.get("claim") or "",
+                        "labeller_kind": "",
+                        "labeller_1": "",
+                        "labeller_2": "",
+                        "label_1": "",
+                        "label_2": "",
                         "is_same_claim": "",
                     }
                 )
@@ -914,12 +1002,25 @@ def write_hand_check_sample(
     return Path(path)
 
 
-def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
-    """Precision on the labelled hand-check pairs.
+def _yes_no(raw: str) -> bool | None:
+    """True for a yes label, False for a no label, ``None`` for anything else."""
+    value = raw.strip().lower()
+    if value in TRUE_LABELS:
+        return True
+    if value in FALSE_LABELS:
+        return False
+    return None
 
-    A blank label is not a "no". An unrecognised label is an error, so a typo
-    cannot silently drop a pair from the denominator. With no labelled pair the
-    result is ``not_measured`` and ``precision`` is ``None``.
+
+def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
+    """Precision on the labelled hand-check pairs, with the labeller kind.
+
+    A blank ``is_same_claim`` is not a "no". The function refuses the whole sample
+    with :class:`ClaimSampleError` when a filled row has a label that is not yes or
+    no, has no valid ``labeller_kind``, or names one labeller twice. It writes no
+    result in that case. A sample with no ``labeller_kind`` column is an older
+    sample. It reads as kind ``unknown`` and is never measured. With no labelled pair
+    the result is ``not_measured`` and ``precision`` is ``None``.
     """
     path = Path(sample_path)
     if not path.exists():
@@ -938,21 +1039,50 @@ def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
             raise ClaimSampleError(
                 f"{path}: no is_same_claim column; the hand-check sample cannot be labelled"
             )
+        has_kind_column = "labeller_kind" in header
         n_labelled = 0
         n_same = 0
+        kinds: set[str] = set()
+        pair_1: list[str] = []
+        pair_2: list[str] = []
         for line, row in enumerate(reader, start=2):
             raw = str(row.get("is_same_claim") or "").strip().lower()
             if not raw:
                 continue
-            if raw in TRUE_LABELS:
-                n_same += 1
-                n_labelled += 1
-            elif raw in FALSE_LABELS:
-                n_labelled += 1
-            else:
+            verdict = _yes_no(raw)
+            if verdict is None:
                 raise ClaimSampleError(
                     f"{path} line {line}: is_same_claim is {raw!r}; use yes or no"
                 )
+            n_labelled += 1
+            n_same += int(verdict)
+            if has_kind_column:
+                kind = str(row.get("labeller_kind") or "").strip()
+                if kind not in LABELLER_KINDS:
+                    raise ClaimSampleError(
+                        f"{path} line {line}: labeller_kind is {kind!r}; "
+                        f"use one of {list(LABELLER_KINDS)}"
+                    )
+                kinds.add(kind)
+            first = str(row.get("labeller_1") or "").strip().casefold()
+            second = str(row.get("labeller_2") or "").strip().casefold()
+            if first and first == second:
+                raise ClaimSampleError(
+                    f"{path} line {line}: labeller_1 and labeller_2 are the same labeller "
+                    f"({first!r}); two labellers must be two different names"
+                )
+            answers = []
+            for column in ("label_1", "label_2"):
+                text = str(row.get(column) or "").strip()
+                value = _yes_no(text) if text else None
+                if text and value is None:
+                    raise ClaimSampleError(
+                        f"{path} line {line}: {column} is {text!r}; use yes or no"
+                    )
+                answers.append(value)
+            if answers[0] is not None and answers[1] is not None:
+                pair_1.append("yes" if answers[0] else "no")
+                pair_2.append("yes" if answers[1] else "no")
     if n_labelled == 0:
         return EmbeddingPrecision(
             status=PrecisionStatus.NOT_MEASURED.value,
@@ -962,13 +1092,31 @@ def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
             sample=str(path),
             reason=PrecisionReason.SAMPLE_NOT_LABELLED.value,
         )
+    if not has_kind_column:
+        kind = KIND_UNKNOWN
+    elif len(kinds) == 1:
+        kind = next(iter(kinds))
+    else:
+        kind = KIND_MIXED
+    precision = n_same / n_labelled
+    ci_low, ci_high = wilson(precision, n_labelled)
+    agreement = None
+    if pair_1:
+        agreement = sum(a == b for a, b in zip(pair_1, pair_2, strict=True)) / len(pair_1)
+    measured = kind in MEASURED_KINDS
     return EmbeddingPrecision(
-        status=PrecisionStatus.MEASURED.value,
-        precision=n_same / n_labelled,
+        status=(PrecisionStatus.MEASURED if measured else PrecisionStatus.PROVISIONAL).value,
+        precision=precision,
         n_labelled=n_labelled,
         n_same=n_same,
         sample=str(path),
-        reason=None,
+        reason=None if measured else PrecisionReason.LABELLER_NOT_HUMAN.value,
+        ci_low=ci_low,
+        ci_high=ci_high,
+        kappa=_cohen_kappa(pair_1, pair_2) if pair_1 else None,
+        agreement=agreement,
+        n_double_labelled=len(pair_1),
+        labeller_kind=kind,
     )
 
 

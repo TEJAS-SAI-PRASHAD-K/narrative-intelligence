@@ -1852,14 +1852,18 @@ def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
             f"{_escape('; '.join(details))} |"
         )
     precision = block.get("precision") or {}
-    if precision.get("status") == "measured":
-        value = float(precision["precision"])
+    if precision.get("precision") is not None:
+        from modeling.eval.claim_dedup import describe_precision
+
         lines += [
             "",
-            f"Embedding pass precision: {value:.3f} "
-            f"({precision['n_same']} of {precision['n_labelled']} labelled pairs are the same "
-            f"claim; sample `{precision['sample']}`).",
+            f"{describe_precision(precision)} Sample `{precision['sample']}`.",
         ]
+        if precision.get("status") != "measured":
+            lines.append(
+                "A person must label the sample, with `labeller_kind` set to `human`, "
+                "before this is a measured precision."
+            )
     elif precision:
         reason = precision.get("reason") or "not_measured"
         sample = precision.get("sample")
@@ -1867,7 +1871,8 @@ def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
         lines += [
             "",
             f"Embedding pass precision: **not measured** (reason code `{reason}`{tail}). "
-            "Label `is_same_claim` with yes or no and rerun the evaluation.",
+            "Label `is_same_claim` with yes or no and set `labeller_kind`, then rerun the "
+            "evaluation.",
         ]
     lines.append("")
     return lines

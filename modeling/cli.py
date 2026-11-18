@@ -526,14 +526,12 @@ def dedup_claims(
         count = "not measured" if outcome.collapsed is None else str(outcome.collapsed)
         reason = f" ({outcome.reason})" if outcome.reason else ""
         console.print(f"{name}: {count} collapsed{reason}")
-    precision = cd.embedding_precision(sample_path)
-    if precision.precision is None:
-        console.print(f"embedding precision: not measured ({precision.reason})")
-    else:
-        console.print(
-            f"embedding precision: {precision.precision:.3f} on "
-            f"{precision.n_labelled} labelled pair(s)"
-        )
+    try:
+        precision = cd.embedding_precision(sample_path)
+    except cd.ClaimSampleError as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(cd.describe_precision(precision.as_dict()), markup=False)
     console.print(f"wrote {links_path}")
     console.print(f"wrote {sample_path}")
 

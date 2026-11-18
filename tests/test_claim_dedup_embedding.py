@@ -553,14 +553,17 @@ def test_precision_counts_labelled_pairs_and_a_zero_is_measured(tmp_path):
         encoding="utf-8",
     )
     precision = cd.embedding_precision(path)
-    assert precision.status == "measured"
+    # An older sample has no labeller_kind column. It reads as unknown and is not measured.
+    assert precision.status == "provisional"
+    assert precision.labeller_kind == "unknown"
+    assert precision.reason == "labeller_not_human"
     assert precision.precision == pytest.approx(0.5)
     assert (precision.n_same, precision.n_labelled) == (1, 2)
 
     path.write_text(header + "a,b,0.9,false,x,false,y,no\n", encoding="utf-8")
     zero = cd.embedding_precision(path)
-    assert zero.status == "measured"
     assert zero.precision == 0.0
+    assert zero.status == "provisional"
 
 
 def test_an_unrecognised_hand_label_is_refused(tmp_path):
@@ -623,3 +626,117 @@ def test_the_cli_writes_links_and_a_sample_for_a_simhash_only_run(tmp_path, monk
     assert payload["passes"]["embedding"]["reason"] == "disabled_in_config"
     assert cd.hand_check_sample_path(data).exists()
     assert "embedding: not measured" in result.output
+
+
+NEW_HEADER = ",".join(cd.SAMPLE_COLUMNS) + "\n"
+
+
+def _sample_row(record_id, kind, l1, l2, a, b, same):
+    # record_id, kept_record_id, similarity, label, claim, kept_label, kept_claim,
+    # labeller_kind, labeller_1, labeller_2, label_1, label_2, is_same_claim
+    return f"{record_id},k,0.9,false,x,false,y,{kind},{l1},{l2},{a},{b},{same}\n"
+
+
+def _write_sample(tmp_path, *rows):
+    path = tmp_path / "sample.csv"
+    path.write_text(NEW_HEADER + "".join(rows), encoding="utf-8")
+    return path
+
+
+def test_the_written_sample_has_blank_labeller_columns(tmp_path):
+    path = tmp_path / "sample.csv"
+    rows = [{"record_id": "keep", "claim": "kept claim", "label": "false"}]
+    cd.write_hand_check_sample(sample_result(), rows, path, size=4)
+    with path.open(encoding="utf-8", newline="") as handle:
+        written = list(csv.DictReader(handle))
+    for column in ("labeller_kind", "labeller_1", "labeller_2", "label_1", "label_2"):
+        assert column in cd.SAMPLE_COLUMNS
+        assert all(item[column] == "" for item in written)
+
+
+def test_the_kind_list_is_the_tier_4_list():
+    from ingest import title_predicate_eval as tpe
+
+    assert cd.LABELLER_KINDS is tpe.LABELLER_KINDS
+    assert cd.MEASURED_KINDS is tpe.MEASURED_KINDS
+
+
+def test_human_labels_are_measured_with_interval_and_agreement(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sample_row("a", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("b", "human", "ana", "raj", "no", "no", "no"),
+        _sample_row("c", "human", "ana", "raj", "yes", "no", "yes"),
+        _sample_row("d", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("e", "", "", "", "", "", ""),
+    )
+    result = cd.embedding_precision(path)
+    assert result.status == "measured"
+    assert result.reason is None
+    assert result.labeller_kind == "human"
+    assert result.precision == pytest.approx(0.75)
+    assert 0.0 < result.ci_low < 0.75 < result.ci_high <= 1.0
+    assert result.n_double_labelled == 4
+    assert result.agreement == pytest.approx(0.75)
+    assert result.kappa == pytest.approx(0.5)
+    text = cd.describe_precision(result.as_dict())
+    assert "labeller: human" in text
+    assert "PROVISIONAL" not in text
+
+
+@pytest.mark.parametrize("kind", ["model-unreviewed", "model-reviewed"])
+def test_model_labels_are_provisional_not_measured(tmp_path, kind):
+    path = _write_sample(tmp_path, _sample_row("a", kind, "m1", "m2", "yes", "yes", "yes"))
+    result = cd.embedding_precision(path)
+    assert result.status == "provisional"
+    assert result.reason == cd.PrecisionReason.LABELLER_NOT_HUMAN.value
+    assert result.labeller_kind == kind
+    assert "not a measured precision" in cd.describe_precision(result.as_dict())
+
+
+def test_model_unreviewed_text_names_the_labeller(tmp_path):
+    path = _write_sample(
+        tmp_path, _sample_row("a", "model-unreviewed", "m1", "m2", "yes", "yes", "yes")
+    )
+    text = cd.describe_precision(cd.embedding_precision(path).as_dict())
+    assert "labeller: model, unreviewed by a person" in text
+    assert "PROVISIONAL" in text
+    assert "labeller_not_human" in text
+
+
+def test_a_sample_with_mixed_kinds_is_not_measured(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sample_row("a", "human", "ana", "raj", "yes", "yes", "yes"),
+        _sample_row("b", "model-unreviewed", "m1", "m2", "no", "no", "no"),
+    )
+    result = cd.embedding_precision(path)
+    assert result.labeller_kind == "mixed"
+    assert result.status == "provisional"
+    assert result.reason == "labeller_not_human"
+
+
+def test_kappa_is_none_without_double_labels(tmp_path):
+    path = _write_sample(tmp_path, _sample_row("a", "human", "ana", "", "yes", "", "yes"))
+    result = cd.embedding_precision(path)
+    assert result.status == "measured"
+    assert result.kappa is None
+    assert result.agreement is None
+    assert result.n_double_labelled == 0
+
+
+@pytest.mark.parametrize(
+    "row, message",
+    [
+        (_sample_row("a", "", "ana", "raj", "yes", "yes", "yes"), "labeller_kind"),
+        (_sample_row("a", "robot", "ana", "raj", "yes", "yes", "yes"), "labeller_kind"),
+        (_sample_row("a", "human", "ana", "raj", "yes", "yes", "maybe"), "use yes or no"),
+        (_sample_row("a", "human", "ana", "raj", "maybe", "yes", "yes"), "label_1"),
+        (_sample_row("a", "human", "Ana", "ana", "yes", "yes", "yes"), "same labeller"),
+    ],
+)
+def test_an_invalid_filled_row_is_refused(tmp_path, row, message):
+    path = _write_sample(tmp_path, row)
+    with pytest.raises(cd.ClaimSampleError, match=message):
+        cd.embedding_precision(path)
+
