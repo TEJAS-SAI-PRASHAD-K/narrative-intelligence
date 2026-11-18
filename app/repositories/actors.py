@@ -30,7 +30,7 @@ from app.schemas.actors import (
     CohortMembership,
     CohortOut,
 )
-from app.schemas.common import PageResponse, ScoreComponent
+from app.schemas.common import NamedRef, PageResponse, ScoreComponent
 from app.schemas.posts import PostOut
 
 log = logging.getLogger(__name__)
@@ -409,6 +409,38 @@ async def list_cohorts(
         total=len(rows),
         filters_applied=spec.as_response_dict(),
     )
+
+
+async def get_cohort_name(session: AsyncSession, cohort_id: str) -> NamedRef:
+    from app.models.actors import Cohort
+
+    try:
+        parsed = uuid.UUID(cohort_id)
+    except ValueError:
+        raise NotFound(f"No cohort with id {cohort_id}.", code="cohort_not_found") from None
+    name = (
+        await session.execute(select(Cohort.name).where(Cohort.id == parsed))
+    ).scalar_one_or_none()
+    if name is None:
+        raise NotFound(f"No cohort with id {cohort_id}.", code="cohort_not_found")
+    return NamedRef(id=str(parsed), name=name)
+
+
+async def get_author_group_name(session: AsyncSession, group_id: str) -> NamedRef:
+    from app.models.actors import AuthorGroup
+
+    try:
+        parsed = uuid.UUID(group_id)
+    except ValueError:
+        raise NotFound(
+            f"No author group with id {group_id}.", code="author_group_not_found"
+        ) from None
+    name = (
+        await session.execute(select(AuthorGroup.name).where(AuthorGroup.id == parsed))
+    ).scalar_one_or_none()
+    if name is None:
+        raise NotFound(f"No author group with id {group_id}.", code="author_group_not_found")
+    return NamedRef(id=str(parsed), name=name)
 
 
 async def cohort_authors(

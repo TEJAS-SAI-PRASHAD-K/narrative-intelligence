@@ -26,6 +26,17 @@ class Camel(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class NamedRef(Camel):
+    """The smallest answer to "what is this id called".
+
+    Used by the single-entity lookup routes that exist so a filter chip can show
+    a name instead of a raw id. Anything richer belongs on the detail route.
+    """
+
+    id: str
+    name: str
+
+
 # ---------------------------------------------------------------------------
 # AI provenance
 # ---------------------------------------------------------------------------

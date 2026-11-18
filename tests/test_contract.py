@@ -430,6 +430,45 @@ def test_actors(demo_client, demo_ids):
     assert result.unknown == ["reddit:does-not-exist"]
 
 
+def test_cohort_and_author_group_name_lookups(demo_client, demo_ids):
+    from app.mock.corpus import corpus
+    from app.schemas.actors import AuthorGroupOut
+    from app.schemas.common import NamedRef, PageResponse
+
+    cohort = corpus().cohorts[0]
+    response = demo_client.get(f"/api/v1/cohorts/{demo_ids['cohort_id']}")
+    assert response.status_code == 200
+    ref = NamedRef.model_validate(response.json())
+    assert (ref.id, ref.name) == (cohort["id"], cohort["name"])
+    assert set(response.json()) == {"id", "name"}
+
+    groups = PageResponse[AuthorGroupOut].model_validate(
+        demo_client.get(f"/api/v1/author-groups?project_id={demo_ids['project_id']}").json()
+    )
+    assert groups.items
+    for group in groups.items:
+        response = demo_client.get(f"/api/v1/author-groups/{group.id}")
+        assert response.status_code == 200
+        assert NamedRef.model_validate(response.json()) == NamedRef(id=group.id, name=group.name)
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("/api/v1/cohorts/not-a-cohort", "cohort_not_found"),
+        ("/api/v1/cohorts/00000000-0000-0000-0000-000000000000", "cohort_not_found"),
+        ("/api/v1/author-groups/not-a-group", "author_group_not_found"),
+        ("/api/v1/author-groups/00000000-0000-0000-0000-000000000000", "author_group_not_found"),
+    ],
+)
+def test_unknown_name_lookups_are_404_not_an_empty_name(demo_client, path, code):
+    response = demo_client.get(path)
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert set(error) == {"code", "message", "detail", "request_id"}
+    assert error["code"] == code
+
+
 def test_drivers(demo_client, demo_ids):
     from app.schemas.drivers import DriversResponse
 

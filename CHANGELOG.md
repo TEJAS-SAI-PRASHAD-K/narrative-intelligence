@@ -13,6 +13,10 @@ decision.
 
 ### Added
 
+- **Name lookups for filter chips.** `GET /cohorts/{cohort_id}` and
+  `GET /author-groups/{group_id}` return `{id, name}` and a 404 (`cohort_not_found`,
+  `author_group_not_found`) for an unknown id. Narratives already resolve through
+  `GET /narratives/{narrative_id}`.
 - **Eighteen Indian RSS feeds in two roles.** Nine fact-checkers (BOOM, Alt News
   in English and Hindi, Factly, Newschecker, Quint WebQoof, Fact Crescendo,
   Vishvas News, DigitEye) carry a claim *and a verdict* and are the only
