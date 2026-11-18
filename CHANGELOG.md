@@ -338,6 +338,10 @@ decision.
   values were stale because domain risk was missing. With domain risk, narrative 1000 moves
   from 15.28 to 24.04. The rescore then moves 1001 from 36.05 to 34.22 and 1002 from 31.18
   to 30.71. Narrative 1000 does not change. All 3 stay low priority. See `docs/roadmap.md`.
+- **The embedder comparison result is reported and the default stays.** The multilingual model
+  merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
+  English and 759 Hindi records and 72 records with other detector codes. The silhouette
+  is 0.102 against 0.45. The cluster model card has the tables.
 - **The coordination null leaves out shuffles with no edges.** The coordination module
   is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
   pulled the null down. It is now counted in `null_empty_shuffles` and left out. The
