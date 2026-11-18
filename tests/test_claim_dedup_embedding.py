@@ -556,7 +556,7 @@ def test_precision_counts_labelled_pairs_and_a_zero_is_measured(tmp_path):
     # An older sample has no labeller_kind column. It reads as unknown and is not measured.
     assert precision.status == "provisional"
     assert precision.labeller_kind == "unknown"
-    assert precision.reason == "labeller_not_human"
+    assert precision.reason == "labeller_kind_missing"
     assert precision.precision == pytest.approx(0.5)
     assert (precision.n_same, precision.n_labelled) == (1, 2)
 
@@ -740,3 +740,104 @@ def test_an_invalid_filled_row_is_refused(tmp_path, row, message):
     with pytest.raises(cd.ClaimSampleError, match=message):
         cd.embedding_precision(path)
 
+
+
+def test_an_old_sample_reports_labeller_kind_missing(tmp_path):
+    path = tmp_path / "sample.csv"
+    path.write_text(
+        "record_id,kept_record_id,similarity,label,claim,kept_label,kept_claim,is_same_claim\n"
+        "a,b,0.9,false,x,false,y,yes\n",
+        encoding="utf-8",
+    )
+    result = cd.embedding_precision(path)
+    assert result.status == "provisional"
+    assert result.precision == pytest.approx(1.0)
+    assert result.reason == "labeller_kind_missing"
+    text = cd.describe_precision(result.as_dict())
+    assert "labeller: unknown" in text
+    assert "labeller_kind_missing" in text
+
+
+def _run_dedup_cli(tmp_path, monkeypatch, *extra):
+    import re
+
+    from typer.testing import CliRunner
+
+    from modeling import cli
+    from modeling.config import get_settings
+
+    data = tmp_path / "data"
+    if not (data / "factchecks" / "factchecks.parquet").exists():
+        _write_factchecks(
+            data,
+            [
+                {"record_id": "a", "claim": "claim one", "simhash": BASE},
+                {"record_id": "b", "claim": "claim one again", "simhash": BASE},
+            ],
+        )
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    get_settings.cache_clear()
+    try:
+        result = CliRunner().invoke(cli.app, ["dedup-claims", "--no-embedding", *extra])
+    finally:
+        get_settings.cache_clear()
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    return data, result, " ".join(output.split())
+
+
+def _labelled_sample_text():
+    return (
+        ",".join(cd.SAMPLE_COLUMNS)
+        + "\n"
+        + "a,k,0.9,f,x,f,y,human,ana,raj,yes,yes,yes\n"
+    )
+
+
+def test_the_cli_keeps_a_labelled_sample_and_writes_the_new_one_beside_it(
+    tmp_path, monkeypatch
+):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+
+    _, result, output = _run_dedup_cli(tmp_path, monkeypatch)
+
+    assert result.exit_code == 0, output
+    assert sample.read_text(encoding="utf-8") == _labelled_sample_text()
+    side = cd.side_sample_path(sample)
+    assert side.exists()
+    assert not cd.sample_has_labels(side)
+    assert "sample_has_labels" in output
+    assert "embedding precision: 1.000" in output
+    assert "labeller: human" in output
+
+
+def test_the_cli_replaces_a_labelled_sample_only_on_request(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    sample.write_text(_labelled_sample_text(), encoding="utf-8")
+
+    _, result, output = _run_dedup_cli(tmp_path, monkeypatch, "--overwrite-sample")
+
+    assert result.exit_code == 0, output
+    assert not cd.sample_has_labels(sample)
+    assert not cd.side_sample_path(sample).exists()
+    assert "sample_has_labels" not in output
+
+
+def test_a_blank_sample_is_replaced_without_a_flag(tmp_path, monkeypatch):
+    data, _, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    sample = cd.hand_check_sample_path(data)
+    assert not cd.sample_has_labels(sample)
+    _, result, _ = _run_dedup_cli(tmp_path, monkeypatch)
+    assert result.exit_code == 0
+    assert not cd.side_sample_path(sample).exists()
+
+
+def test_a_sample_with_only_a_labeller_kind_counts_as_labelled(tmp_path):
+    path = tmp_path / "s.csv"
+    path.write_text(
+        ",".join(cd.SAMPLE_COLUMNS) + "\na,k,0.9,f,x,f,y,human,,,,,\n", encoding="utf-8"
+    )
+    assert cd.sample_has_labels(path)

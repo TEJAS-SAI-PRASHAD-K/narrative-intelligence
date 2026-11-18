@@ -472,6 +472,11 @@ def dedup_claims(
     no_embedding: bool = typer.Option(
         False, "--no-embedding", help="Run only the simhash pass."
     ),
+    overwrite_sample: bool = typer.Option(
+        False,
+        "--overwrite-sample",
+        help="Replace a hand-check sample that already holds labels.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Link claims by simhash and multilingual embedding similarity, read side.
@@ -517,7 +522,20 @@ def dedup_claims(
         source=source if source.exists() else None,
         sample_path=sample_path,
     )
-    cd.write_hand_check_sample(result, rows, sample_path, size=sample_size or config.sample_size)
+    sample_size_used = sample_size or config.sample_size
+    if cd.sample_has_labels(sample_path) and not overwrite_sample:
+        # A labelled sample is hand work. The new blank sample goes beside it.
+        written_sample = cd.side_sample_path(sample_path)
+        cd.write_hand_check_sample(result, rows, written_sample, size=sample_size_used)
+        console.print(
+            f"[yellow]warning:[/] {sample_path} has labels and is kept "
+            f"(reason code {cd.PrecisionReason.SAMPLE_HAS_LABELS.value}, 1 sample kept). "
+            f"The new blank sample is {written_sample}. Use --overwrite-sample to replace it.",
+            markup=True,
+        )
+    else:
+        written_sample = sample_path
+        cd.write_hand_check_sample(result, rows, sample_path, size=sample_size_used)
 
     for name in ("simhash", "embedding"):
         outcome = result.outcome(name)
@@ -533,7 +551,7 @@ def dedup_claims(
         raise typer.Exit(code=1) from exc
     console.print(cd.describe_precision(precision.as_dict()), markup=False)
     console.print(f"wrote {links_path}")
-    console.print(f"wrote {sample_path}")
+    console.print(f"wrote {written_sample}")
 
 
 @app.command(name="freeze-factchecks")

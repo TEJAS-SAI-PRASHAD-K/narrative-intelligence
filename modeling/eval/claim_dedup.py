@@ -97,7 +97,7 @@ LABELLER_NOTES = {
     "human": "labeller: human",
     "model-reviewed": "labeller: model, reviewed by a person",
     "model-unreviewed": "labeller: model, unreviewed by a person",
-    KIND_UNKNOWN: "labeller: not recorded",
+    KIND_UNKNOWN: "labeller: unknown",
     KIND_MIXED: "labeller: mixed kinds",
 }
 
@@ -151,6 +151,10 @@ class PrecisionReason(str, Enum):
     SAMPLE_NOT_LABELLED = "sample_not_labelled"
     #: Labels exist, but the labeller is not (only) a person, so the number is provisional.
     LABELLER_NOT_HUMAN = "labeller_not_human"
+    #: The sample has no ``labeller_kind`` column, so nobody recorded who labelled it.
+    LABELLER_KIND_MISSING = "labeller_kind_missing"
+    #: A labelled sample was kept and the new blank sample went to a side file.
+    SAMPLE_HAS_LABELS = "sample_has_labels"
 
 
 class PrecisionStatus(str, Enum):
@@ -1012,6 +1016,26 @@ def _yes_no(raw: str) -> bool | None:
     return None
 
 
+LABEL_COLUMNS = ("is_same_claim", "label_1", "label_2", "labeller_kind")
+SIDE_SAMPLE_FILENAME = "claim_dedup_sample.new.csv"
+
+
+def sample_has_labels(path: Path) -> bool:
+    """True when any row of the sample at ``path`` has a filled label column."""
+    if not Path(path).exists():
+        return False
+    with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            if any(str(row.get(column) or "").strip() for column in LABEL_COLUMNS):
+                return True
+    return False
+
+
+def side_sample_path(sample_path: Path) -> Path:
+    """The file that receives a new blank sample when the main sample holds labels."""
+    return Path(sample_path).with_name(SIDE_SAMPLE_FILENAME)
+
+
 def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
     """Precision on the labelled hand-check pairs, with the labeller kind.
 
@@ -1019,7 +1043,8 @@ def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
     with :class:`ClaimSampleError` when a filled row has a label that is not yes or
     no, has no valid ``labeller_kind``, or names one labeller twice. It writes no
     result in that case. A sample with no ``labeller_kind`` column is an older
-    sample. It reads as kind ``unknown`` and is never measured. With no labelled pair
+    sample. It reads as kind ``unknown`` with the reason ``labeller_kind_missing``. It is never
+    measured. With no labelled pair
     the result is ``not_measured`` and ``precision`` is ``None``.
     """
     path = Path(sample_path)
@@ -1104,13 +1129,18 @@ def embedding_precision(sample_path: Path) -> EmbeddingPrecision:
     if pair_1:
         agreement = sum(a == b for a, b in zip(pair_1, pair_2, strict=True)) / len(pair_1)
     measured = kind in MEASURED_KINDS
+    reason = (
+        PrecisionReason.LABELLER_KIND_MISSING.value
+        if kind == KIND_UNKNOWN
+        else PrecisionReason.LABELLER_NOT_HUMAN.value
+    )
     return EmbeddingPrecision(
         status=(PrecisionStatus.MEASURED if measured else PrecisionStatus.PROVISIONAL).value,
         precision=precision,
         n_labelled=n_labelled,
         n_same=n_same,
         sample=str(path),
-        reason=None if measured else PrecisionReason.LABELLER_NOT_HUMAN.value,
+        reason=None if measured else reason,
         ci_low=ci_low,
         ci_high=ci_high,
         kappa=_cohen_kappa(pair_1, pair_2) if pair_1 else None,
