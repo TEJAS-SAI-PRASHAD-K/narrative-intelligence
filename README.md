@@ -632,7 +632,11 @@ claims whose multilingual claim embeddings have cosine similarity at or above
 from the similarity distribution of the written pairs, and the command also writes
 `data/factchecks/claim_dedup_sample.csv` for a person to label. The comparison report
 records the embedding precision once that sample has labels and says `not_measured`
-until then.
+until then. The sample has a `labeller_kind` column (`human`, `model-reviewed` or
+`model-unreviewed`) and columns for two labellers, `labeller_1`, `labeller_2`, `label_1` and
+`label_2`. Only `human` gives a measured precision. A model label gives a provisional number
+that the report marks as not measured. The report also gives a Wilson interval and the
+agreement of the two labellers.
 
 Two more things the numbers say:
 

@@ -13,6 +13,15 @@ decision.
 
 ### Added
 
+- **The claim dedup hand-check sample records who labelled it.** The sample has the new
+  columns `labeller_kind`, `labeller_1`, `labeller_2`, `label_1` and `label_2`.
+  `embedding_precision` returns a Wilson interval, Cohen's kappa, raw agreement and the
+  labeller kind. Only `human` labels give status `measured`. Other kinds and mixed kinds
+  give `provisional` with the reason code `labeller_not_human`, and the CLI and the
+  comparison report print `labeller: model, unreviewed by a person` for `model-unreviewed`.
+  A filled row with no valid kind, an answer that is not yes or no, or one name for both
+  labellers is refused. An older sample with only `is_same_claim` reads as kind `unknown`.
+
 - **Fact-check tier 4, `title_predicate`, for Alt News and Factly.** The verdict is read
   from the headline with the English and Hindi regular expressions and guards in
   `configs/factcheck.yaml`. A guard cancels a negated verdict, a headline that calls the
