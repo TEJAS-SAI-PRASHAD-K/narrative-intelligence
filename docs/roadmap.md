@@ -152,11 +152,16 @@ communities found are not evidence of coordination. The detector does recover a
 planted coordinated burst on the demo fixture, so the mechanism works and the
 corpus simply does not contain the phenomenon at a detectable level.
 
-**The default embedder groups Hindi by language.** On a 636-record news corpus, the
-default MiniLM model placed 147 of the 156 Hindi records in one cluster with 2 English
-records. That cluster is a language group, not a narrative. The multilingual
-candidate found no clusters at `min_cluster_size` 15 on the same records, so the
-default stays. Repeat `modeling.cli compare-embedder` when the corpus is larger.
+**The default embedder groups by language, and the multilingual model merges.** The larger
+corpus has 6869 scored records, 6670 embedded and 6033 representatives after 637
+near-duplicates collapse. The default MiniLM model groups by language, with a weighted
+purity of 0.984 to 0.986 over `min_cluster_size` 5, 10, 15 and 25. The multilingual
+candidate at size 15 puts 4216 records of 17 languages in one cluster (purity 0.8042).
+Its silhouette is 0.102 against 0.45. At the other sizes its weighted purity is 0.6132
+to 0.7958, and its silhouette is lower at every size. This is a merge and not a grouping
+by topic, so the default stays `sentence-transformers/all-MiniLM-L6-v2` (issue #48).
+Neither model finds narratives that cross languages. Topic coherence across languages is
+not measured, because no narrative labels exist. See `artifacts/model_cards/cluster.md`.
 
 **Hindi is ingested and only partly scored.** Each module in `configs/models.yaml`
 has its own `languages` list. The English-only modules skip Hindi with a reason code.

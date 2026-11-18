@@ -124,7 +124,99 @@ see a run that keeps one language and sends the other to noise. Both embedders c
 same sources and limit. The default changes only if clusters group by topic across
 languages.
 
-Result for both embedders: not measured. The run needs the larger corpus and the GPU host.
+Result for both embedders: see Embedder comparison below.
+
+## Embedder comparison
+
+Issue #48 asks if a multilingual embedder groups the narratives by topic across languages.
+The baseline is `sentence-transformers/all-MiniLM-L6-v2`. The alternative is
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Both ran through the same
+cluster stage over the same scored tables. The corpus has 6869 scored records. Of these,
+6670 are embedded, and 199 gdelt records are below the 40-character floor. The stage
+collapses 637 near-duplicates and keeps 6033 representatives.
+
+### Clustering checks
+
+| check | baseline | alternative |
+|---|---|---|
+| embedding model | sentence-transformers/all-MiniLM-L6-v2 | sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 |
+| dimension | 384 | 384 |
+| narratives | 15 | 2 |
+| min_cluster_size | 15 | 15 |
+| clusters | 15 | 2 |
+| clustered fraction | 0.195 | 0.655 |
+| silhouette | 0.45 | 0.102 |
+
+### Language purity per cluster
+
+Purity is the share of a cluster in its majority language. A cluster is mixed when that
+share is below 0.9. The mean weights each cluster by its members.
+
+| embedder | clusters | weighted mean purity | mixed clusters | no language |
+|---|---|---|---|---|
+| baseline | 15 | 0.986 | 1 | 8 |
+| alternative | 2 | 0.8054 | 1 | 8 |
+
+Clusters, baseline:
+
+| cluster | members | majority | purity | languages |
+|---|---|---|---|---|
+| nar-0426158b3d10 | 55 | en | 0.9818 | {'en': 54, 'hi': 1} |
+| nar-181db370c55a | 25 | en | 1.0 | {'en': 25} |
+| nar-245e628c6c93 | 22 | en | 1.0 | {'en': 22} |
+| nar-63f1e0d53ea8 | 47 | en | 1.0 | {'en': 47} |
+| nar-6c342c31791f | 27 | en | 1.0 | {'en': 27} |
+| nar-705fa4c1c880 | 79 | en | 1.0 | {'en': 79} |
+| nar-7a1632c50e65 | 36 | en | 0.8056 | {'de': 7, 'en': 29} |
+| nar-92d9154069bb | 16 | en | 1.0 | {'en': 16} |
+| nar-a17f3daa753a | 70 | en | 1.0 | {'en': 70} |
+| nar-b15ad97c793d | 46 | en | 1.0 | {'en': 46} |
+| nar-cad181e74558 | 40 | en | 0.975 | {'de': 1, 'en': 39} |
+| nar-d76cb1096159 | 23 | en | 1.0 | {'en': 23} |
+| nar-d8322acc349c | 26 | en | 1.0 | {'en': 26} |
+| nar-e73ca235fac7 | 84 | en | 1.0 | {'en': 84} |
+| nar-eea05f371b9a | 693 | hi | 0.987 | {'en': 9, 'hi': 684} |
+
+Clusters, alternative:
+
+| cluster | members | majority | purity | languages |
+|---|---|---|---|---|
+| nar-19bef1bfbd19 | 4216 | en | 0.8042 | {'af': 2, 'ca': 3, 'cy': 2, 'da': 2, 'de': 22, 'en': 3385, 'es': 1, 'et': 4, 'fr': 8, 'hi': 759, 'hr': 1, 'id': 4, 'it': 2, 'nl': 4, 'no': 1, 'sv': 2, 'te': 7} |
+| nar-3761104fa373 | 26 | en | 1.0 | {'en': 26} |
+
+### Sweep over min_cluster_size
+
+| embedder | min_cluster_size | clusters | clustered fraction | silhouette | weighted mean purity | mixed clusters | hi noise share | hi shares a cluster with en | en shares a cluster with hi |
+|---|---|---|---|---|---|---|---|---|---|
+| alternative | 5 | 49 | 0.153 | 0.279 | 0.7958 | 12 | 0.7163 | 0.9238 | 0.3866 |
+| baseline | 5 | 72 | 0.214 | 0.345 | 0.9841 | 7 | 0.2595 | 0.0034 | 0.0143 |
+| alternative | 10 | 22 | 0.185 | 0.252 | 0.6971 | 5 | 0.5458 | 1.0 | 0.5482 |
+| baseline | 10 | 24 | 0.208 | 0.438 | 0.9857 | 1 | 0.1285 | 1.0 | 0.0892 |
+| alternative | 15 | 2 | 0.655 | 0.102 | 0.8054 | 1 | 0.0344 | 1.0 | 0.9924 |
+| baseline | 15 | 15 | 0.195 | 0.45 | 0.986 | 1 | 0.1285 | 1.0 | 0.1057 |
+| alternative | 25 | 4 | 0.223 | 0.194 | 0.6132 | 1 | 0.3206 | 1.0 | 0.8842 |
+| baseline | 25 | 10 | 0.179 | 0.449 | 0.9847 | 1 | 0.1285 | 1.0 | 0.1307 |
+
+### Decision
+
+The default stays `sentence-transformers/all-MiniLM-L6-v2`. `configs/models.yaml` does not
+change. The rule of the issue is to switch only if clusters group by topic across languages.
+The result does not meet this rule.
+
+- At the default `min_cluster_size` of 15, the multilingual model puts 4216 records of 17
+  languages in one cluster. The purity is 0.8042. The silhouette is 0.102 against 0.45 for
+  the baseline. This is a merge, not a grouping by topic.
+- At the sizes 5, 10 and 25, the weighted purity of the multilingual model is lower (0.6132
+  to 0.7958). Its silhouette is lower at every size.
+- The baseline groups by language. Its weighted purity is 0.984 to 0.986. Hindi records
+  sit in a Hindi cluster and English records sit in English clusters.
+
+Limits of this result:
+
+- Neither model finds narratives that cross languages. The baseline separates the languages.
+  The multilingual model merges them.
+- Topic coherence across languages is not measured, because no narrative labels exist.
+  Purity measures language mixing only. It does not measure topic.
 
 ## Known limitations
 
