@@ -221,6 +221,34 @@ def watch_laya_oom() -> Iterator[None]:
         logger.removeHandler(handler)
 
 
+_CANDIDATE_DIRS: dict[tuple[str, bool], Path] = {}
+
+
+def candidate_checkpoint_dir(version: str, *, unverified_ok: bool) -> Path:
+    """Verify a candidate ``misinfo`` checkpoint once and return its folder.
+
+    The folder is ``MODELS_DIR/misinfo/<version>``, where ``modeling.cli train misinfo
+    --output-version`` writes it. The registry hash rules apply. A candidate with no
+    ``sha256`` in ``configs/models.yaml`` loads only with ``--allow-unverified-candidate``.
+    """
+    from modeling.candidate import CandidateRefused, resolve_candidate
+
+    key = (version, unverified_ok)
+    if key not in _CANDIDATE_DIRS:
+        try:
+            checkpoint = resolve_candidate("misinfo", version, unverified_ok=unverified_ok)
+        except CandidateRefused as exc:
+            raise StageError(EXIT_FAILED, f"[score] candidate misinfo checkpoint: {exc}") from exc
+        if not checkpoint.verified:
+            print(
+                f"WARNING: misinfo candidate {version} has no sha256 in configs/models.yaml. "
+                "It loads without a hash check. Do not ship a result from it.",
+                file=sys.stderr,
+            )
+        _CANDIDATE_DIRS[key] = Path(checkpoint.path)
+    return _CANDIDATE_DIRS[key]
+
+
 # ---------------------------------------------------------------------------
 # Context
 # ---------------------------------------------------------------------------
@@ -294,9 +322,20 @@ class Context:
     def demo_data_dir(self) -> Path:
         return self.out / "demo_data"
 
+    @property
+    def misinfo_candidate(self) -> str | None:
+        """The ``--misinfo-version`` value: a candidate folder of ``models/misinfo/``."""
+        value = getattr(self.args, "misinfo_version", None)
+        return str(value) if value else None
+
     def misinfo_dir(self) -> Path:
         from modeling.config import module_config
 
+        if self.misinfo_candidate is not None:
+            return candidate_checkpoint_dir(
+                self.misinfo_candidate,
+                unverified_ok=bool(getattr(self.args, "allow_unverified_candidate", False)),
+            )
         return self.models_dir / "misinfo" / str(module_config("misinfo").get("version", "v0.0.0"))
 
     def laya_checkpoint_dir(self, which: str) -> Path:
@@ -1387,7 +1426,9 @@ def make_misinfo_scorer(ctx: Context) -> tuple[Scorer, str]:
                 outcome.values[record_id] = float(value)
         return outcome
 
-    return score, str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    return score, ctx.misinfo_candidate or str(
+        module_config("misinfo").get("version", "v0.0.0-unset")
+    )
 
 
 def make_scorer(name: str, ctx: Context) -> tuple[Scorer, str]:
@@ -1993,6 +2034,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=None, help="Lower it on a shared GPU.")
     p.add_argument("--models", default=None, help=f"Comma list. Default all: {','.join(MODELS)}.")
     p.add_argument(
+        "--misinfo-version",
+        default=None,
+        help="Score `misinfo` with the candidate models/misinfo/VERSION of the model directory. "
+        "configs/models.yaml does not change. The score file and its provenance carry VERSION. "
+        "Use a copy of --out so the file of the configured version stays.",
+    )
+    p.add_argument(
+        "--allow-unverified-candidate",
+        action="store_true",
+        help="Load a --misinfo-version checkpoint that has no sha256 in configs/models.yaml.",
+    )
+    p.add_argument(
         "--refreeze",
         action="store_true",
         help="Freeze the claim and corpus ids again from the current data, and score the "
@@ -2035,6 +2088,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "allow_unverified_candidate", False) and not getattr(
+        args, "misinfo_version", None
+    ):
+        print("error: --allow-unverified-candidate needs --misinfo-version", file=sys.stderr)
+        return EXIT_USAGE
     ctx = Context(args=args, deps=deps or Deps())
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

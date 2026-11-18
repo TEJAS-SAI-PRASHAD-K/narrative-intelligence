@@ -302,13 +302,33 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
 
     Records from a fact-checker get no value and ``misinfo:fact_check_publisher``.
     """
+    from modeling import candidate as candidate_module
     from modeling.aux.base import SkipReason
     from modeling.config import module_config
     from modeling.registry import resolve
     from modeling.text.misinfo_clf import MisinfoClassifier
 
     version = str(module_config("misinfo").get("version"))
-    checkpoint = resolve("misinfo", version, required=False)
+    candidate = candidate_module.requested_version()
+    candidate_note = ""
+    if candidate is not None:
+        # The candidate replaces the configured checkpoint for this run only. Its rows carry
+        # `<candidate>+<sha8>` and overwrite the `misinfo_prob` of rows that another version
+        # scored, so a candidate run needs its own DATA_DIR.
+        try:
+            checkpoint = candidate_module.resolve_candidate("misinfo", candidate)
+        except candidate_module.CandidateRefused as exc:
+            return [
+                {
+                    "stage": "misinfo",
+                    "table": "record_scores",
+                    "note": ctx.note(f"candidate {candidate} refused ({exc}); misinfo_prob stays"),
+                }
+            ]
+        version = candidate
+        candidate_note = f"CANDIDATE {candidate}, not the configured version; "
+    else:
+        checkpoint = resolve("misinfo", version, required=False)
     if checkpoint is None:
         return [
             {
@@ -379,7 +399,7 @@ def _misinfo_stage(ctx: StageContext) -> list[dict[str, Any]]:
             "table": "record_scores",
             **result,
             "note": ctx.note(
-                f"scored {len(frame)}/{len(ctx.records)} records"
+                candidate_note + f"scored {len(frame)}/{len(ctx.records)} records"
                 + skip_note
                 + (f" [{demo_note}]" if demo_note else "")
             ),
