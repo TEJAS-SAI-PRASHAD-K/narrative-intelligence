@@ -2385,6 +2385,10 @@ def redact_paths(
             return {key: walk(child) for key, child in item.items()}
         if isinstance(item, list):
             return [walk(child) for child in item]
+        if isinstance(item, tuple):
+            return tuple(walk(child) for child in item)
+        if isinstance(item, Path):
+            return display_path(item, data_dir)
         return item
 
     return walk(value)

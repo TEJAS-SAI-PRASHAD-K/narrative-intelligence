@@ -611,3 +611,38 @@ def test_redaction_rewrites_only_data_repo_and_system_root_paths(tmp_path):
     assert redact_paths("/var/lib/x.csv", data) == "x.csv (outside the repository)"
     assert redact_paths("~/notes/x.csv", data) == "x.csv (outside the repository)"
     assert redact_paths("/etc/hosts and /usr/share/x", data) == "/etc/hosts and /usr/share/x"
+
+
+def test_redaction_walks_tuples_and_turns_a_path_object_into_text(tmp_path):
+    from modeling.eval.factcheck_eval import redact_paths
+
+    data = tmp_path / "data"
+    value = {"pair": (f"{data}/a.csv", 2), "where": data / "b.csv", "none": None}
+    assert redact_paths(value, data) == {
+        "pair": ("a.csv", 2),
+        "where": "b.csv",
+        "none": None,
+    }
+
+
+def test_a_real_result_holds_no_path_object_after_redaction(env):
+    from pathlib import PurePath
+
+    from modeling.eval.factcheck_eval import redact_paths
+
+    result, _ = run_comparison(
+        env["scores"], manifest_path=env["manifest"], n_bootstrap=50, seed=2, write=False
+    )
+
+    def path_objects(item):
+        if isinstance(item, PurePath):
+            yield item
+        elif isinstance(item, dict):
+            for child in item.values():
+                yield from path_objects(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                yield from path_objects(child)
+
+    public = redact_paths(result, env["data"])
+    assert not list(path_objects(public))
