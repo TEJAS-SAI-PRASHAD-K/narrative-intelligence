@@ -157,7 +157,7 @@ topics:
 # gate different things:
 #
 #   configs/sources.yaml  gdelt.doc_api.languages   -> which GDELT articles are fetched
-#   configs/sources.yaml  youtube.discovery.*       -> regionCode / relevanceLanguage
+#   configs/sources.yaml  youtube.discovery.*       -> region_code / relevance_language
 #   modeling/config.py    Settings.languages        -> which records get SCORED
 #
 # The third is still `("en",)`. Ingesting Hindi and scoring Hindi are separate

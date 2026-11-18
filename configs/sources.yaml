@@ -238,39 +238,46 @@ news_rss:
     language: en
 
 youtube:
-  # Quota is the binding constraint: 10,000 units/UTC day.
-  #   search.list        = 100 units  (discovery; budgeted hard)
-  #   videos.list        =   1 unit   (hydration; cheap)
-  #   commentThreads.list=   1 unit   (comments; cheap)
+  # Read through yt-dlp: no API key and no quota. The limits that remain are
+  # YouTube's tolerance for scraping, which is unmetered but not unlimited; a
+  # burst of extractions can be answered with a bot check, and the adapter counts
+  # that per video (flag extract_failed) instead of failing the run.
+  #
+  # Cost shape: one request per search query (ids only), then one request per
+  # video for the full extraction (timestamp, statistics, caption tracks).
   discovery:
-    # Queries come from configs/topics.yaml youtube_queries.
-    #
-    # Raised 4 -> 12 so one run covers the whole case: four topics times three
-    # queries each. The arithmetic, because it is the binding constraint:
-    #   12 searches x 100 units = 1,200 units, against a 10,000/day quota.
-    # The tighter limit is YOUTUBE_MAX_SEARCHES_PER_DAY (default 20), which
-    # allows one full run plus most of a second per UTC day -- comfortable for
-    # a daily collector, not enough for interactive re-running. Hydration and
-    # comments cost 1 unit each and are not the thing to economise on.
+    # Queries come from configs/topics.yaml youtube_queries (four topics times
+    # three queries). Search is lazy, so --limit stops before later queries run.
     max_searches_per_run: 12
     results_per_search: 25
+    # relevance -> ytsearchN, date -> ytsearchdateN (newest first)
     order: relevance
+    # Applied after extraction, because a flat search result carries no upload
+    # time. Videos outside the window are counted as outside_published_window.
     published_within_days: 30
     # ISO 3166-1 alpha-2 (NOT the FIPS code GDELT's `countries` wants; they
-    # agree on IN, which is what makes the distinction easy to miss). Free --
-    # search.list is 100 units either way -- and without it an Indian-language
-    # query is still ranked against the global result set.
+    # agree on IN, which is what makes the distinction easy to miss).
+    #
+    # What this does with yt-dlp: it is passed as geo_bypass_country, which
+    # spoofs an X-Forwarded-For address in that country so a video geo-blocked
+    # outside it can still be read. What it does NOT do: localize or re-rank
+    # search results. The Data API's regionCode did that; yt-dlp has no
+    # equivalent, so an Indian-language query is still ranked against the global
+    # result set. Scoping to India now rests on the query strings themselves
+    # (Hindi and India-specific terms in topics.yaml) and on the language
+    # recorded per record, not on this setting.
     region_code: IN
     # ISO 639-1, single value only, and UNSET ON PURPOSE. topics.yaml mixes
-    # English and Hindi query strings, so any one value here is wrong for half
-    # of them. The query's own language already carries the signal. Set it only
-    # if the query list is ever split per language.
+    # English and Hindi query strings, so any one value here is wrong for half of
+    # them. With yt-dlp it is passed as the `lang` extractor argument, which sets
+    # the interface language (hl) of YouTube's responses. It is not a relevance
+    # filter.
     relevance_language:
-  hydration:
-    videos_per_batch: 50        # videos.list accepts 50 ids per unit
+    socket_timeout_seconds: 20
   comments:
+    # Comments are fetched in the same extraction as the video, for the first
+    # max_videos videos only. Comments disabled by the uploader is counted as
+    # comments_unavailable.
     enabled: true
     max_videos: 50
-    max_comment_pages_per_video: 2
-    page_size: 100
-    order: relevance
+    max_comments_per_video: 100

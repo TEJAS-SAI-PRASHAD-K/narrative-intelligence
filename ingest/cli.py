@@ -458,7 +458,6 @@ def show_config() -> None:
     table.add_row("http rate limit", f"{settings.http_rate_limit_per_sec}/s")
     for key, present in (
         ("MASTODON_ACCESS_TOKEN", bool(settings.mastodon_access_token)),
-        ("YOUTUBE_API_KEY", bool(settings.youtube_api_key)),
         ("TELEGRAM credentials", settings.has_credentials("telegram")),
         ("NEWSAPI_KEY", bool(settings.newsapi_key)),
         ("KAGGLE credentials", settings.has_credentials("reddit_kaggle")),
