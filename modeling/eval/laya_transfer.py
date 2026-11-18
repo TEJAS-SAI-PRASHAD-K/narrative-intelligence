@@ -79,6 +79,11 @@ class LayaTransferResult:
     #: Figures that a sample with one class still gives. Set with the refusal of the AUC.
     one_class: dict[str, Any] | None = None
 
+    def _threshold_text(self) -> str:
+        if self.threshold is None:
+            return "no threshold configured"
+        return f"threshold {self.threshold} ({self.threshold_source})"
+
     def _block(self, block: dict[str, Any]) -> list[str]:
         lines = []
         for name in ("positive_rate", "flag_rate", "precision", "recall", "roc_auc"):
@@ -123,14 +128,12 @@ class LayaTransferResult:
             lines.append(f"  REFUSED: {self.refusal}")
             if self.one_class is not None:
                 lines.append(
-                    f"  model {self.model_version}, threshold {self.threshold} "
-                    f"({self.threshold_source}), seed {self.seed}"
+                    f"  model {self.model_version}, {self._threshold_text()}, seed {self.seed}"
                 )
                 lines += render_one_class(self.one_class)
         else:
             lines.append(
-                f"  model {self.model_version}, threshold {self.threshold} "
-                f"({self.threshold_source}), seed {self.seed}"
+                f"  model {self.model_version}, {self._threshold_text()}, seed {self.seed}"
             )
             lines.append("  sample rows, unweighted, 95% bootstrap intervals:")
             lines += self._block(self.sample)

@@ -27,12 +27,15 @@ def allow(lang):
     return lang == "en"
 
 
-def build(n=60, positives=0, kind="human", lang="en", module="misinfo"):
+def build(
+    n=60, positives=0, kind="human", lang="en", module="misinfo", drop=(), prob=None
+):
     """Sheet, scores and design. Even rows are in stratum A (pool 120), odd rows in B (pool 30).
 
     Row ``i`` has probability 0.8 when ``i % 4 == 0`` and 0.2 otherwise, so exactly one row
     in four is flagged at 0.5. Every fifth row reports on a false claim. The first
-    ``positives`` rows are labelled 1.
+    ``positives`` rows are labelled 1. A row in ``drop`` gets no score. ``prob`` replaces
+    the probability function of the row number.
     """
     rows, scores, design = [], [], []
     for i in range(n):
@@ -48,13 +51,6 @@ def build(n=60, positives=0, kind="human", lang="en", module="misinfo"):
                 "labeller_kind": kind,
             }
         )
-        scores.append(
-            {
-                "record_id": rid,
-                "misinfo_prob": 0.8 if i % 4 == 0 else 0.2,
-                "model_versions": {module: f"{VERSION}+ab"},
-            }
-        )
         design.append(
             {
                 "id": rid,
@@ -64,10 +60,20 @@ def build(n=60, positives=0, kind="human", lang="en", module="misinfo"):
                 "weight": "4" if i % 2 == 0 else "1",
             }
         )
+        if rid in drop:
+            continue
+        value = prob(i) if prob else (0.8 if i % 4 == 0 else 0.2)
+        scores.append(
+            {
+                "record_id": rid,
+                "misinfo_prob": value,
+                "model_versions": {module: f"{VERSION}+ab"},
+            }
+        )
     return pd.DataFrame(rows), pd.DataFrame(scores), pd.DataFrame(design)
 
 
-def english(threshold=0.5, with_design=True, **kw):
+def english(threshold=0.5, with_design=True, min_labelled=20, **kw):
     sheet, scores, design = build(**kw)
     resolved = lb.resolve_sheet(
         sheet, design=design if with_design else None, allow_model_labels=True
@@ -78,7 +84,7 @@ def english(threshold=0.5, with_design=True, **kw):
         language_allowed=allow,
         model_version=VERSION,
         threshold=threshold,
-        min_labelled=20,
+        min_labelled=min_labelled,
         n_bootstrap=200,
     )
 
@@ -133,8 +139,8 @@ class TestNegativeOnlySample:
 
     def test_flag_rate_per_stratum(self):
         per = english().one_class["per_stratum"]
-        assert (per["A"]["k"], per["A"]["n"], per["A"]["pool"]) == (15, 30, 120)
-        assert (per["B"]["k"], per["B"]["n"]) == (0, 30)
+        assert (per["A"]["flag"]["k"], per["A"]["n"], per["A"]["pool"]) == (15, 30, 120)
+        assert (per["B"]["flag"]["k"], per["B"]["n"]) == (0, 30)
 
     def test_flag_rate_on_reporting_rows_against_the_rest_with_a_difference(self):
         reporting = english().one_class["reporting"]
@@ -201,19 +207,88 @@ class TestNegativeOnlySample:
         assert "difference, reporting minus other" in "\n".join(out.render())
 
 
+class TestStrata:
+    def test_unscorable_rows_raise_the_weight_to_pool_over_used(self):
+        drop = {f"x{i}" for i in range(2, 40, 4)}  # ten unflagged rows of stratum A
+        out = english(drop=drop)
+        assert out.excluded == {ct.NO_SCORE: 10} and out.used == 50
+        report = out.one_class
+        assert (report["per_stratum"]["A"]["n"], report["per_stratum"]["A"]["pool"]) == (20, 120)
+        info = report["strata_info"].per_stratum
+        assert info["A"] == {"pool": 120, "n_used": 20}
+        # the design weight is pool / drawn = 4, the used weight is pool / n_used = 6
+        assert report["flag"]["weighted_bootstrap"].value == pytest.approx(15 * 6 / 150)
+
+    def test_a_stratum_whose_pool_equals_its_draw_weighs_one(self):
+        report = english().one_class
+        sw = report["strata_info"]
+        assert sw.per_stratum["B"] == {"pool": 30, "n_used": 30}
+        assert set(sw.weights[sw.strata == "B"]) == {1.0}
+        assert set(sw.weights[sw.strata == "A"]) == {4.0}
+
+    def test_the_draw_is_resampled_inside_each_stratum(self):
+        # A flags every row and B none. Stratum sizes stay fixed in every draw, so the
+        # reweighted rate is 120 / 150 in all of them. A plain draw would spread it.
+        out = english(prob=lambda i: 0.8 if i % 2 == 0 else 0.2)
+        weighted = out.one_class["flag"]["weighted_bootstrap"]
+        assert (weighted.value, weighted.low, weighted.high) == pytest.approx((0.8, 0.8, 0.8))
+        plain = out.one_class["flag"]["unweighted_bootstrap"]
+        assert plain.low < plain.high
+        assert "resampled inside each stratum" in "\n".join(out.render())
+
+    @pytest.mark.parametrize("evaluate, threshold", [(english, 0.5), (hindi, None)])
+    def test_a_stratum_with_no_used_row_is_listed_as_such(self, evaluate, threshold):
+        drop = {f"x{i}" for i in range(1, 60, 2)}  # every row of stratum B
+        out = evaluate(threshold=threshold, drop=drop)
+        assert out.one_class["per_stratum"]["B"]["n"] == 0
+        text = "\n".join(out.render())
+        assert "B (pool 30): no used row" in text
+
+
+class TestOutputText:
+    def test_each_block_states_its_n(self):
+        text = "\n".join(english().render())
+        assert "n 60, which is the false-positive rate" in text
+        assert "reporting 0.250 [0.000, 0.538] (n 12), other 0.250 [0.140, 0.383] (n 48)" in text
+        assert "mean predicted probability 0.350 [0.290, 0.420] (n 60)" in text
+
+    def test_the_small_n_ece_caveat_matches_the_two_class_path(self):
+        text = "\n".join(english().render())
+        assert "caveat: n is below 200, so each bin holds few rows" in text
+        assert "Read the interval, not the point." in text
+
+    def test_fewer_than_ten_used_rows_render_as_not_measured_and_never_nan(self):
+        out = english(n=8, min_labelled=5)
+        assert out.used == 8 and out.one_class["flag"]["unweighted_bootstrap"] is not None
+        text = "\n".join(out.render())
+        assert "nan" not in text.lower()
+        assert "interval not measured, too few rows" in text
+
+
 class TestLayaNegativeOnly:
     def test_laya_reports_the_flag_rate_at_a_given_threshold(self):
         out = hindi()
         assert not out.computed and oc.ONE_CLASS in out.refusal
         assert out.one_class["flag"]["threshold_source"] == "laya.decision_threshold"
         assert out.one_class["flag"]["unweighted_wilson"]["k"] == 15
-        assert "flag rate at threshold 0.5" in "\n".join(out.render())
+        # stratum A flags 15 of 30 rows at weight 4 and stratum B none: 60 / 150
+        assert out.one_class["flag"]["weighted_bootstrap"].value == pytest.approx(0.4)
+        text = "\n".join(out.render())
+        assert "flag rate at threshold 0.5" in text
+        assert "model v0.1.0, threshold 0.5 (laya.decision_threshold), seed" in text
+
+    def test_the_labeller_note_opens_and_closes_the_laya_output(self):
+        lines = hindi(kind="model-unreviewed").render()
+        assert NOTE in lines[1] and NOTE in lines[-1]
 
     def test_a_null_threshold_is_never_invented(self):
         out = hindi(threshold=None)
         assert out.one_class["flag"] == {"not_measured": oc.NO_THRESHOLD}
-        assert "per_stratum" not in out.one_class and out.one_class["reporting"] is None
+        assert out.one_class["reporting"] is None
+        assert all(e["flag"] is None for e in out.one_class["per_stratum"].values())
         text = "\n".join(out.render())
+        assert "model v0.1.0, no threshold configured, seed" in text
+        assert "threshold None" not in text
         assert "flag rate not measured, no threshold configured" in text
         assert out.one_class["calibration"]["ece"] is not None
 
@@ -221,6 +296,10 @@ class TestLayaNegativeOnly:
 class TestCommand:
     @pytest.fixture
     def sheets(self, env, monkeypatch):  # noqa: F811
+        return self.make(env, monkeypatch, positives=0)
+
+    @staticmethod
+    def make(env, monkeypatch, positives):  # noqa: F811
         monkeypatch.setattr(
             "modeling.config.module_config",
             lambda module: {
@@ -232,7 +311,9 @@ class TestCommand:
         monkeypatch.setattr("modeling.eval.laya_transfer.MIN_LABELLED_ROWS", 20)
         scores = []
         for lang, module in (("en", "misinfo"), ("hi", "laya")):
-            sheet, score, design = build(lang=lang, module=module, kind="model-unreviewed")
+            sheet, score, design = build(
+                lang=lang, module=module, kind="model-unreviewed", positives=positives
+            )
             sheet["label_a"] = sheet["label_b"] = sheet["adjudicated_label"]
             sheet["reports_on_false_claim_a"] = sheet["adjudicated_reports_on_false_claim"]
             sheet["reports_on_false_claim_b"] = sheet["adjudicated_reports_on_false_claim"]
@@ -274,3 +355,18 @@ class TestCommand:
         assert "no threshold configured" in (out / "hi" / "transfer.md").read_text()
         data = json.loads((out / "hi" / "transfer.json").read_text())
         assert data["one_class"]["flag"]["not_measured"] == "no threshold configured"
+
+    def test_a_sheet_of_positives_only_exits_1_and_reports_the_rate_and_calibration(
+        self, env, monkeypatch  # noqa: F811
+    ):
+        sheets = self.make(env, monkeypatch, positives=60)
+        result = runner.invoke(modeling_cli.app, self.args("--laya-threshold", "0.5"))
+        assert result.exit_code == 1, result.output
+        out = sheets.artifacts_dir / "eval" / "labelling"
+        for lang in ("en", "hi"):
+            one = json.loads((out / lang / "transfer.json").read_text())["one_class"]
+            assert one["class_present"] == "positive"
+            assert one["positive_rate"]["value"] == 1.0
+            assert "recall" in one["flag"]["not_measured"]
+            assert one["calibration"]["ece"]["value"] == pytest.approx(0.65)
+            assert "no used row" not in (out / lang / "transfer.md").read_text()

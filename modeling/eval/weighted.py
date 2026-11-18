@@ -196,7 +196,11 @@ def fmt(value: Interval | float | None) -> str:
     """Render a statistic. ``None`` is written out, never as 0."""
     if value is None:
         return "not measured"
-    return str(value) if isinstance(value, Interval) else f"{value:.3f}"
+    if isinstance(value, Interval):
+        if np.isnan(value.low) or np.isnan(value.high):
+            return f"{value.value:.3f} [interval not measured, too few rows]"
+        return str(value)
+    return f"{value:.3f}"
 
 
 def false_positive_rate(y_true: np.ndarray, flag: np.ndarray, w: np.ndarray) -> float | None:
@@ -410,8 +414,9 @@ def render_reporting_fpr(section: dict) -> list[str]:
         "  false-positive rate (flag rate among rows labelled 0), rows that report on a false "
         f"claim ({section['n_negatives_reporting']} rows labelled 0) against the other rows "
         f"({section['n_negatives_other']} rows labelled 0):",
-        f"    unweighted, sample rows: reporting {fmt(section['unweighted']['reporting'])}, "
-        f"other {fmt(section['unweighted']['other'])}",
+        f"    unweighted, sample rows: reporting {fmt(section['unweighted']['reporting'])} "
+        f"(n {section['n_negatives_reporting']}), "
+        f"other {fmt(section['unweighted']['other'])} (n {section['n_negatives_other']})",
         f"    difference, reporting minus other: {fmt(section['unweighted'].get('difference'))}",
         f"    reporting rows, {_wilson_text(section['wilson']['reporting'])}",
         f"    other rows, {_wilson_text(section['wilson']['other'])}",

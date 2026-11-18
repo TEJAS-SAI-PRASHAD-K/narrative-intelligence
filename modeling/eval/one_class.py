@@ -21,6 +21,7 @@ import pandas as pd
 from modeling.eval.metrics import Interval
 from modeling.eval.weighted import (
     DEFAULT_BINS,
+    ECE_MIN_N,
     bootstrap_statistics,
     ece_interval,
     expected_calibration_error,
@@ -90,6 +91,20 @@ def _flag_interval(
     )["rate"]
 
 
+def _per_stratum(sw: Any, strata: np.ndarray, flag: np.ndarray | None) -> dict[str, Any]:
+    """Every stratum with a pool, also one with no used row. ``flag`` is ``None`` for no rate."""
+    per: dict[str, Any] = {}
+    for code, info in sw.per_stratum.items():
+        if info["pool"] <= 0:
+            continue
+        mask = strata == code
+        entry = {"pool": info["pool"], "n": int(mask.sum()), "flag": None}
+        if flag is not None and entry["n"]:
+            entry["flag"] = _wilson(int(flag[mask].sum()), entry["n"])
+        per[code] = entry
+    return per
+
+
 def one_class_report(
     all_rows: pd.DataFrame,
     used: pd.DataFrame,
@@ -156,15 +171,18 @@ def one_class_report(
         )
     report["calibration"] = calibration
 
-    if not only_negatives:
-        report["flag"] = {"not_measured": "a sample of positives only: that rate is recall"}
-        return report
-    if threshold is None:
-        report["flag"] = {"not_measured": NO_THRESHOLD}
+    flag = None if threshold is None else (prob >= threshold).astype(int)
+    if not only_negatives or flag is None:
+        report["flag"] = {
+            "not_measured": "a sample of positives only: that rate is recall"
+            if not only_negatives
+            else NO_THRESHOLD
+        }
         report["reporting"] = None
+        if sw is not None:
+            report["per_stratum"] = _per_stratum(sw, strata, None)
         return report
 
-    flag = (prob >= threshold).astype(int)
     block: dict[str, Any] = {
         "threshold": threshold,
         "threshold_source": threshold_source,
@@ -178,13 +196,7 @@ def one_class_report(
     }
     report["flag"] = block
     if sw is not None:
-        per: dict[str, Any] = {}
-        for code in sorted(set(strata.tolist())):
-            mask = strata == code
-            entry = _wilson(int(flag[mask].sum()), int(mask.sum()))
-            entry["pool"] = sw.per_stratum[code]["pool"]
-            per[code] = entry
-        report["per_stratum"] = per
+        report["per_stratum"] = _per_stratum(sw, strata, flag)
     report["reporting"] = reporting_fpr(
         all_rows,
         used,
@@ -220,7 +232,7 @@ def render_one_class(report: dict[str, Any]) -> list[str]:
     else:
         lines.append(
             f"    flag rate at threshold {flag['threshold']} ({flag['threshold_source']}), "
-            "which is the false-positive rate:"
+            f"n {report['n']}, which is the false-positive rate:"
         )
         lines.append(f"      unweighted, {_wilson_text(flag['unweighted_wilson'])}")
         lines.append(f"      unweighted, bootstrap 95% {fmt(flag['unweighted_bootstrap'])}")
@@ -228,8 +240,8 @@ def render_one_class(report: dict[str, Any]) -> list[str]:
             sw = report["strata_info"]
             n_eff = "not defined" if sw.n_eff is None else f"{sw.n_eff:.1f}"
             lines.append(
-                f"      reweighted to the corpus, bootstrap 95% {fmt(flag['weighted_bootstrap'])} "
-                f"(n_eff {n_eff})"
+                f"      reweighted to the corpus, bootstrap 95%, resampled inside each stratum, "
+                f"{fmt(flag['weighted_bootstrap'])} (n {report['n']}, n_eff {n_eff})"
             )
             lines += [f"      {line}" for line in stratum_warning(sw)]
         else:
@@ -239,8 +251,14 @@ def render_one_class(report: dict[str, Any]) -> list[str]:
     if report.get("per_stratum"):
         lines.append("    flag rate per stratum:")
         for code, entry in report["per_stratum"].items():
-            lines.append(f"      {code} (pool {entry['pool']}): {_wilson_text(entry)}")
-    elif "not_measured" not in flag:
+            if not entry["n"]:
+                text = "no used row"
+            elif entry["flag"] is None:
+                text = f"{entry['n']} used rows, flag rate not measured, {flag['not_measured']}"
+            else:
+                text = _wilson_text(entry["flag"])
+            lines.append(f"      {code} (pool {entry['pool']}): {text}")
+    else:
         lines.append(f"    flag rate per stratum: not measured, {report['weighted_reason']}")
     if report.get("reporting"):
         lines += render_reporting_fpr(report["reporting"])
@@ -249,13 +267,19 @@ def render_one_class(report: dict[str, Any]) -> list[str]:
             "    flag rate on reporting rows: not measured, no row has a known report flag"
         )
     cal = report["calibration"]
-    lines.append(f"    mean predicted probability {fmt(cal['mean_probability'])}")
+    lines.append(f"    mean predicted probability {fmt(cal['mean_probability'])} (n {report['n']})")
     if "mean_probability_weighted" in cal:
         lines.append(
             f"    mean predicted probability, reweighted {fmt(cal['mean_probability_weighted'])}"
         )
-    lines.append(f"    ece {fmt(cal['ece'])}")
+    lines.append(f"    ece {fmt(cal['ece'])} (n {report['n']})")
     if "ece_weighted" in cal:
-        lines.append(f"    ece, reweighted {fmt(cal['ece_weighted'])}")
+        n_eff = report["strata_info"].n_eff
+        lines.append(f"    ece, reweighted {fmt(cal['ece_weighted'])} (n_eff {n_eff or 0:.1f})")
+    if report["n"] < ECE_MIN_N:
+        lines.append(
+            f"    caveat: n is below {ECE_MIN_N}, so each bin holds few rows and the ECE is "
+            "noisy. Read the interval, not the point."
+        )
     lines.append(f"    {cal['ece_note']}")
     return lines

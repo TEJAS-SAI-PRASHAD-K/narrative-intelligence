@@ -159,14 +159,16 @@ The evaluation still reports these figures for the rows that it has:
   limit of about 0.025. It does not prove that the corpus has no positives.
 - The flag rate at the decision threshold. On a sample of negatives, this is the
   false-positive rate. It has Wilson and bootstrap intervals, and a reweighted figure with a
-  bootstrap interval. Laya has no threshold until a person sets one. The output then says
+  bootstrap interval. The bootstrap resamples rows inside each stratum, so every draw keeps
+  the stratum sizes that the weights assume. Laya has no threshold until a person sets one. The output then says
   "no threshold configured". Pass `--laya-threshold` to try one. The output says that this
   threshold is not the configured one.
-- The flag rate per stratum, and the flag rate on rows that report on a false claim against
+- The flag rate per stratum, which lists a stratum with no used row as "no used row", and the flag rate on rows that report on a false claim against
   the other rows, with the interval of the difference.
 - The mean predicted probability and the ECE. With one class, the ECE equals the mean
   predicted probability. It shows how high the scores sit on negatives. It does not show
-  whether the scores rank positives above negatives.
+  whether the scores rank positives above negatives. Below 200 rows, each ECE bin holds few
+  rows, so read the interval and not the point value.
 
 A sample with only negatives cannot measure recall, precision, ranking or the transfer gap.
 It cannot tell a good threshold from a bad one for finding positives. Draw a sample that
