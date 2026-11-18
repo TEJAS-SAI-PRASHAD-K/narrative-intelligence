@@ -342,6 +342,10 @@ decision.
   merges 4216 records into one cluster at `min_cluster_size` 15. The cluster holds 3385
   English and 759 Hindi records and 72 records with other detector codes. The silhouette
   is 0.102 against 0.45. The cluster model card has the tables.
+- **The coordination result is reported per source.** YouTube has an observed modularity of
+  0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so no signal above
+  the null. News and GDELT are excluded (`no_threading`). Telegram is not measured. See
+  `artifacts/model_cards/coordination.md`.
 - **The coordination null leaves out shuffles with no edges.** The coordination module
   is at `v0.2.1`. A shuffled graph with no edges was counted as a modularity of 0.0 and
   pulled the null down. It is now counted in `null_empty_shuffles` and left out. The

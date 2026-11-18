@@ -88,7 +88,28 @@ not create an edge. The seed list in `configs/sources.yaml` has 6 channels. That
 `min_source_authors` (10), so the Telegram row reports `too_few_authors` until the list
 grows.
 
-Result on a social corpus: not measured. The run needs the social data on the data host.
+Result: not measured. No Telegram session credentials exist. Telegram stays research only,
+as stated above.
+
+### Result per source
+
+The run covers the eligible records of the corpus. Timestamps are shuffled within each
+author, with 200 shuffles and the seed above.
+
+| scope | authors | edges | observed | null mean | null 95% interval | shuffles | empty | null edges | p | p floor | status |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| all eligible | 71 | 350 | 0.5334 | 0.5331 | [0.5285, 0.5380] | 200 | 0 | 349.31 | 0.7512 | 0.0050 | measured |
+| youtube | 71 | 350 | 0.5334 | 0.5331 | [0.5285, 0.5380] | 200 | 0 | 349.31 | 0.7512 | 0.0050 | measured |
+
+- **YouTube:** 87 records, 71 channels, 350 edges, 5 communities. 47 of the 71 channels are
+  graph nodes. The largest community has
+  19 channels. The evidence is 348 `temporal` edges and 2 `cotweet` edges. The null standard
+  deviation is 0.0028. The observed modularity is inside the null interval, so
+  `exceeds_null` is `false`. The communities are not evidence of coordination.
+- **News and GDELT:** excluded with the reason `no_threading`. The counts are 3184 for news
+  and 3598 for GDELT.
+- **Telegram:** not measured, for the reason above.
+- All eligible records are the YouTube records, so the first row equals the second row.
 
 ## `coordination_score` — a formula, not a model
 
