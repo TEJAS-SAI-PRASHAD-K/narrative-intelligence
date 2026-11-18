@@ -98,8 +98,9 @@ Its mean-fold macro-F1 is 0.416, and it flags 39 percent of genuine accounts
 alert metric `bot_like_ratio` still reads it. The fusion formula does not read it.
 
 **Limit of the new signal.** The coordination score comes from a detector whose
-modularity did not exceed the time-shuffled null on this corpus (0.912 against
-0.979). The signal is weak evidence. The change improves the input of the
+modularity did not exceed the time-shuffled null on the news corpus (0.912 against
+0.979). The per-source result is in `artifacts/model_cards/coordination.md`.
+The signal is weak evidence. The change improves the input of the
 formula. It does not show that coordination exists in this corpus.
 
 ## 3. Normalization

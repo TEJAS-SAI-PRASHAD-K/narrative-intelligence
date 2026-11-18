@@ -699,7 +699,8 @@ Plus a cap of 200,000 pairs per bucket, so one enormous viral burst can't blow u
 > account's own volume and rhythm. If the real graph isn't more clustered than the
 > shuffled one, there's no finding.
 >
-> **Result on this corpus: 0.912 real vs 0.979 shuffled.** It does not clear the bar.
+> **Result on the news corpus: 0.912 real vs 0.979 shuffled.** It does not clear the bar.
+> The per-source result for YouTube is in `artifacts/model_cards/coordination.md`.
 > The communities found are **not** evidence of coordination, and the report says so.
 >
 > The detector *does* find a deliberately planted coordinated burst in the test data,
@@ -741,8 +742,9 @@ The bot ratio left this component. The bot classifier does not generalize
 (mean-fold macro-F1 0.416, and 39 percent of genuine accounts flagged). The system
 still stores the bot ratio and uses it for alerts. The fusion does not read it.
 
-The new signal comes from the coordination detector. On this corpus, the modularity
-of that detector did not exceed the time-shuffled null (0.912 against 0.979).
+The new signal comes from the coordination detector. On the news corpus, the modularity
+of that detector did not exceed the time-shuffled null (0.912 against 0.979). The
+per-source result is in `artifacts/model_cards/coordination.md`.
 The signal is therefore weak evidence. The change improves the input of the
 formula. It does not show that coordination exists in this corpus.
 

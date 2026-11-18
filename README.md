@@ -932,9 +932,11 @@ changed the code:
   `notebooks/colab_finetune.ipynb` does it; the bar stands unchanged — if the transformer
   fails to clear TF-IDF it should not ship, because it costs orders of magnitude more
   inference for no measured gain.
-- **Coordination modularity does not exceed the time-shuffled null on this corpus**
-  (0.912 observed vs 0.979 ± 0.000 shuffled). Any graph has communities; on this data the
-  communities found are **not** evidence of coordination, and the report says so. The
+- **Coordination modularity does not exceed the time-shuffled null on the news corpus**
+  (0.912 observed vs 0.979 ± 0.000 shuffled). The YouTube result is in
+  `artifacts/model_cards/coordination.md`: no signal above the null either. Any graph has
+  communities; on this data the communities found are **not** evidence of coordination,
+  and the report says so. The
   detector does recover a planted coordinated burst on the demo fixture, so the mechanism
   works — the corpus simply does not contain the phenomenon at a detectable level.
 - **Stance has a training path and a zero-shot baseline; the real fine-tune is GPU work.**

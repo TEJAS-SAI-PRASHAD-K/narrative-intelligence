@@ -148,11 +148,12 @@ formula does not read `bot_like_ratio`. It reads `coordinated_author_ratio`.
 
 **Coordination modularity does not exceed the time-shuffled null.** On the news corpus,
 the observed value is 0.912 against 0.979 for the null. Any graph has communities. On
-this corpus the communities found are not evidence of coordination. The detector does
+the news corpus the communities found are not evidence of coordination. The detector does
 recover a planted coordinated burst on the demo fixture, so the mechanism works.
 
-The per-source report (issue #47) measured YouTube comments. The YouTube graph has 87
-records, 71 channels, 350 edges and 5 communities. The observed modularity is 0.5334.
+The per-source report (issue #47) measured YouTube records. The YouTube graph has 87
+records, 71 channels, 350 edges and 5 communities. 47 of the 71 channels are graph nodes.
+The observed modularity is 0.5334.
 The time-shuffled null is 0.5331 with a 95 percent interval of [0.5285, 0.5380] over 200
 shuffles, and the empirical p value is 0.7512. The observed value is inside the null
 interval. YouTube has no coordination signal above the null. News and GDELT are excluded
@@ -293,11 +294,11 @@ the honest entry in that cell, not a zero.
 
 ### Modeling
 
-- **Measure coordination again on social data (#47). Done.** The YouTube result is
-  observed modularity 0.5334 against a null of 0.5331 (interval [0.5285, 0.5380], p
-  0.7512), so there is no signal above the null. Telegram is not measured, because no
-  session credentials exist. The run needs credentials and a Telegram session on the data
-  host. See `artifacts/model_cards/coordination.md`.
+- **Measure coordination again on social data (#47). YouTube done, Telegram open: no
+  session credentials.** The YouTube result is observed modularity 0.5334 against a null
+  of 0.5331 (interval [0.5285, 0.5380], p 0.7512), so there is no signal above the null.
+  Telegram is not measured, because no Telegram session credentials exist. The Telegram
+  run needs those credentials. See `artifacts/model_cards/coordination.md`.
 - **Measure the benchmark-to-corpus transfer gap.** LIAR is politicians'
   statements, CoAID is COVID-era health claims, and this corpus is Indian
   recontextualised media. The gap is still unmeasured. `modeling.cli sample-for-labelling`

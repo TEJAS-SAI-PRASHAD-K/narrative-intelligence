@@ -88,8 +88,8 @@ not create an edge. The seed list in `configs/sources.yaml` has 6 channels. That
 `min_source_authors` (10), so the Telegram row reports `too_few_authors` until the list
 grows.
 
-Result: not measured. No Telegram session credentials exist, so the corpus has no Telegram
-records. Telegram stays research only, as stated above.
+Result: not measured. No Telegram session credentials exist. Telegram stays research only,
+as stated above.
 
 ### Result per source
 
@@ -101,7 +101,8 @@ author, with 200 shuffles and the seed above.
 | all eligible | 71 | 350 | 0.5334 | 0.5331 | [0.5285, 0.5380] | 200 | 0 | 349.31 | 0.7512 | 0.0050 | measured |
 | youtube | 71 | 350 | 0.5334 | 0.5331 | [0.5285, 0.5380] | 200 | 0 | 349.31 | 0.7512 | 0.0050 | measured |
 
-- **YouTube:** 87 records, 71 channels, 350 edges, 5 communities. The largest community has
+- **YouTube:** 87 records, 71 channels, 350 edges, 5 communities. 47 of the 71 channels are
+  graph nodes. The largest community has
   19 channels. The evidence is 348 `temporal` edges and 2 `cotweet` edges. The null standard
   deviation is 0.0028. The observed modularity is inside the null interval, so
   `exceeds_null` is `false`. The communities are not evidence of coordination.
