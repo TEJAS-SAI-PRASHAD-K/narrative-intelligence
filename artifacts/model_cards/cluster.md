@@ -131,9 +131,10 @@ Result for both embedders: see Embedder comparison below.
 Issue #48 asks if a multilingual embedder groups the narratives by topic across languages.
 The baseline is `sentence-transformers/all-MiniLM-L6-v2`. The alternative is
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Both ran through the same
-cluster stage over the same scored tables. The corpus has 6869 scored records. Of these,
-6670 are embedded, and 199 gdelt records are below the 40-character floor. The stage
-collapses 637 near-duplicates and keeps 6033 representatives.
+cluster stage over the same scored tables. The corpus counts come from the run log of
+`compare-embedder` on 2026-11-19. The corpus has 6869 scored records. Of these, 199 gdelt
+records are below the 40-character floor, and 6670 are embedded. The stage collapses 637
+near-duplicates and keeps 6033 representatives.
 
 ### Clustering checks
 
@@ -203,18 +204,27 @@ The default stays `sentence-transformers/all-MiniLM-L6-v2`. `configs/models.yaml
 change. The rule of the issue is to switch only if clusters group by topic across languages.
 The result does not meet this rule.
 
-- At the default `min_cluster_size` of 15, the multilingual model puts 4216 records of 17
-  languages in one cluster. The purity is 0.8042. The silhouette is 0.102 against 0.45 for
-  the baseline. This is a merge, not a grouping by topic.
+- At the default `min_cluster_size` of 15, the multilingual model puts 4216 records in one
+  cluster. The cluster holds 3385 English and 759 Hindi records. It also holds 72 records
+  with other language codes from the detector. These are probably detection errors,
+  because langdetect has no class for some inputs (see the traps in `CLAUDE.md`).
+  The purity is 0.8042. The silhouette is 0.102 against 0.45 for the baseline. This is a
+  merge, not a grouping by topic.
 - At the sizes 5, 10 and 25, the weighted purity of the multilingual model is lower (0.6132
   to 0.7958). Its silhouette is lower at every size.
-- The baseline groups by language. Its weighted purity is 0.984 to 0.986. Hindi records
-  sit in a Hindi cluster and English records sit in English clusters.
+- The baseline groups by language. Its weighted purity is 0.984 to 0.986. At size 15, the
+  Hindi cluster holds 684 Hindi and 9 English records. The other 14 clusters are English
+  with a few German records.
 
 Limits of this result:
 
-- Neither model finds narratives that cross languages. The baseline separates the languages.
-  The multilingual model merges them.
+- Neither model finds narratives that cross languages. The baseline mostly separates the
+  languages, with 9 English records in the Hindi cluster at size 15. The multilingual
+  model merges them.
+- Purity uses the language codes of the detector. A wrong code changes the purity.
+- The silhouette of the alternative is sampled on 2000 points (`silhouette_sampled` in
+  `clustering.json`). A silhouette is not directly comparable across very different
+  cluster counts, such as 2 and 15.
 - Topic coherence across languages is not measured, because no narrative labels exist.
   Purity measures language mixing only. It does not measure topic.
 
