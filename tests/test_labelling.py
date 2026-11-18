@@ -37,7 +37,6 @@ def config(**kw):
                 {"name": "mastodon", "share": 0.2},
                 {"name": "other", "share": 0.2},
             ],
-            "simhash_hamming": 3,
             **kw,
         }
     )
@@ -89,7 +88,7 @@ def corpus():
     for i in range(5):
         rows.append((f"f{i}", "news", "www.altnews.in", "en", f"{LONG} f{i}", raw("t"), 0))
     for i in range(12):
-        title = "" if i < 2 else f"शीर्षक {i}"
+        title = "" if i < 2 else f"यह एक पर्याप्त लंबा हिंदी शीर्षक है {i}"
         rows.append(
             (
                 f"h{i}",
@@ -144,9 +143,13 @@ class TestAllocate:
     def test_empty_strata_are_dropped(self):
         assert lb.allocate({"a": 0, "b": 5}, {"a": 0.5, "b": 0.5}, 3) == {"b": 3}
 
-    def test_n_below_the_number_of_strata_keeps_the_largest_shares(self):
-        alloc = lb.allocate({"a": 9, "b": 9, "c": 9}, {"a": 0.5, "b": 0.3, "c": 0.2}, 2)
-        assert set(alloc) == {"a", "b"} and sum(alloc.values()) == 2
+    def test_n_below_the_number_of_live_strata_is_refused_with_the_reason(self):
+        with pytest.raises(lb.AllocationError, match="below the 3 strata"):
+            lb.allocate({"a": 9, "b": 9, "c": 9}, {"a": 0.5, "b": 0.3, "c": 0.2}, 2)
+
+    def test_every_live_stratum_gets_at_least_one_row(self):
+        alloc = lb.allocate({"a": 90, "b": 90, "c": 90}, {"a": 0.98, "b": 0.01, "c": 0.01}, 10)
+        assert min(alloc.values()) >= 1 and sum(alloc.values()) == 10
 
 
 class TestBuildWeightedSample:
@@ -170,24 +173,33 @@ class TestBuildWeightedSample:
 
     def test_claim_matches_land_in_the_first_stratum(self):
         built = self.draw(n=60)
-        row = built.frame[built.frame["id"] == "r3"]
-        assert len(row) == 1 and row["stratum"].iloc[0] == "S1"
+        design = built.design.set_index("id")
+        assert design.loc["r3", "stratum"] == "S1"
         assert built.strata["S1"] == {"name": "claim_match", "pool": 1, "drawn": 1}
 
-    def test_weight_is_pool_over_drawn_and_sums_to_the_pool(self):
+    def test_design_weight_is_pool_over_drawn_and_sums_to_the_pool(self):
         built = self.draw(n=20)
+        design = built.design
+        assert list(design["id"]) == list(built.frame["id"])
         for code, meta in built.strata.items():
-            rows = built.frame[built.frame["stratum"] == code]
+            rows = design[design["stratum"] == code]
             assert len(rows) == meta["drawn"]
             if meta["drawn"]:
                 assert rows["weight"].astype(float).sum() == pytest.approx(meta["pool"], rel=1e-4)
 
-    def test_sheet_columns_are_blank_and_carry_no_score_or_stratum_meaning(self):
+    def test_the_sheet_has_no_design_column_and_its_label_columns_are_blank(self):
         frame = self.draw().frame
         assert list(frame.columns) == list(lb.SHEET_COLUMNS)
-        assert (frame[list(lb.BLANK_COLUMNS[2:])] == "").all().all()
-        assert set(frame["stratum"]) <= {"S1", "S2", "S3", "S4"}
+        assert not {"stratum", "weight", "pool", "drawn"} & set(frame.columns)
+        assert (frame[list(lb.BLANK_COLUMNS)] == "").all().all()
         assert (frame["sample_seed"] == 20260813).all()
+
+    def test_row_order_is_not_grouped_by_stratum(self):
+        built = self.draw(n=60)
+        order = list(built.design["stratum"])
+        runs = 1 + sum(a != b for a, b in zip(order, order[1:], strict=False))
+        # Grouped rows give one run per stratum. A shuffle gives many more.
+        assert runs > 2 * built.design["stratum"].nunique()
 
     def test_same_seed_same_rows_and_a_different_seed_differs(self):
         a, b = self.draw(seed=1), self.draw(seed=1)
@@ -215,7 +227,7 @@ class TestBuildWeightedSample:
             embedding_reason=None,
         )
         built = self.draw(n=100, claims=evidence)
-        assert built.claim_match_counts == {"simhash": 1, "embedding": 1, "both": 0}
+        assert built.claim_match_counts == {"simhash": 1, "embedding": 1, "both": 0, "any": 2}
         assert built.strata["S1"]["pool"] == 2
         assert built.degraded[lb.EMBEDDING_RECORD_MISSING] == 40
 
@@ -224,11 +236,35 @@ class TestBuildWeightedSample:
         assert built.degraded[lb.NO_FALSE_CLAIMS] == 1
         assert built.strata["S1"]["pool"] == 0
 
-    def test_hindi_needs_a_title(self):
-        built = self.draw(n=20, lang="hi", claims=lb.ClaimEvidence(hashes=[CLAIM]))
-        assert built.excluded[lb.NO_TITLE] == 2
-        assert set(built.frame["id"]).isdisjoint({"h0", "h1"})
-        assert (built.frame["title"] != "").all()
+    def test_hindi_uses_the_laya_skip_logic_on_the_title(self):
+        records = corpus()
+        # h2 has a title under Laya's MIN_CHARS, h3 has a fact-checker source.
+        records.loc[records["id"] == "h2", "raw"] = raw("छोटा")
+        records.loc[records["id"] == "h3", "source_detail"] = "boomlive.in"
+        built = lb.build_weighted_sample(
+            records,
+            n=20,
+            language_allowed=allow,
+            fact_checker_domains=FC,
+            config=config(),
+            lang="hi",
+        )
+        assert built.excluded == {
+            lb.NO_TITLE: 2,
+            "text_too_short": 1,
+            lb.FACT_CHECK_PUBLISHER: 1,
+        }
+        assert set(built.frame["id"]).isdisjoint({"h0", "h1", "h2", "h3"})
+        assert (built.frame["title"].str.len() >= 20).all()
+
+    def test_a_pool_with_no_claim_match_warns_and_records_the_zero(self):
+        built = self.draw(claims=lb.ClaimEvidence(hashes=[1 << 40]))
+        assert built.claim_match_counts["any"] == 0
+        assert any(n.startswith("WARNING: no scorable record matches") for n in built.notes)
+
+    def test_n_below_the_live_strata_is_refused(self):
+        with pytest.raises(lb.AllocationError):
+            self.draw(n=2)
 
     def test_all_strata_empty_returns_an_empty_frame(self):
         built = lb.build_weighted_sample(
@@ -246,6 +282,7 @@ class TestConfigFile:
         cfg = lb.load_sampling_config()
         assert cfg.seed == lb.DEFAULT_SEED == 20260813
         assert {"reddit", "mastodon", "youtube", "telegram"} <= set(cfg.likely_sources)
+        assert cfg.simhash_hamming == 3 and cfg.min_similarity == 0.85
 
     def test_a_config_without_other_is_rejected(self):
         with pytest.raises(ValueError):
@@ -269,7 +306,6 @@ def sheet_frame(kind="human", n=6):
                 "adjudicated_label": str(i % 2),
                 "adjudicated_reports_on_false_claim": "1" if i == 0 else "0",
                 "labeller_kind": kind,
-                "weight": "2.0",
             }
         )
     return pd.DataFrame(rows)
@@ -277,8 +313,8 @@ def sheet_frame(kind="human", n=6):
 
 class TestResolveSheet:
     def test_human_labels_pass_with_no_note(self):
-        out = lb.resolve_sheet(sheet_frame())
-        assert out.refusal is None and out.labeller_note is None and out.has_weights
+        out = lb.resolve_sheet(sheet_frame(), design=design_of(sheet_frame()))
+        assert out.refusal is None and out.labeller_note is None and out.has_design
         assert list(out.frame["label"]) == ["0", "1", "0", "1", "0", "1"]
         assert out.frame["reports"].iloc[0] == 1
 
@@ -313,10 +349,34 @@ class TestResolveSheet:
         out = lb.resolve_sheet(frame)
         assert out.refusal is None and list(out.frame["label"])[:2] == ["0", "1"]
 
-    def test_a_bad_weight_on_a_labelled_row_is_refused(self):
+    def test_a_labelled_row_without_a_design_row_is_refused(self):
         frame = sheet_frame()
-        frame.loc[2, "weight"] = "x"
-        assert lb.INVALID_WEIGHT in lb.resolve_sheet(frame).refusal
+        design = design_of(frame).iloc[1:]
+        assert lb.DESIGN_MISSING in lb.resolve_sheet(frame, design=design).refusal
+
+    def test_without_a_design_file_the_sheet_is_read_unweighted(self):
+        out = lb.resolve_sheet(sheet_frame())
+        assert out.refusal is None and not out.has_design and "stratum" not in out.frame
+
+    def test_the_design_joins_on_id_whatever_the_row_order(self):
+        frame = sheet_frame()
+        out = lb.resolve_sheet(frame.iloc[::-1], design=design_of(frame))
+        assert list(out.frame["id"]) == list(frame.iloc[::-1]["id"])
+        assert out.frame.set_index("id").loc["x1", "stratum"] == "S2"
+
+
+def design_of(frame):
+    """Rows x0, x2, x4 are in stratum S1 (pool 12), the rest in S2 (pool 6)."""
+    first = [i % 2 == 0 for i in range(len(frame))]
+    return pd.DataFrame(
+        {
+            "id": list(frame["id"]),
+            "stratum": ["S1" if f else "S2" for f in first],
+            "pool": ["12" if f else "6" for f in first],
+            "drawn": ["3"] * len(frame),
+            "weight": ["4" if f else "2" for f in first],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +470,59 @@ class TestWeighted:
         assert a["precision"].low <= a["precision"].value <= a["precision"].high
 
 
+class TestStratumWeights:
+    def frames(self):
+        rows = []
+        for code, pool, n in (("S1", 40, 4), ("S2", 10, 5), ("S3", 6, 3)):
+            for i in range(n):
+                rows.append({"id": f"{code}{i}", "stratum": code, "pool": pool})
+        all_rows = pd.DataFrame(rows)
+        return all_rows, all_rows
+
+    def test_the_weight_is_pool_over_the_rows_used_not_over_the_rows_drawn(self):
+        all_rows, _ = self.frames()
+        used = all_rows[~all_rows["id"].isin(["S10", "S11"])]  # two S1 rows were dropped
+        sw = wt.stratum_weights(all_rows, used)
+        assert sw.per_stratum["S1"] == {"pool": 40, "n_used": 2}
+        by_id = dict(zip(used["id"], sw.weights, strict=True))
+        assert by_id["S12"] == pytest.approx(20.0)  # 40 / 2, not 40 / 4
+        assert by_id["S20"] == pytest.approx(2.0)
+        # The weights still add up to the whole pool of every stratum with a used row.
+        assert sw.weights.sum() == pytest.approx(56.0)
+
+    def test_a_stratum_with_no_used_row_is_named_and_warned_about(self):
+        all_rows, _ = self.frames()
+        used = all_rows[all_rows["stratum"] != "S3"]
+        sw = wt.stratum_weights(all_rows, used)
+        assert sw.empty == ["S3"]
+        assert "stratum S3 (pool 6) has no used row" in wt.stratum_warning(sw)[0]
+
+    def test_kish_n_eff_of_equal_weights_is_n_and_of_skewed_weights_is_less(self):
+        assert wt.kish_n_eff(np.ones(10)) == pytest.approx(10.0)
+        assert wt.kish_n_eff(np.array([1.0, 1.0, 8.0])) == pytest.approx(100 / 66)
+
+    def test_the_bootstrap_resamples_inside_each_stratum(self):
+        # Stratum A holds only y=1 rows and stratum B only y=0 rows. A plain bootstrap
+        # would draw a different A and B count each time. Inside strata, the positive
+        # rate is the same on every draw, so the interval has zero width.
+        y = np.array([1] * 6 + [0] * 6)
+        strata = np.array(["A"] * 6 + ["B"] * 6)
+        w = np.ones(12)
+        stat = {"pos": lambda idx: float(y[idx].mean())}
+        within = wt.bootstrap_statistics(y, w, stat, n_bootstrap=100, seed=1, strata=strata)["pos"]
+        plain = wt.bootstrap_statistics(y, w, stat, n_bootstrap=100, seed=1)["pos"]
+        assert within.low == within.high == pytest.approx(0.5)
+        assert plain.high > plain.low
+
+    def test_false_positive_rate_is_the_flag_rate_among_rows_labelled_0(self):
+        y = np.array([0, 0, 0, 0, 1])
+        flag = np.array([1, 0, 0, 0, 1])
+        assert wt.false_positive_rate(y, flag, np.ones(5)) == pytest.approx(0.25)
+        weights = np.array([3.0, 1.0, 1.0, 1.0, 1.0])
+        assert wt.false_positive_rate(y, flag, weights) == pytest.approx(0.5)
+        assert wt.false_positive_rate(np.ones(3, dtype=int), np.ones(3), np.ones(3)) is None
+
+
 # ---------------------------------------------------------------------------
 # transfer on a resolved sheet
 # ---------------------------------------------------------------------------
@@ -417,7 +530,8 @@ VERSION = "v0.1.0"
 
 
 def scored_sheet(n_pos=30, n_neg=30, kind="human", lang="en"):
-    rows, scores = [], []
+    """Sheet, scores and design. Positives are stratum S1 (pool 90), negatives S2 (pool 30)."""
+    rows, scores, design = [], [], []
     for i in range(n_pos + n_neg):
         positive = i < n_pos
         rid = f"{'p' if positive else 'n'}{i}"
@@ -428,7 +542,6 @@ def scored_sheet(n_pos=30, n_neg=30, kind="human", lang="en"):
                 "source": "news",
                 "lang": lang,
                 "text": LONG,
-                "weight": "3.0" if positive else "1.0",
                 "adjudicated_label": str(int(positive)),
                 "adjudicated_reports_on_false_claim": "1" if i % 5 == 0 else "0",
                 "labeller_kind": kind,
@@ -437,66 +550,148 @@ def scored_sheet(n_pos=30, n_neg=30, kind="human", lang="en"):
         scores.append(
             {"record_id": rid, "misinfo_prob": prob, "model_versions": {"laya": f"{VERSION}+ab"}}
         )
-    return pd.DataFrame(rows), pd.DataFrame(scores)
+        design.append(
+            {
+                "id": rid,
+                "stratum": "S1" if positive else "S2",
+                "pool": "90" if positive else "30",
+                "drawn": str(n_pos if positive else n_neg),
+                "weight": "3" if positive else "1",
+            }
+        )
+    return pd.DataFrame(rows), pd.DataFrame(scores), pd.DataFrame(design)
+
+
+def resolved(kind="human", allow_flag=False, with_design=True, **kw):
+    sheet, scores, design = scored_sheet(kind=kind, **kw)
+    return (
+        lb.resolve_sheet(
+            sheet, design=design if with_design else None, allow_model_labels=allow_flag
+        ),
+        scores,
+    )
 
 
 class TestEnglishTransfer:
-    def run(self, kind="human", allow_flag=False):
+    def run(self, kind="human", allow_flag=False, **kw):
         from modeling.eval import corpus_transfer as ct
 
-        sheet, scores = scored_sheet(kind=kind)
+        sheet, scores = resolved(kind, allow_flag, **kw)
         scores["model_versions"] = [{"misinfo": f"{VERSION}+ab"}] * len(scores)
-        resolved = lb.resolve_sheet(sheet, allow_model_labels=allow_flag)
-        assert resolved.refusal is None
         return ct.evaluate_transfer(
-            resolved.frame,
+            sheet,
             scores,
             language_allowed=allow,
             model_version=VERSION,
             threshold=0.5,
             n_bootstrap=100,
-            labeller_note=resolved.labeller_note,
         )
 
-    def test_weighted_and_reporting_sections_render(self):
+    def test_reweighted_and_reporting_sections_render_with_n_eff(self):
         out = self.run()
         assert out.computed and out.weighted is not None and out.reporting is not None
-        # positives weigh 3, negatives 1, so the corpus positive rate is 90 / 120
+        # S1 weighs 90 / 30 = 3 per row and S2 weighs 1, so the corpus positive rate is 0.75
         assert out.weighted["positive_rate"].value == pytest.approx(0.75)
-        assert out.reporting["n_reporting"] == 12
         text = "\n".join(out.render())
-        assert "reweighted to the corpus" in text and "report on a false claim" in text
+        assert "reweighted to the corpus" in text and "n_eff" in text
+        assert "false-positive rate" in text and "unweighted, sample rows" in text
         assert "unreviewed" not in text
+
+    def test_false_positive_rates_by_reporting_are_weighted_and_unweighted(self):
+        out = self.run()
+        r = out.reporting
+        assert r["n_negatives_reporting"] + r["n_negatives_other"] == 30
+        assert r["unweighted"]["reporting"].value is not None
+        assert r["weighted"]["other"].value is not None
+
+    def test_a_dropped_row_renormalises_the_weights_and_is_counted_per_stratum(self):
+        from modeling.eval import corpus_transfer as ct
+
+        sheet, scores = resolved()
+        scores["model_versions"] = [{"misinfo": f"{VERSION}+ab"}] * len(scores)
+        scores = scores[scores["record_id"] != "p0"]  # p0 has no score
+        out = ct.evaluate_transfer(
+            sheet,
+            scores,
+            language_allowed=allow,
+            model_version=VERSION,
+            threshold=0.5,
+            n_bootstrap=50,
+        )
+        assert out.drops_by_stratum == {"S1": {ct.NO_SCORE: 1}}
+        assert out.strata_info.per_stratum["S1"] == {"pool": 90, "n_used": 29}
+        assert out.strata_info.weights.max() == pytest.approx(90 / 29)
+        assert "S1: no_score=1" in "\n".join(out.render())
 
     def test_model_labels_stamp_the_first_and_last_line(self):
         lines = self.run("model-unreviewed", True).render()
         note = "labeller: model, unreviewed by a person"
         assert lines[1].strip() == note and lines[-1].strip() == note
 
+    def test_the_evaluator_refuses_model_labels_itself(self):
+        from modeling.eval import corpus_transfer as ct
+
+        sheet, scores, design = scored_sheet(kind="llm-unreviewed")
+        out = ct.evaluate_transfer(
+            lb.resolve_sheet(sheet, design=design),
+            scores,
+            language_allowed=allow,
+            model_version=VERSION,
+            threshold=0.5,
+        )
+        assert not out.computed and "no person reviewed" in out.refusal
+
+    def test_a_plain_frame_is_rejected(self):
+        from modeling.eval import corpus_transfer as ct
+
+        sheet, scores, _ = scored_sheet()
+        with pytest.raises(TypeError, match="ResolvedSheet"):
+            ct.evaluate_transfer(
+                sheet, scores, language_allowed=allow, model_version=VERSION, threshold=0.5
+            )
+        with pytest.raises(TypeError, match="ResolvedSheet"):
+            lt.evaluate_laya_transfer(sheet, scores, model_version=VERSION, threshold=0.5)
+
+    def test_the_default_seed_is_the_labelling_seed(self):
+        import inspect
+
+        from modeling.eval import corpus_transfer as ct
+
+        for fn in (ct.evaluate_transfer, lt.evaluate_laya_transfer):
+            assert inspect.signature(fn).parameters["seed"].default == 20260813
+
 
 class TestLayaHindi:
     def run(self, sheet, scores, **kw):
         kw.setdefault("threshold", 0.5)
         return lt.evaluate_laya_transfer(
-            lb.resolve_sheet(sheet).frame, scores, model_version=VERSION, n_bootstrap=100, **kw
+            sheet, scores, model_version=VERSION, n_bootstrap=100, **kw
         )
 
-    def test_metrics_ece_and_weighted_ece_have_intervals(self):
-        sheet, scores = scored_sheet(lang="hi")
+    def test_metrics_ece_and_weighted_ece_have_intervals_and_n_eff(self):
+        sheet, scores = resolved(lang="hi")
         out = self.run(sheet, scores)
         assert out.computed
         assert out.sample["ece"].low <= out.sample["ece"].high
         assert out.corpus["ece"].value != out.sample["ece"].value
-        assert "ece" in "\n".join(out.render())
+        text = "\n".join(out.render())
+        assert "ece" in text and "n_eff" in text
+
+    def test_ece_states_its_bins_and_n_and_warns_below_200_rows(self):
+        sheet, scores = resolved(lang="hi")
+        text = "\n".join(self.run(sheet, scores).render())
+        assert "10 equal-width bins, n 60" in text
+        assert "caveat: n is below 200" in text
+        assert "ece definition: sum over bins" in text
 
     def test_no_threshold_means_precision_and_recall_are_not_measured(self):
-        sheet, scores = scored_sheet(lang="hi")
+        sheet, scores = resolved(lang="hi")
         out = self.run(sheet, scores, threshold=None)
         assert out.computed and "precision" not in out.sample and "ece" in out.sample
         assert "precision not measured, no decision threshold" in "\n".join(out.render())
 
     def test_only_laya_stamped_current_values_count(self):
-        sheet, scores = scored_sheet(lang="hi")
+        sheet, scores = resolved(lang="hi")
         scores["model_versions"] = scores["model_versions"].astype(object)
         scores.at[0, "model_versions"] = {"misinfo": VERSION}
         scores.at[1, "model_versions"] = {"laya": "v0.0.1+zz"}
@@ -507,24 +702,51 @@ class TestLayaHindi:
             lt.STALE_MODEL_VERSION: 1,
             lt.NO_SCORE: 1,
         }
+        assert out.drops_by_stratum == {
+            "S1": {lt.NOT_A_LAYA_SCORE: 1, lt.STALE_MODEL_VERSION: 1, lt.NO_SCORE: 1}
+        }
 
     def test_refuses_below_the_minimum(self):
-        sheet, scores = scored_sheet(n_pos=5, n_neg=5, lang="hi")
+        sheet, scores = resolved(n_pos=5, n_neg=5, lang="hi")
         out = self.run(sheet, scores)
         assert not out.computed and "MIN_LABELLED_ROWS" in out.refusal
 
-    def test_model_label_note_is_on_the_output(self):
-        sheet, scores = scored_sheet(kind="model-unreviewed", lang="hi")
-        resolved = lb.resolve_sheet(sheet, allow_model_labels=True)
-        out = lt.evaluate_laya_transfer(
-            resolved.frame,
+    def test_the_evaluator_refuses_model_labels_and_stamps_them_when_allowed(self):
+        sheet, scores = resolved("model-unreviewed", False, lang="hi")
+        assert "no person reviewed" in self.run(sheet, scores).refusal
+        sheet, scores = resolved("model-unreviewed", True, lang="hi")
+        out = self.run(sheet, scores)
+        assert out.computed and out.render()[1].strip() == sheet.labeller_note
+
+
+class TestJsonable:
+    def test_a_nan_interval_becomes_null_and_the_payload_is_strict_json(self):
+        from modeling.eval.metrics import Interval
+        from modeling.eval.relabel import _jsonable
+
+        value = {"x": Interval(0.5, float("nan"), float("nan"), 0), "y": [float("nan")]}
+        text = json.dumps(_jsonable(value), allow_nan=False)
+        assert json.loads(text) == {
+            "x": {"value": 0.5, "ci_low": None, "ci_high": None, "n_bootstrap": 0},
+            "y": [None],
+        }
+
+    def test_a_transfer_result_serialises_without_arrays(self):
+        from modeling.eval import corpus_transfer as ct
+        from modeling.eval.relabel import _jsonable
+
+        sheet, scores = resolved()
+        scores["model_versions"] = [{"misinfo": f"{VERSION}+ab"}] * len(scores)
+        out = ct.evaluate_transfer(
+            sheet,
             scores,
+            language_allowed=allow,
             model_version=VERSION,
             threshold=0.5,
-            n_bootstrap=50,
-            labeller_note=resolved.labeller_note,
+            n_bootstrap=30,
         )
-        assert out.render()[1].strip() == resolved.labeller_note
+        payload = json.dumps(_jsonable(out), allow_nan=False)
+        assert json.loads(payload)["strata_info"]["per_stratum"]["S1"]["pool"] == 90
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +783,7 @@ def env(tmp_path, monkeypatch):
 
 
 class TestSampleCommand:
-    def test_draws_a_weighted_en_sheet_with_a_sampling_record(self, env):
+    def test_draws_a_shuffled_en_sheet_a_design_file_and_a_sampling_record(self, env):
         result = runner.invoke(
             modeling_cli.app, ["sample-for-labelling", "misinfo", "--n", "20", "--lang", "en"]
         )
@@ -569,11 +791,17 @@ class TestSampleCommand:
         path = env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv"
         sheet = pd.read_csv(path, dtype=str, keep_default_na=False)
         assert list(sheet.columns) == list(lb.SHEET_COLUMNS)
+        assert not {"stratum", "weight", "pool", "drawn"} & set(sheet.columns)
         assert len(sheet) == 20 and (sheet["sample_seed"] == "20260813").all()
+        design = pd.read_csv(lb.design_path(path), dtype=str)
+        assert set(design["id"]) == set(sheet["id"]) and "stratum" in design.columns
         record = json.loads(path.with_suffix(".sampling.json").read_text())
         assert record["seed"] == 20260813 and record["strata"]["S1"]["name"] == "claim_match"
+        assert record["claim_matches_in_scorable_pool"]["any"] >= 1
+        assert record["claim_match"]["simhash_hamming"] == 3
         assert "embedding_unavailable" in result.output
         assert "fact_check_publisher=5" in result.output
+        assert "claim matches in the scorable pool: simhash=1" in result.output
 
     def test_hi_uses_the_laya_language_list(self, env):
         result = runner.invoke(
@@ -584,6 +812,19 @@ class TestSampleCommand:
             env.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_hi.csv", dtype=str
         )
         assert set(sheet["lang"]) == {"hi"} and sheet["title"].notna().all()
+
+    def test_lang_is_required(self, env):
+        result = runner.invoke(modeling_cli.app, ["sample-for-labelling", "misinfo"])
+        assert result.exit_code != 0
+        assert not list((env.artifacts_dir / "hand_labels").glob("*_all*"))
+
+    def test_a_too_small_n_is_refused_with_the_reason(self, env):
+        result = runner.invoke(
+            modeling_cli.app, ["sample-for-labelling", "misinfo", "--n", "2", "--lang", "en"]
+        )
+        assert (
+            result.exit_code == 1 and "Every such stratum needs at least one row" in result.output
+        )
 
     def test_a_second_run_does_not_overwrite_labels(self, env):
         args = ["sample-for-labelling", "misinfo", "--n", "6", "--lang", "en"]
@@ -599,6 +840,53 @@ class TestSampleCommand:
         assert result.exit_code != 0
 
 
+class TestEmbeddingsFile:
+    def write(self, tmp_path, model):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pa.table({"id": ["a"], "embedding": [[1.0, 0.0]]})
+        if model:
+            table = table.replace_schema_metadata({b"model": model.encode()})
+        path = tmp_path / "emb.parquet"
+        pq.write_table(table, path)
+        return path
+
+    def evidence(self, path, expected):
+        calls = []
+
+        def factory():
+            calls.append(1)
+            return None, "model_unavailable"
+
+        out = lb.claim_evidence(
+            [{"label": "false", "claim_simhash": 5, "claim": "c"}],
+            config(claim_match={"min_similarity": 0.85, "simhash_hamming": 3}),
+            embeddings_path=path,
+            embedder_factory=factory,
+            expected_model=expected,
+        )
+        return out, calls
+
+    def test_a_file_that_names_another_model_is_refused(self, tmp_path):
+        out, calls = self.evidence(self.write(tmp_path, "model-x"), "model-y")
+        assert out.embedding_reason == lb.EMBEDDING_MODEL_MISMATCH and not calls
+        assert any("model-x" in n for n in out.notes)
+
+    def test_a_file_with_no_model_id_is_flagged_as_unverified(self, tmp_path):
+        out, calls = self.evidence(self.write(tmp_path, None), "model-y")
+        assert calls and any(lb.EMBEDDING_MODEL_UNVERIFIED in n for n in out.notes)
+        assert out.embedding_reason == "model_unavailable"
+
+    def test_a_matching_model_id_passes_to_the_embedder(self, tmp_path):
+        out, calls = self.evidence(self.write(tmp_path, "model-y"), "model-y")
+        assert calls and not out.notes
+
+    def test_a_missing_file_is_a_counted_reason(self, tmp_path):
+        out, _ = self.evidence(tmp_path / "none.parquet", "m")
+        assert out.embedding_reason == lb.EMBEDDING_UNAVAILABLE
+
+
 class TestRelabelEval:
     @pytest.fixture
     def filled(self, env, monkeypatch):
@@ -610,17 +898,18 @@ class TestRelabelEval:
         monkeypatch.setattr("modeling.eval.laya_transfer.MIN_LABELLED_ROWS", 20)
         scores = {}
         for lang in ("en", "hi"):
-            sheet, score = scored_sheet(lang=lang)
+            sheet, score, design = scored_sheet(lang=lang)
             sheet["label_a"] = sheet["adjudicated_label"]
             sheet["label_b"] = sheet["adjudicated_label"]
             sheet.loc[0, "label_b"] = "0"
             sheet["reports_on_false_claim_a"] = sheet["adjudicated_reports_on_false_claim"]
             sheet["reports_on_false_claim_b"] = sheet["adjudicated_reports_on_false_claim"]
-            sheet["id"] = [f"{lang}-{i}" for i in sheet["id"]]
-            score["record_id"] = [f"{lang}-{i}" for i in score["record_id"]]
+            for frame, col in ((sheet, "id"), (score, "record_id"), (design, "id")):
+                frame[col] = [f"{lang}-{i}" for i in frame[col]]
             path = env.artifacts_dir / "hand_labels" / f"misinfo_corpus_sample_{lang}.csv"
             path.parent.mkdir(parents=True, exist_ok=True)
             sheet.to_csv(path, index=False)
+            design.to_csv(lb.design_path(path), index=False)
             scores[lang] = score
         both = pd.concat(scores.values())
         both.loc[both["record_id"].str.startswith("en"), "model_versions"] = [
@@ -639,6 +928,10 @@ class TestRelabelEval:
                 assert (out / lang / name).exists(), (lang, name)
         data = json.loads((out / "hi" / "transfer.json").read_text())
         assert data["computed"] and "labeller" not in data
+        # Under the stubbed settings the seed is 0, so 20260813 comes from the default.
+        assert data["seed"] == 20260813
+        assert json.loads((out / "en" / "transfer.json").read_text())["seed"] == 20260813
+        assert "bootstrap seed 20260813" in (out / "en" / "agreement.md").read_text()
         assert "Cohen kappa" in (out / "en" / "agreement.md").read_text()
         assert "en-p0" in (out / "en" / "disagreements.csv").read_text()
 

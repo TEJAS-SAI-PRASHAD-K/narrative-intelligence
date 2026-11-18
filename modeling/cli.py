@@ -355,7 +355,7 @@ def evaluate(
         return
 
     from modeling.config import module_config
-    from modeling.eval.corpus_transfer import evaluate_transfer, read_label_sheet
+    from modeling.eval.corpus_transfer import evaluate_transfer
     from modeling.io import ScoredStore
 
     settings = get_settings()
@@ -368,20 +368,15 @@ def evaluate(
             "this command."
         )
         return
-    from modeling.eval.labelling import resolve_sheet
+    from modeling.eval.labelling import resolve_sheet_file
 
-    resolved = resolve_sheet(read_label_sheet(path), allow_model_labels=allow_model_labels)
-    if resolved.refusal:
-        console.print(f"\ncorpus transfer\n  REFUSED: {resolved.refusal}", markup=False)
-        raise typer.Exit(code=1)
+    resolved = resolve_sheet_file(path, allow_model_labels=allow_model_labels)
     transfer = evaluate_transfer(
-        resolved.frame,
+        resolved,
         ScoredStore(settings).read("record_scores"),
         language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
         model_version=str(module_config("misinfo").get("version", "v0.0.0-unset")),
         threshold=module_config("misinfo").get("decision_threshold"),
-        seed=settings.seed,
-        labeller_note=resolved.labeller_note,
     )
     benchmark = result.report.macro_f1.value if result.report is not None else None
     console.print()
@@ -875,16 +870,20 @@ def _draw_misinfo_sample(
     )
     from modeling.eval.corpus_transfer import SAMPLE_LANGUAGES
     from modeling.eval.labelling import (
+        AllocationError,
         build_weighted_sample,
         claim_evidence,
+        design_path,
         load_sampling_config,
     )
     from modeling.io import CorpusReader
 
     settings = get_settings()
-    if lang is not None and lang not in SAMPLE_LANGUAGES:
-        raise typer.BadParameter(f"--lang must be one of {', '.join(SAMPLE_LANGUAGES)}")
-    path = target_dir / f"misinfo_corpus_sample_{lang or 'all'}.csv"
+    if lang not in SAMPLE_LANGUAGES:
+        raise typer.BadParameter(
+            f"--lang is required and must be one of {', '.join(SAMPLE_LANGUAGES)}"
+        )
+    path = target_dir / f"misinfo_corpus_sample_{lang}.csv"
     if path.exists() and not force:
         console.print(
             f"[red]{path} exists and may hold labels.[/] Move it, or pass --force to replace it."
@@ -906,36 +905,40 @@ def _draw_misinfo_sample(
     rows = factcheck.read_deduplicated_factchecks(
         IngestSettings(data_dir=settings.data_dir, _env_file=None)
     ).kept
-    min_similarity = None
     embedder_factory = None
+    expected_model = None
     if embeddings is not None:
         try:
             dedup = claim_dedup_config()
         except ClaimDedupConfigError as exc:
             console.print(f"[red]{exc}[/]")
             raise typer.Exit(code=1) from exc
-        min_similarity = dedup.min_similarity
-        embedder_factory = lambda: default_embedder(dedup.model_name or "", settings)  # noqa: E731
+        expected_model = config.embedding_model or dedup.model_name
+        embedder_factory = lambda: default_embedder(expected_model or "", settings)  # noqa: E731
     evidence = claim_evidence(
         rows,
         config,
         embeddings_path=embeddings,
         embedder_factory=embedder_factory,
-        min_similarity=min_similarity,
+        expected_model=expected_model,
     )
-    built = build_weighted_sample(
-        records,
-        n=n,
-        # Hindi titles go to Laya, so the Hindi pool uses Laya's language list.
-        language_allowed=lambda value: settings.language_allowed(
-            "laya" if lang == "hi" else "misinfo", value
-        ),
-        fact_checker_domains=domains,
-        config=config,
-        claims=evidence,
-        lang=lang,
-        seed=seed,
-    )
+    try:
+        built = build_weighted_sample(
+            records,
+            n=n,
+            # Hindi titles go to Laya, so the Hindi pool uses Laya's language list.
+            language_allowed=lambda value: settings.language_allowed(
+                "laya" if lang == "hi" else "misinfo", value
+            ),
+            fact_checker_domains=domains,
+            config=config,
+            claims=evidence,
+            lang=lang,
+            seed=seed,
+        )
+    except AllocationError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
     console.print(
         f"pool {built.pool} records"
         + (f" in lang={lang}" if lang else "")
@@ -947,13 +950,19 @@ def _draw_misinfo_sample(
             "degraded paths: " + ", ".join(f"{k}={v}" for k, v in sorted(built.degraded.items()))
         )
     for note in built.notes:
-        console.print(f"[yellow]{note}[/]")
+        console.print(f"[yellow]{note}[/]", soft_wrap=True)
+    console.print(
+        "claim matches in the scorable pool: "
+        + ", ".join(f"{k}={v}" for k, v in built.claim_match_counts.items())
+    )
     if not len(built.frame):
         console.print("[red]no scorable record in the pool; nothing to label[/]")
         raise typer.Exit(code=1)
     # No model score goes in the sheet: a labeller who sees one anchors on it.
     # `evaluate misinfo` joins the scores from record_scores by id.
     built.frame.to_csv(path, index=False)
+    # The design file holds the stratum and the weight. Labellers must not receive it.
+    built.design.to_csv(design_path(path), index=False)
     record = {
         "seed": built.seed,
         "n_requested": n,
@@ -965,7 +974,12 @@ def _draw_misinfo_sample(
         "claim_matches_in_scorable_pool": built.claim_match_counts,
         "strata": built.strata,
         "notes": built.notes,
-        "weight": "stratum pool size over stratum rows drawn",
+        "weight": "stratum pool size over stratum rows drawn; evaluation uses pool over rows used",
+        "claim_match": {
+            "simhash_hamming": config.simhash_hamming,
+            "min_similarity": config.min_similarity,
+            "embedding_model": expected_model,
+        },
     }
     path.with_suffix(".sampling.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     console.print(
@@ -980,7 +994,7 @@ def sample_for_labelling(
     what: str = typer.Argument(..., help="misinfo | narratives"),
     n: int = typer.Option(100, help="How many rows to sample."),
     lang: str | None = typer.Option(
-        None, "--lang", help="misinfo only: restrict the sample to en or hi."
+        None, "--lang", help="misinfo only, required: draw the en or the hi sample."
     ),
     seed: int | None = typer.Option(
         None,

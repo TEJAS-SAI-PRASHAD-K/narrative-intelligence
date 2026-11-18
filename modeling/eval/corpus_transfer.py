@@ -25,7 +25,15 @@ import numpy as np
 import pandas as pd
 
 from modeling.eval.metrics import classification_report
-from modeling.eval.weighted import bootstrap_statistics, fmt, rate_intervals
+from modeling.eval.weighted import (
+    DEFAULT_SEED,
+    StratumWeights,
+    rate_intervals,
+    render_reporting_fpr,
+    render_reweighted,
+    reporting_fpr,
+    stratum_weights,
+)
 
 log = logging.getLogger(__name__)
 
@@ -102,10 +110,15 @@ class TransferResult:
     metrics: dict[str, Any] = field(default_factory=dict)
     #: Set when the labels come from a model that no person reviewed.
     labeller_note: str | None = None
-    #: Sample weight statistics, or ``None`` when the sheet has no weight column.
+    #: Reweighted statistics, or ``None`` when the sheet has no design file.
     weighted: dict[str, Any] | None = None
-    #: Flag rate on rows that report on a false claim and on the rest.
+    #: Strata used, per stratum, with the pool and the used row count.
+    strata_info: StratumWeights | None = None
+    #: Dropped rows by stratum and reason.
+    drops_by_stratum: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: False-positive rate on rows that report on a false claim and on the rest.
     reporting: dict[str, Any] | None = None
+    seed: int = 0
 
     def render(self, benchmark_macro_f1: float | None = None) -> list[str]:
         lines = self._render(benchmark_macro_f1)
@@ -143,23 +156,21 @@ class TransferResult:
                 f"  benchmark macro-F1 {benchmark_macro_f1:.3f}, corpus macro-F1 "
                 f"{m['macro_f1_value']:.3f}, gap {gap:+.3f}"
             )
-        if self.weighted is not None:
-            w = self.weighted
-            lines.append("  reweighted to the corpus by sample weight, 95% bootstrap intervals:")
-            for name in ("positive_rate", "flag_rate", "precision", "recall"):
-                lines.append(f"    {name.replace('_', ' ')} {fmt(w.get(name))}")
+        if self.drops_by_stratum:
+            lines.append("  rows left out, by stratum code and reason:")
+            for code, reasons in sorted(self.drops_by_stratum.items()):
+                lines.append(
+                    f"    {code}: " + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items()))
+                )
+        if self.weighted is not None and self.strata_info is not None:
+            lines += render_reweighted(self.weighted, self.strata_info)
         if self.reporting is not None:
-            r = self.reporting
-            lines.append(
-                f"  flag rate on rows that report on a false claim ({r['n_reporting']} rows) "
-                f"{fmt(r['reporting'])}, on the other rows ({r['n_other']} rows) "
-                f"{fmt(r['other'])}"
-            )
+            lines += render_reporting_fpr(self.reporting)
         return lines
 
 
 def evaluate_transfer(
-    sheet: pd.DataFrame,
+    sheet: Any,
     scores: pd.DataFrame | None,
     *,
     language_allowed: Callable[[str | None], bool],
@@ -167,26 +178,36 @@ def evaluate_transfer(
     threshold: float | None,
     min_labelled: int | None = None,
     n_bootstrap: int = 1000,
-    seed: int = 0,
-    labeller_note: str | None = None,
+    seed: int = DEFAULT_SEED,
 ) -> TransferResult:
     """Metrics over rows with a human label and a usable score; counts for the rest.
 
-    ``scores`` is the ``record_scores`` table (``record_id``, ``misinfo_prob``,
-    optionally ``model_versions``). A score stamped by a different model version
-    is excluded as stale. Labels come only from the sheet.
+    ``sheet`` is a ``modeling.eval.labelling.ResolvedSheet``. Its refusal, for labels that a
+    model made and no person reviewed, becomes the refusal here. ``scores`` is the
+    ``record_scores`` table (``record_id``, ``misinfo_prob``, optionally ``model_versions``).
+    A score stamped by a different model version is excluded as stale. Labels come only
+    from the sheet. With a design file, the reweighted figures use ``pool / n_used`` per
+    stratum, where ``n_used`` counts the rows that reach the metrics.
     """
+    from modeling.eval.labelling import ResolvedSheet
     from modeling.io import _as_version_dict
 
+    if not isinstance(sheet, ResolvedSheet):
+        raise TypeError("evaluate_transfer needs a ResolvedSheet: call resolve_sheet first")
+    frame = sheet.frame
     min_labelled = MIN_LABELLED_ROWS if min_labelled is None else min_labelled
 
     out = TransferResult(
-        sample_rows=len(sheet),
+        sample_rows=len(frame),
         threshold=threshold,
         model_version=model_version,
-        labeller_note=labeller_note,
+        labeller_note=sheet.labeller_note,
+        seed=seed,
     )
-    parsed = [parse_label(v) for v in sheet["label"]] if "label" in sheet else [None] * len(sheet)
+    if sheet.refusal:
+        out.refusal = sheet.refusal
+        return out
+    parsed = [parse_label(v) for v in frame["label"]]
     out.unlabelled = sum(p is None for p in parsed)
     out.invalid_labels = sum(p == "invalid" for p in parsed)
     labelled_mask = np.array([p in (0, 1) and p is not None for p in parsed], dtype=bool)
@@ -202,8 +223,13 @@ def evaluate_transfer(
         out.refusal = f"no decision_threshold configured for misinfo {model_version}"
         return out
 
-    rows = sheet[labelled_mask].copy()
+    rows = frame[labelled_mask].copy()
     rows["y_true"] = [p for p, keep in zip(parsed, labelled_mask, strict=True) if keep]
+    row_reason: dict[Any, str] = {
+        idx: (UNLABELLED if p is None else INVALID_LABEL)
+        for idx, p, keep in zip(frame.index, parsed, labelled_mask, strict=True)
+        if not keep
+    }
 
     score_by_id: dict[str, float] = {}
     stale: set[str] = set()
@@ -230,7 +256,15 @@ def evaluate_transfer(
         if reason is None:
             reason = STALE_MODEL_VERSION if rid in stale else NO_SCORE
         reasons[reason] += 1
+        row_reason[idx] = reason
     out.excluded = dict(reasons)
+    if "stratum" in frame:
+        drops: dict[str, Counter[str]] = {}
+        for idx, reason in row_reason.items():
+            code = frame.at[idx, "stratum"]
+            if isinstance(code, str):
+                drops.setdefault(code, Counter())[reason] += 1
+        out.drops_by_stratum = {k: dict(v) for k, v in drops.items()}
 
     used = rows.loc[keep_rows]
     out.used = len(used)
@@ -258,15 +292,20 @@ def evaluate_transfer(
         n_bootstrap=n_bootstrap,
     )
     positive = report.per_class["misinfo"]
-    if "weight" in used and used["weight"].notna().all():
-        weights = used["weight"].to_numpy(dtype=float)
+    sw = stratum_weights(frame, used) if sheet.has_design else None
+    if sw is not None:
+        out.strata_info = sw
         out.weighted = rate_intervals(
-            y_true, y_pred, weights, n_bootstrap=n_bootstrap, seed=seed
+            y_true, y_pred, sw.weights, n_bootstrap=n_bootstrap, seed=seed, strata=sw.strata
         )
-    if "reports" in used:
-        out.reporting = _reporting_flag_rates(
-            used["reports"].to_numpy(dtype=float), y_pred, y_true, n_bootstrap, seed
-        )
+    out.reporting = reporting_fpr(
+        used["reports"].to_numpy(dtype=float),
+        y_true,
+        y_pred,
+        sw,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+    )
     out.metrics = {
         "macro_f1": report.macro_f1,
         "macro_f1_value": report.macro_f1.value,
@@ -281,33 +320,3 @@ def evaluate_transfer(
     }
     out.computed = True
     return out
-
-
-def _reporting_flag_rates(
-    reports: np.ndarray, flag: np.ndarray, y_true: np.ndarray, n_bootstrap: int, seed: int
-) -> dict[str, Any] | None:
-    """Flag rate on rows that report on a false claim, against the rest, unweighted.
-
-    Rows with no adjudicated ``reports_on_false_claim`` are left out of both groups.
-    """
-    known = ~np.isnan(reports)
-    if not known.any():
-        return None
-    r, f, y = reports[known].astype(int), flag[known], y_true[known]
-    ones = np.ones(len(r))
-
-    def rate(group: int):
-        def fn(idx):
-            mask = r[idx] == group
-            return float(f[idx][mask].mean()) if mask.any() else None
-
-        return fn
-
-    both = bootstrap_statistics(
-        y, ones, {"reporting": rate(1), "other": rate(0)}, n_bootstrap=n_bootstrap, seed=seed
-    )
-    return {
-        "n_reporting": int((r == 1).sum()),
-        "n_other": int((r == 0).sum()),
-        **both,
-    }

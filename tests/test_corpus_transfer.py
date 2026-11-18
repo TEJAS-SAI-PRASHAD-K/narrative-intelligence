@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from modeling import cli as modeling_cli
 from modeling.eval import corpus_transfer as ct
+from modeling.eval.labelling import resolve_sheet
 
 runner = CliRunner()
 LONG = "a sentence long enough to be scored by the stage"
@@ -61,7 +62,16 @@ def make_sheet() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows, scores = [], []
 
     def add(rid, label, score, lang="en", text=LONG, versions=None):
-        rows.append({"id": rid, "source": "news", "lang": lang, "text": text, "label": label})
+        rows.append(
+            {
+                "id": rid,
+                "source": "news",
+                "lang": lang,
+                "text": text,
+                "label": label,
+                "labeller_kind": "human",
+            }
+        )
         if score is not None or versions is not None:
             scores.append(
                 {"record_id": rid, "misinfo_prob": score,
@@ -86,7 +96,7 @@ def make_sheet() -> tuple[pd.DataFrame, pd.DataFrame]:
 def run(sheet, scores, **kw):
     kw.setdefault("min_labelled", 8)
     return ct.evaluate_transfer(
-        sheet, scores, language_allowed=allow_en, model_version=VERSION,
+        resolve_sheet(sheet), scores, language_allowed=allow_en, model_version=VERSION,
         threshold=0.5, n_bootstrap=50, **kw,
     )
 
@@ -131,7 +141,11 @@ class TestEvaluateTransfer:
     def test_refuses_below_the_named_threshold_with_the_default(self):
         sheet, scores = make_sheet()
         out = ct.evaluate_transfer(
-            sheet, scores, language_allowed=allow_en, model_version=VERSION, threshold=0.5
+            resolve_sheet(sheet),
+            scores,
+            language_allowed=allow_en,
+            model_version=VERSION,
+            threshold=0.5,
         )
         assert ct.MIN_LABELLED_ROWS == 50
         assert not out.computed and out.metrics == {}
@@ -196,7 +210,6 @@ class TestEvaluateCommand:
         )
         monkeypatch.setattr(ct, "MIN_LABELLED_ROWS", 8)
         (S.artifacts_dir / "hand_labels").mkdir(parents=True)
-        sheet["labeller_kind"] = "human"
         sheet.to_csv(S.artifacts_dir / "hand_labels" / "misinfo_corpus_sample_en.csv", index=False)
         return S
 

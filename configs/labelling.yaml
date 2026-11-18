@@ -6,9 +6,11 @@
 # records its weight (stratum pool size over stratum sample size). Metrics that must
 # describe the whole corpus are reweighted with that column.
 #
-# The sheet shows a neutral code (S1, S2, ...) in the order of `strata` below. The
-# meaning of each code is written beside the sheet, never in it, because a labeller who
-# knows that a row matched a debunked claim anchors on that fact.
+# The sheet holds no stratum and no weight. They go to a separate design file beside the sheet
+# (`<sheet>.design.csv`), and the evaluation joins that file on `id`. A labeller who knows that
+# a row matched a debunked claim anchors on that fact. The sheet rows are shuffled with the
+# seed. Stratum codes (S1, S2, ...) follow the order of `strata` below. Their meaning is
+# written in `<sheet>.sampling.json`.
 
 seed: 20260813
 
@@ -26,9 +28,20 @@ strata:
   - {name: telegram, share: 0.10}
   - {name: other, share: 0.15}
 
-# A corpus record matches a claim when the Hamming distance between their simhashes is at
-# most this many bits. Same radius as the claim dedup in `ingest.factcheck`.
-simhash_hamming: 3
+# How a corpus record matches a fact-check claim. This is a separate decision from the
+# claim-to-claim dedup in `configs/factcheck.yaml`: a post is matched to a claim, and a post
+# is longer and noisier than a claim. Both numbers are PROVISIONAL and not checked against
+# hand labels. The sampler prints and records how many records match, so a threshold that
+# matches nothing or everything shows up in the run.
+claim_match:
+  # Hamming distance between the simhash of the record and of the claim, in bits or fewer.
+  simhash_hamming: 3
+  # Cosine similarity of the record embedding and the claim embedding, at least this value.
+  # Used only when `--embeddings` supplies record embeddings.
+  min_similarity: 0.85
+  # Model that made the record embeddings. null means `claim_dedup.model_name` of
+  # `configs/factcheck.yaml`. The sampler refuses an embeddings file that names another model.
+  embedding_model: null
 
 # Only claims with these verdict labels count as false claims.
 claim_labels: [false]

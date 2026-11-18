@@ -16,20 +16,21 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from modeling.eval.labelling import (
-    DEFAULT_SEED,
     agreement_report,
     read_sheet,
     render_agreement,
-    resolve_sheet,
+    resolve_sheet_file,
 )
 from modeling.eval.metrics import Interval
+from modeling.eval.weighted import DEFAULT_SEED, StratumWeights
 
 log = logging.getLogger(__name__)
 
@@ -58,14 +59,19 @@ def _default_scores() -> pd.DataFrame | None:
 
 
 def _jsonable(value: Any) -> Any:
+    """JSON-safe form of a result. A NaN, as in an interval that has too few draws, is null."""
     if isinstance(value, Interval):
-        return value.as_dict()
+        return _jsonable(value.as_dict())
+    if isinstance(value, StratumWeights):
+        return {"per_stratum": value.per_stratum, "empty": value.empty, "n_eff": value.n_eff}
     if is_dataclass(value) and not isinstance(value, type):
-        return _jsonable(asdict(value))
+        return {k: _jsonable(v) for k, v in vars(value).items()}
     if isinstance(value, dict):
-        return {k: _jsonable(v) for k, v in value.items()}
+        return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
+    if isinstance(value, np.generic):
+        value = value.item()
     if isinstance(value, float) and value != value:
         return None
     return value
@@ -82,23 +88,18 @@ def misinfo_english_section(
     from modeling.config import get_settings, module_config
     from modeling.eval.corpus_transfer import evaluate_transfer
 
-    resolved = resolve_sheet(read_sheet(sheet_path), allow_model_labels=allow_model_labels)
-    if resolved.refusal:
-        return Section(
-            ["corpus transfer", f"  REFUSED: {resolved.refusal}"], {"refused": True}, False
-        )
+    resolved = resolve_sheet_file(sheet_path, allow_model_labels=allow_model_labels)
     settings = get_settings()
     config = module_config("misinfo")
     result = evaluate_transfer(
-        resolved.frame,
+        resolved,
         (scores or _default_scores)(),
         language_allowed=lambda lang: settings.language_allowed("misinfo", lang),
         model_version=str(config.get("version", "v0.0.0-unset")),
         threshold=config.get("decision_threshold"),
         min_labelled=min_labelled,
         n_bootstrap=n_bootstrap,
-        seed=settings.seed,
-        labeller_note=resolved.labeller_note,
+        seed=DEFAULT_SEED,
     )
     return Section(result.render(), _jsonable(result), result.computed)
 
@@ -112,7 +113,7 @@ def laya_hindi_section(
     min_labelled: int | None = None,
     n_bootstrap: int = 1000,
 ) -> Section:
-    from modeling.config import get_settings, module_config
+    from modeling.config import module_config
     from modeling.eval.laya_transfer import evaluate_laya_transfer
 
     if not sheet_path.exists():
@@ -121,13 +122,7 @@ def laya_hindi_section(
             {"not_measured": True},
             False,
         )
-    resolved = resolve_sheet(read_sheet(sheet_path), allow_model_labels=allow_model_labels)
-    if resolved.refusal:
-        return Section(
-            ["laya hindi transfer on titles", f"  REFUSED: {resolved.refusal}"],
-            {"refused": True},
-            False,
-        )
+    resolved = resolve_sheet_file(sheet_path, allow_model_labels=allow_model_labels)
     config = module_config("laya")
     configured = config.get("decision_threshold")
     chosen = threshold if threshold is not None else configured
@@ -137,15 +132,14 @@ def laya_hindi_section(
         else "laya.decision_threshold"
     )
     result = evaluate_laya_transfer(
-        resolved.frame,
+        resolved,
         (scores or _default_scores)(),
         model_version=str(config.get("version", "v0.0.0-unset")),
         threshold=chosen,
         threshold_source=source if chosen is not None else "unset",
         min_labelled=min_labelled,
         n_bootstrap=n_bootstrap,
-        seed=get_settings().seed,
-        labeller_note=resolved.labeller_note,
+        seed=DEFAULT_SEED,
     )
     return Section(result.render(), _jsonable(result), result.computed)
 
@@ -179,7 +173,7 @@ def run_relabel_eval(
             outcome.ok = False
             continue
         sheet = read_sheet(path)
-        resolved = resolve_sheet(sheet, allow_model_labels=allow_model_labels)
+        resolved = resolve_sheet_file(path, allow_model_labels=allow_model_labels)
         note = [resolved.labeller_note] if resolved.labeller_note else []
 
         report = agreement_report(sheet, seed=DEFAULT_SEED)
@@ -224,14 +218,22 @@ def run_relabel_eval(
                 n_bootstrap=n_bootstrap,
             )
         stamp = {"labeller": "model, unreviewed by a person"} if note else {}
-        payload = {**stamp, "sheet": path.name, "computed": section.ok, **section.data}
+        payload = {
+            **stamp,
+            "sheet": path.name,
+            "seed": DEFAULT_SEED,
+            "computed": section.ok,
+            **section.data,
+        }
         _write(
             out_dir / lang / "transfer.md",
             _fenced(f"Transfer, {lang}", section.lines),
             outcome.written,
         )
         _write(
-            out_dir / lang / "transfer.json", json.dumps(payload, indent=2) + "\n", outcome.written
+            out_dir / lang / "transfer.json",
+            json.dumps(payload, indent=2, allow_nan=False) + "\n",
+            outcome.written,
         )
         outcome.lines += [f"[{lang}]", *section.lines, *render_agreement(report, DEFAULT_SEED)[:1]]
         outcome.ok = outcome.ok and section.ok

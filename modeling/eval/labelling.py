@@ -27,10 +27,10 @@ import pandas as pd
 
 from modeling.eval.corpus_transfer import _is_null, parse_label, unscorable_reason
 from modeling.eval.metrics import Interval
+from modeling.eval.weighted import DEFAULT_SEED
 
 log = logging.getLogger(__name__)
 
-DEFAULT_SEED = 20260813
 
 SHEET_COLUMNS = (
     "id",
@@ -38,8 +38,6 @@ SHEET_COLUMNS = (
     "lang",
     "title",
     "text",
-    "stratum",
-    "weight",
     "sample_seed",
     "label_a",
     "labeller_a",
@@ -53,6 +51,10 @@ SHEET_COLUMNS = (
     "notes",
 )
 BLANK_COLUMNS = SHEET_COLUMNS[SHEET_COLUMNS.index("label_a") :]
+#: The design file holds what the sample design knows about each row. A labeller who sees
+#: a stratum or a weight learns how likely the row is to be misinformation-like, so these
+#: columns stay out of the sheet and join back on ``id`` when the sheet is read.
+DESIGN_COLUMNS = ("id", "stratum", "pool", "drawn", "weight")
 
 HUMAN = "human"
 MODEL_KINDS = ("model-unreviewed", "llm-unreviewed")
@@ -69,7 +71,9 @@ NO_FALSE_CLAIMS = "no_false_claims"
 UNMARKED_LABELLER_KIND = "labeller_kind_unmarked"
 MODEL_LABELS_REFUSED = "model_labels_refused"
 INVALID_WEIGHT = "invalid_weight"
-CLAIM_TEXT_ONLY_HAMMING = "claim_match_by_simhash_only"
+EMBEDDING_MODEL_MISMATCH = "embedding_model_mismatch"
+EMBEDDING_MODEL_UNVERIFIED = "embedding_model_unverified"
+DESIGN_MISSING = "design_missing"
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +165,11 @@ class SamplingConfig:
     seed: int = DEFAULT_SEED
     likely_sources: tuple[str, ...] = ("reddit", "mastodon", "youtube", "telegram")
     strata: tuple[Stratum, ...] = ()
+    #: Record-to-claim matching. Separate from the claim-to-claim dedup in
+    #: ``configs/factcheck.yaml``, because a post is matched to a claim, not a claim to a claim.
     simhash_hamming: int = 3
+    min_similarity: float | None = None
+    embedding_model: str | None = None
     claim_labels: tuple[str, ...] = ("false",)
 
 
@@ -177,11 +185,17 @@ def parse_sampling_config(block: dict[str, Any]) -> SamplingConfig:
         raise ValueError("every stratum share in configs/labelling.yaml must be above 0")
     if "other" not in {s.name for s in strata}:
         raise ValueError("configs/labelling.yaml needs a stratum named `other`")
+    match = block.get("claim_match") or {}
+    similarity = match.get("min_similarity")
+    if similarity is not None and not 0.0 < float(similarity) <= 1.0:
+        raise ValueError("claim_match.min_similarity must be above 0 and at most 1")
     return SamplingConfig(
         seed=int(block.get("seed", DEFAULT_SEED)),
         likely_sources=tuple(str(s) for s in block.get("likely_positive_sources") or ()),
         strata=strata,
-        simhash_hamming=int(block.get("simhash_hamming", 3)),
+        simhash_hamming=int(match.get("simhash_hamming", 3)),
+        min_similarity=None if similarity is None else float(similarity),
+        embedding_model=match.get("embedding_model") or None,
         claim_labels=tuple(str(s) for s in block.get("claim_labels") or ("false",)),
     )
 
@@ -192,16 +206,26 @@ def load_sampling_config() -> SamplingConfig:
     return parse_sampling_config(load_yaml("labelling"))
 
 
+class AllocationError(ValueError):
+    """The sample is too small to hold one row of every stratum that has rows."""
+
+
 def allocate(pools: dict[str, int], shares: dict[str, float], n: int) -> dict[str, int]:
     """Rows to draw per stratum: proportional to share, at least 1 where the pool is not empty.
 
     A stratum cannot give more rows than its pool holds. What it cannot fill goes to the
-    strata that still have rows. When ``n`` is below the number of live strata, the
-    strata with the smallest shares are dropped.
+    strata that still have rows. A stratum with rows but no draw would leave part of the
+    corpus unrepresented, so ``n`` below the number of such strata raises.
     """
-    live = sorted((k for k, p in pools.items() if p > 0), key=lambda k: -shares[k])[:n]
+    live = sorted((k for k, p in pools.items() if p > 0), key=lambda k: -shares[k])
     if not live:
         return {}
+    if n < len(live):
+        raise AllocationError(
+            f"n={n} is below the {len(live)} strata that have rows ({', '.join(live)}). "
+            "Every such stratum needs at least one row, or the reweighted figures would "
+            "leave part of the corpus out. Raise --n."
+        )
     total = sum(shares[k] for k in live)
     alloc = {k: min(pools[k], max(1, int(n * shares[k] / total))) for k in live}
     while sum(alloc.values()) < n:
@@ -229,6 +253,8 @@ class ClaimEvidence:
     min_similarity: float | None = None
     #: Reason code for an embedding path that did not run, or ``None``.
     embedding_reason: str | None = EMBEDDING_UNAVAILABLE
+    #: Notes the evidence loader wants printed, such as an unverified model id.
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -243,6 +269,8 @@ class WeightedSample:
     strata: dict[str, dict[str, Any]]
     claim_match_counts: dict[str, int]
     notes: list[str]
+    #: One row per sampled row: id, stratum, pool, drawn, weight. Written beside the sheet.
+    design: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=DESIGN_COLUMNS))
 
 
 def build_weighted_sample(
@@ -284,9 +312,10 @@ def build_weighted_sample(
         if domains is not None and domains.iloc[i] in fact_checker_domains:
             reason = FACT_CHECK_PUBLISHER
         if reason is None:
-            reason = unscorable_reason(row_lang, text, language_allowed)
-        if reason is None and lang == "hi" and not title:
-            reason = NO_TITLE
+            if lang == "hi":
+                reason = laya_title_skip_reason(title, row_lang, language_allowed)
+            else:
+                reason = unscorable_reason(row_lang, text, language_allowed)
         if reason:
             excluded[reason] += 1
         keep.append(reason is None)
@@ -325,11 +354,10 @@ def build_weighted_sample(
                 present, matrix, claims.claim_matrix, claims.min_similarity
             )
     else:
-        degraded[claims.embedding_reason or EMBEDDING_UNAVAILABLE] += 1
-        notes.append(
-            "embedding match path did not run "
-            f"({claims.embedding_reason or EMBEDDING_UNAVAILABLE}); only simhash matches count"
-        )
+        reason = claims.embedding_reason or EMBEDDING_UNAVAILABLE
+        degraded[reason] += 1
+        notes.append(f"embedding match path did not run ({reason}); only simhash matches count")
+    notes.extend(claims.notes)
 
     codes = {s.name: f"S{i + 1}" for i, s in enumerate(config.strata)}
     names = set(codes)
@@ -346,7 +374,13 @@ def build_weighted_sample(
         "simhash": len(by_simhash),
         "embedding": len(by_embedding),
         "both": len(set(by_simhash) & by_embedding),
+        "any": len(set(by_simhash) | by_embedding),
     }
+    if not match_counts["any"]:
+        notes.append(
+            "WARNING: no scorable record matches a fact-check claim, so the claim_match "
+            "stratum is empty and the sample holds no row that was chosen for a claim match"
+        )
 
     shares = {s.name: s.share for s in config.strata}
     pools = {name: int((scorable["stratum_name"] == name).sum()) for name in shares}
@@ -360,11 +394,14 @@ def build_weighted_sample(
         stratum_rows = scorable[scorable["stratum_name"] == name]
         drawn = stratum_rows.sample(n=count, random_state=seed).copy()
         drawn["stratum"] = codes[name]
+        drawn["pool"] = pools[name]
+        drawn["drawn"] = count
         drawn["weight"] = round(pools[name] / count, 6)
         parts.append(drawn)
     if not parts:
         return empty
-    chosen = pd.concat(parts).sort_values(["stratum", "id"]).reset_index(drop=True)
+    # Shuffle so that row order does not reveal the stratum.
+    chosen = pd.concat(parts).sample(frac=1, random_state=seed).reset_index(drop=True)
     chosen["sample_seed"] = seed
     for column in BLANK_COLUMNS:
         if column not in chosen:
@@ -378,7 +415,29 @@ def build_weighted_sample(
         meta,
         match_counts,
         notes,
+        design=chosen[list(DESIGN_COLUMNS)].copy(),
     )
+
+
+def laya_title_skip_reason(
+    title: str, lang: Any, language_allowed: Callable[[str | None], bool]
+) -> str | None:
+    """Why the ``laya`` stage declines a record, in the stage's own order and codes.
+
+    The stage scores the title. It declines a record with no title (``no_title``), a title
+    shorter than ``MIN_CHARS`` (``text_too_short``) and a language it does not score
+    (``unsupported_language``). The fact-checker skip comes first, in the caller.
+    """
+    from modeling.aux.base import SkipReason
+    from modeling.text.laya_clf import MIN_CHARS, LayaSkipReason
+
+    if not title:
+        return LayaSkipReason.NO_TITLE
+    if len(title.strip()) < MIN_CHARS:
+        return SkipReason.TEXT_TOO_SHORT
+    if not language_allowed(None if _is_null(lang) else str(lang)):
+        return SkipReason.UNSUPPORTED_LANGUAGE
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -389,27 +448,54 @@ def read_sheet(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype=str, keep_default_na=False)
 
 
+def design_path(sheet_path: Path) -> Path:
+    """The design file of a sheet: ``x.csv`` has ``x.design.csv``."""
+    return sheet_path.with_suffix(".design.csv")
+
+
+def read_design(sheet_path: Path) -> pd.DataFrame | None:
+    """The design file beside the sheet, or ``None`` when there is none."""
+    path = design_path(sheet_path)
+    return read_sheet(path) if path.exists() else None
+
+
 @dataclass
 class ResolvedSheet:
-    #: The sheet with ``label`` set from the adjudicated label, ``weight`` as float or NaN,
-    #: and ``reports`` as 0, 1 or NaN.
+    """A sheet read for evaluation.
+
+    ``frame`` has ``label`` (the adjudicated label), ``reports`` (0, 1 or NaN) and, when a
+    design file was joined, ``stratum``, ``pool`` and ``drawn``.
+    """
+
     frame: pd.DataFrame
     refusal: str | None = None
     #: Set when model labels were used with the opt-in flag. Printed on every output.
     labeller_note: str | None = None
     kinds: dict[str, int] = field(default_factory=dict)
-    has_weights: bool = False
-    counts: dict[str, int] = field(default_factory=dict)
+    has_design: bool = False
 
 
-def resolve_sheet(sheet: pd.DataFrame, *, allow_model_labels: bool = False) -> ResolvedSheet:
-    """Read the adjudicated label and enforce the labeller rule.
+def resolve_sheet_file(path: Path, *, allow_model_labels: bool = False) -> ResolvedSheet:
+    """Read a sheet and its design file from disk, then resolve them."""
+    return resolve_sheet(
+        read_sheet(path), design=read_design(path), allow_model_labels=allow_model_labels
+    )
+
+
+def resolve_sheet(
+    sheet: pd.DataFrame,
+    *,
+    design: pd.DataFrame | None = None,
+    allow_model_labels: bool = False,
+) -> ResolvedSheet:
+    """Read the adjudicated label, join the design and enforce the labeller rule.
 
     A label from a model that no person reviewed is not ground truth. The sheet is
     refused when a labelled row has such a kind, unless ``allow_model_labels`` is true,
     and then the result carries ``MODEL_LABEL_NOTE``. A labelled row with no
     ``labeller_kind`` is refused in every case, because its source is unknown.
     A sheet from before the adjudicated columns, with only ``label``, is read as is.
+    With a ``design`` frame, each labelled row needs a design row with a positive pool.
     """
     column = "adjudicated_label" if "adjudicated_label" in sheet else "label"
     frame = sheet.copy()
@@ -445,16 +531,26 @@ def resolve_sheet(sheet: pd.DataFrame, *, allow_model_labels: bool = False) -> R
             return result
         result.labeller_note = MODEL_LABEL_NOTE
 
-    if "weight" in frame:
-        weights = pd.to_numeric(frame["weight"], errors="coerce")
-        bad = int(((weights.isna() | (weights <= 0)) & labelled).sum())
+    if design is not None:
+        missing = [c for c in ("id", "stratum", "pool") if c not in design]
+        if missing:
+            result.refusal = f"the design file lacks the columns {missing} ({DESIGN_MISSING})"
+            return result
+        joined = frame.drop(columns=["stratum", "pool", "drawn"], errors="ignore").merge(
+            design[[c for c in ("id", "stratum", "pool", "drawn") if c in design]],
+            on="id",
+            how="left",
+        )
+        joined["pool"] = pd.to_numeric(joined["pool"], errors="coerce")
+        bad = int(((joined["pool"].isna() | (joined["pool"] <= 0)) & labelled).sum())
         if bad:
             result.refusal = (
-                f"{bad} labelled rows have a missing or invalid weight ({INVALID_WEIGHT})"
+                f"{bad} labelled rows have no design row with a positive pool ({DESIGN_MISSING})"
             )
             return result
-        frame["weight"] = weights
-        result.has_weights = True
+        frame = joined
+        result.frame = frame
+        result.has_design = True
     reports = (
         [parse_label(v) for v in frame["adjudicated_reports_on_false_claim"]]
         if "adjudicated_reports_on_false_claim" in frame
@@ -602,21 +698,46 @@ def fill_agreed(sheet: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
 # ---------------------------------------------------------------------------
 # claim evidence from disk
 # ---------------------------------------------------------------------------
+def embeddings_file_model(path: Path) -> str | None:
+    """The model id that an embeddings file carries, or ``None`` when it carries none.
+
+    The id is a ``model`` column with one value, or the ``model`` key of the Parquet
+    schema metadata.
+    """
+    import pyarrow.parquet as pq
+
+    schema = pq.read_schema(path)
+    meta = (schema.metadata or {}).get(b"model")
+    if meta:
+        return meta.decode("utf-8")
+    if "model" in schema.names:
+        values = pq.read_table(path, columns=["model"]).column("model").unique().to_pylist()
+        values = [v for v in values if v]
+        if len(values) == 1:
+            return str(values[0])
+        if len(values) > 1:
+            return "; ".join(sorted(map(str, values)))
+    return None
+
+
 def claim_evidence(
     claim_rows: Sequence[dict[str, Any]],
     config: SamplingConfig,
     *,
     embeddings_path: Path | None = None,
     embedder_factory: Callable[[], tuple[Any | None, str | None]] | None = None,
-    min_similarity: float | None = None,
+    expected_model: str | None = None,
 ) -> ClaimEvidence:
     """Simhashes of the false claims, plus embeddings when the data host supplies them.
 
     The corpus records are not embedded here. The embedding path needs a Parquet file
-    with ``id`` and ``embedding`` for corpus records, written by the same model that
-    ``embedder_factory`` returns, and it embeds the claims (a few thousand short texts)
-    with that model. With no file, the path does not run and the reason is
-    ``embedding_unavailable``. An unavailable embedder gives its own reason code.
+    with ``id`` and ``embedding`` for corpus records, written by the model
+    ``expected_model``. The claims (a few thousand short texts) are embedded with the
+    model that ``embedder_factory`` returns. If the file names a model that differs from
+    ``expected_model``, the path does not run (``embedding_model_mismatch``). A file with
+    no model id is used, and the output says that the model is unverified. With no file,
+    the path does not run (``embedding_unavailable``). An unavailable embedder gives its own
+    reason code. The threshold is ``config.min_similarity``.
     """
     wanted = {label.lower() for label in config.claim_labels}
     claims = [r for r in claim_rows if str(r.get("label", "")).lower() in wanted]
@@ -625,11 +746,27 @@ def claim_evidence(
     )
     if embeddings_path is None or not claims:
         return evidence
-    if embedder_factory is None or min_similarity is None:
+    if embedder_factory is None or config.min_similarity is None:
+        evidence.notes.append(
+            "embedding path needs claim_match.min_similarity in configs/labelling.yaml"
+        )
         return evidence
     if not Path(embeddings_path).exists():
         evidence.embedding_reason = EMBEDDING_UNAVAILABLE
         return evidence
+    file_model = embeddings_file_model(Path(embeddings_path))
+    if file_model is not None and expected_model and file_model != expected_model:
+        evidence.embedding_reason = EMBEDDING_MODEL_MISMATCH
+        evidence.notes.append(
+            f"the embeddings file names model {file_model!r}, the claims would use "
+            f"{expected_model!r}"
+        )
+        return evidence
+    if file_model is None:
+        evidence.notes.append(
+            f"{EMBEDDING_MODEL_UNVERIFIED}: the embeddings file carries no model id, so "
+            "this run cannot check that it matches the claim embedder"
+        )
     embedder, reason = embedder_factory()
     if embedder is None:
         evidence.embedding_reason = reason or EMBEDDING_UNAVAILABLE
@@ -640,6 +777,6 @@ def claim_evidence(
     evidence.record_ids = frame["id"].astype(str).tolist()
     evidence.record_matrix = np.vstack(frame["embedding"].to_numpy()).astype(np.float32)
     evidence.claim_matrix = _embed_texts(embedder, [str(r["claim"]) for r in claims])
-    evidence.min_similarity = min_similarity
+    evidence.min_similarity = config.min_similarity
     evidence.embedding_reason = None
     return evidence
