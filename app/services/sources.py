@@ -19,7 +19,7 @@ from app.schemas.projects import SourceHealth, SourceTestResult
 
 log = logging.getLogger(__name__)
 
-#: Phase 1 has six adapters over five source values: ConvoKit and Kaggle both
+#: Phase 1 has seven adapters over six source values: ConvoKit and Kaggle both
 #: write `reddit`. Health is reported per source value, because that is what the
 #: corpus is keyed on, with the contributing adapters named in the detail.
 ADAPTERS_BY_SOURCE = {
@@ -28,6 +28,7 @@ ADAPTERS_BY_SOURCE = {
     "news": ("news_rss",),
     "gdelt": ("gdelt",),
     "youtube": ("youtube",),
+    "telegram": ("telegram",),
 }
 
 #: A source whose last successful run is older than this is stale rather than ok.

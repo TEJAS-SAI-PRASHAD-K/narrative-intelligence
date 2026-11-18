@@ -3251,7 +3251,8 @@
                 "mastodon",
                 "news",
                 "gdelt",
-                "youtube"
+                "youtube",
+                "telegram"
               ],
               "type": "string"
             },
@@ -6685,7 +6686,8 @@
               "mastodon",
               "news",
               "gdelt",
-              "youtube"
+              "youtube",
+              "telegram"
             ],
             "title": "Source",
             "type": "string"
@@ -6749,7 +6751,8 @@
               "mastodon",
               "news",
               "gdelt",
-              "youtube"
+              "youtube",
+              "telegram"
             ],
             "title": "Source",
             "type": "string"

@@ -194,7 +194,7 @@ never need to know which platform a record came from. Platform-specific fields l
 | field | notes |
 |---|---|
 | `id` | `f"{source}:{native_id}"` — namespaced, so a cross-source union cannot collide |
-| `source` | `reddit \| mastodon \| news \| gdelt \| youtube` |
+| `source` | `reddit \| mastodon \| news \| gdelt \| youtube \| telegram` |
 | `source_detail` | subreddit, instance domain, outlet domain, or channel id |
 | `content_type` | `post \| comment \| article \| video \| video_comment` |
 | `text` | cleaned plaintext, HTML stripped, **original surface form preserved** |
@@ -291,6 +291,32 @@ Pushshift (shut down). Reddit data comes from static pre-collected corpora only.
   timeline* under a plain read token, while hashtag timelines work normally. Mastodon
   coverage is therefore hashtag-driven and topic-biased by construction. The adapter warns
   and flags `timeline_empty` rather than failing silently.
+
+### Telegram
+
+- **Gives you:** posts from public broadcast channels, with measured view and forward
+  counts (`views`, `shares`), the reply count where the channel exposes replies, the
+  reaction total (`likes`) where it shows reactions, forward provenance and edit times.
+  Permalink is `https://t.me/<username>/<id>`.
+- **Costs:** free. Needs an API id and hash from my.telegram.org and a Telethon
+  `StringSession` string, generated once, so nothing is interactive at fetch time. Telegram
+  answers aggressive reads with flood waits, so channels are read one at a time at
+  `telegram.backfill.requests_per_sec`.
+- **Cannot tell you:** anything about private groups or channels, who viewed a post, or
+  the discussion under it (comments live in a linked group that is not read).
+- A metric the channel does not expose is `None`, never `0`. Message ids restart in every
+  channel, so `native_id` is `<channel_id>:<message_id>`.
+- Setup: put `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_SESSION` in `.env`, list
+  channels under `telegram.channels` in `configs/sources.yaml` (the seeded list is
+  unverified), then:
+
+  ```bash
+  python -m ingest.cli fetch telegram --limit 200
+  ```
+
+  With any of the three missing the source is skipped with `missing_credentials`. Channels
+  that are renamed or private are skipped and counted as `channel_not_found` or
+  `channel_private`; a long flood wait is counted as `flood_wait`.
 
 ### GDELT
 

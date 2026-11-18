@@ -13,6 +13,14 @@ decision.
 
 ### Added
 
+- **Telegram adapter for public channels** (`ingest/sources/telegram.py`, Telethon behind
+  a lazy import, in the `sources` extra). Views map to `views`, forwards to `shares`, the
+  reaction total to `likes` and the reply count to `replies`; each is `None` when the
+  channel does not expose it. Needs `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and
+  `TELEGRAM_SESSION` (a `StringSession`), all optional: without them the source is skipped
+  with `missing_credentials`. Channels are listed under `telegram` in
+  `configs/sources.yaml` (unverified seed list). `telegram` joins the `Source` literal, the
+  API source enums and `openapi.json`.
 - **`GET /keys/me`** returns the calling key's id, name, prefix and scopes
   (granted and effective, plus `can_read`/`can_write`/`can_admin`), never the
   secret or hash. It needs only `read`, so a read-only client can disable write
