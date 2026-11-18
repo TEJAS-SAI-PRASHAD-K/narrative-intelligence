@@ -13,14 +13,18 @@ decision.
 
 ### Fixed
 
-- **The claim dedup precision counts only pairs at or above the threshold.** The hand-check
-  sample spans similarities below `claim_dedup.min_similarity`, because a row can join a
-  cluster through a chain of pairs. `embedding_precision` counted all labelled pairs, so the
-  number was too low for the threshold that the pass uses. It now reads the threshold of the
-  run from `claim_links.json` (the config is the fallback, and the line says so). It counts
-  the labelled pairs below the threshold apart, gives the share of same-claim pairs below it,
-  and gives precision per similarity band with Wilson intervals. A pair below the threshold
-  is in the links and is not stale.
+- **The claim dedup precision splits direct links from chain links.** The hand-check sample
+  holds every embedding link. A row can join a cluster through a chain of pairs, so its
+  similarity to the representative can be below `claim_dedup.min_similarity`. Such a pair is a
+  real collapse, so the headline, "precision of collapses", counts every labelled link pair.
+  Below it, the report gives direct links (similarity at or above the threshold, with
+  similarity bands) and chain links (below the threshold), each with a Wilson interval. The
+  threshold is read from `claim_links.json`, and the config is the fallback. The report says
+  that the sample is systematic over similarity and not uniform over collapses, so the
+  headline is not a design-weighted precision. When the links file holds the similarity of
+  every link, the report also gives a design-weighted precision: the precision of each band
+  times the share of all links in that band. A pair below the threshold is in the links and is
+  not stale.
 
 ### Added
 
