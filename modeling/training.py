@@ -40,6 +40,7 @@ from modeling.eval.metrics import (
     ClassificationReport,
     classification_report,
 )
+from modeling.eval.report import eval_dir as _eval_dir
 from modeling.eval.report import save_predictions, write_report
 from modeling.text.extra_negatives import ExtraNegativesReason, ExtraNegativesRefused
 
@@ -190,6 +191,13 @@ def _train_misinfo(
 
     configured_version = str(module_config("misinfo").get("version", "v0.0.0-unset"))
     version = configured_version
+    if extra_negatives is not None and output_version is None:
+        # Without a new folder the candidate would overwrite the shipped weights.
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.OUTPUT_VERSION_REQUIRED,
+            f"--extra-negatives needs --output-version. Without it the run would write "
+            f"into models/misinfo/{configured_version} and overwrite its weights.",
+        )
     if output_version is not None:
         version = _check_output_version(settings, output_version, configured_version)
     extra = extra_module.load_extra_negatives(extra_negatives) if extra_negatives else None
@@ -227,12 +235,18 @@ def _train_misinfo(
     )
     split_description = split.describe()
     log.info("misinfo training set: %d rows, %s", len(work), split_description)
+    log.info(
+        "benchmark validation positive rate %.4f (%d rows)",
+        float(work.iloc[split.val]["label"].mean()) if len(split.val) else float("nan"),
+        len(split.val),
+    )
 
     train = work.iloc[split.train]
     val = work.iloc[split.val]
     test = work.iloc[split.test]
 
     extra_held_out = None
+    extra_val = None
     extra_summary: dict[str, Any] | None = None
     if extra is not None:
         extra = extra_module.drop_overlaps(extra, work)
@@ -241,11 +255,14 @@ def _train_misinfo(
         )
         extra_summary = extra.summary()
         dataset_summaries["extra_negatives"] = extra_summary
+        # The extra validation rows stay out of `val`. The calibrator and the validation loss
+        # use the benchmark validation rows only, so the base rate of the calibration set does
+        # not move. The extra validation rows are for reporting.
         train = pd.concat([train, extra_train], ignore_index=True)
-        val = pd.concat([val, extra_val], ignore_index=True)
         split_description += (
-            f"; plus {len(extra_train)}/{len(extra_val)}/{len(extra_held_out)} reporting "
-            "negatives in train/val/held-out, grouped by reporting group"
+            f"; plus {len(extra_train)} reporting negatives in train, {len(extra_val)} in a "
+            f"report-only validation part and {len(extra_held_out)} held out, grouped by "
+            "publisher"
         )
         notes.append(
             f"extra negatives {extra.path.name} sha256={extra.sha256[:12]}: "
@@ -313,14 +330,21 @@ def _train_misinfo(
     if domain_note:
         extra_sections["Cross-domain transfer (PolitiFact -> GossipCop)"] = domain_note
     extra_sections["Corpus transfer"] = _corpus_transfer_note(settings)
+    heldout_artifacts: list[Path] = []
     if extra_summary is not None and extra_held_out is not None:
-        held_scores = (
-            classifier.predict(extra_held_out["text"].tolist())
-            if len(extra_held_out)
-            else np.array([])
+        text, record = extra_module.heldout_report(
+            heldout_scores=_predict_or_empty(classifier, extra_held_out),
+            heldout_groups=extra_held_out["group_id"].to_numpy(),
+            val_scores=_predict_or_empty(classifier, extra_val),
+            bench_val_scores=classifier.predict(val["text"].tolist()),
+            bench_val_labels=val["label"].to_numpy(),
+            threshold=trained.threshold,
+            summary=extra_summary,
         )
-        extra_sections["Held-out reporting negatives"] = extra_module.held_out_section(
-            held_scores, trained.threshold, extra_summary
+        extra_summary["heldout"] = record
+        extra_sections["Held-out reporting negatives"] = text
+        heldout_artifacts = extra_module.write_heldout(
+            _eval_dir("misinfo", version, settings), extra_held_out, extra_summary
         )
 
     # --- artifacts ---------------------------------------------------------
@@ -335,6 +359,7 @@ def _train_misinfo(
         }
     )
     artifacts = [save_predictions("misinfo", version, predictions_frame, settings=settings)]
+    artifacts += heldout_artifacts
     calibration = _calibration_from(trained)
     artifacts += write_report(
         module="misinfo", version=version, report=report, baselines=comparison,
@@ -358,6 +383,12 @@ def _train_misinfo(
     )
     notes.append(f"checkpoint {checkpoint.uri}")
     return TrainingResult("misinfo", version, report, artifacts=artifacts, notes=notes)
+
+
+def _predict_or_empty(classifier, frame: pd.DataFrame | None) -> np.ndarray:
+    if frame is None or not len(frame):
+        return np.array([])
+    return np.asarray(classifier.predict(frame["text"].tolist()), dtype=float)
 
 
 def _check_output_version(

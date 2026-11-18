@@ -62,6 +62,10 @@ class TrainedMisinfoModel:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class OutputDirNotEmpty(RuntimeError):
+    """``fine_tune`` was given a folder that already holds files."""
+
+
 class MisinfoClassifier:
     """Fine-tune and predict. Written as a plain PyTorch loop on purpose.
 
@@ -110,6 +114,15 @@ class MisinfoClassifier:
         dies without warning, and a three-epoch run that saves at the end saves
         nothing.
         """
+        output_dir = Path(output_dir)
+        if output_dir.exists() and any(output_dir.iterdir()):
+            # A second run into one folder mixes two sets of weights and overwrites the
+            # first. The caller removes the folder or picks another version on purpose.
+            raise OutputDirNotEmpty(
+                f"output_dir_not_empty: {output_dir} holds files. Remove it, or train into a "
+                "new folder with --output-version."
+            )
+
         import torch
         from torch.utils.data import DataLoader
 

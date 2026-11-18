@@ -16,6 +16,14 @@ Two rules keep the benchmark comparison fair:
   sits on one side. The test side of the extra rows never enters the benchmark test set. The
   training run reports it as a separate section.
 
+* The calibrator and the early-stopping loss use the benchmark validation rows only. The
+  extra rows would shift the base rate of the calibration set. The extra validation rows and
+  the held-out rows are for reporting only.
+
+The extra rows are articles of fact-checkers. Live scoring already skips those articles with
+the reason ``fact_check_publisher``. A result on the held-out extra rows therefore says little
+about other outlets that report on a false claim.
+
 Every refusal and every dropped row carries a reason code. The codes are in
 :class:`ExtraNegativesReason`.
 """
@@ -23,6 +31,7 @@ Every refusal and every dropped row carries a reason code. The codes are in
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 from dataclasses import dataclass, field
@@ -32,7 +41,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from modeling.datasets.splits import group_train_val_test
+from modeling.datasets.splits import dedupe_near_duplicates, group_train_val_test
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +49,9 @@ SOURCE_DATASET = "reporting"
 GROUP_PREFIX = "reporting:"
 REQUIRED_COLUMNS = ("text", "group_id")
 #: A grouped three-way split needs at least this many groups.
-MIN_GROUPS = 3
+#: Below this, a run is refused and nothing trains. Three sides of a split with fewer
+#: publishers leave a side with one publisher, and a rate on one publisher says nothing.
+MIN_GROUPS = 6
 
 
 class ExtraNegativesReason:
@@ -63,6 +74,18 @@ class ExtraNegativesReason:
     DUPLICATE_OF_BENCHMARK = "extra_negatives_duplicate_of_benchmark_text"
     #: A row dropped because a benchmark row has the same text and label 1.
     CONFLICT_WITH_BENCHMARK = "extra_negatives_conflict_with_benchmark_text"
+    #: A row dropped because its simhash is near a benchmark row or an earlier extra row.
+    NEAR_DUPLICATE = "extra_negatives_near_duplicate_simhash"
+    OUTPUT_VERSION_REQUIRED = "output_version_required"
+    HELDOUT_MISMATCH = "heldout_ids_mismatch"
+    # builder reasons
+    CLAIM_RECORD = "reporting_record_has_claim_row"
+    FROZEN_CLAIM_TEXT = "reporting_text_contains_frozen_claim"
+    LANGUAGE_MISMATCH = "reporting_language_mismatch"
+    ROW_EMPTY_TEXT = "reporting_empty_text"
+    MANIFEST_MISSING = "frozen_manifest_missing"
+    NO_SOURCE_DETAIL = "records_have_no_source_detail"
+    FROZEN_CLAIM_UNAVAILABLE = "frozen_claim_text_unavailable"
 
 
 class ExtraNegativesRefused(ValueError):
@@ -83,6 +106,8 @@ class ExtraNegatives:
     rows_in_file: int
     groups_in_file: int
     dropped: dict[str, int] = field(default_factory=dict)
+    #: Rows and groups on each side of the extra split, set by ``split_extra_negatives``.
+    sides: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         """The record that goes into the eval report and the checkpoint metadata."""
@@ -94,6 +119,7 @@ class ExtraNegatives:
             "rows_used": int(len(self.frame)),
             "groups_used": int(self.frame["group_id"].nunique()) if len(self.frame) else 0,
             "dropped": {k: v for k, v in self.dropped.items() if v},
+            "sides": {k: dict(v) for k, v in self.sides.items()},
         }
 
 
@@ -108,6 +134,16 @@ def file_sha256(path: Path) -> str:
 def normalise_text(values: pd.Series) -> pd.Series:
     """The key for text equality: the same one that ``build_training_frame`` uses."""
     return values.astype(str).str.strip().str.lower()
+
+
+def _squash(text: str) -> str:
+    """Lower case with runs of white space made into one space. For substring tests."""
+    return " ".join(str(text).lower().split())
+
+
+def text_sha256(values: pd.Series) -> list[str]:
+    """The row identity that a held-out list uses: the hash of the normalised text."""
+    return [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in normalise_text(values)]
 
 
 def load_extra_negatives(path: Path) -> ExtraNegatives:
@@ -155,6 +191,10 @@ def load_extra_negatives(path: Path) -> ExtraNegatives:
             "domain": domain,
         }
     )
+    frame["record_id"] = (
+        raw["record_id"].astype(str).to_numpy() if "record_id" in raw.columns else ""
+    )
+    frame["text_sha256"] = text_sha256(frame["text"])
     return ExtraNegatives(
         frame=frame,
         path=path,
@@ -164,27 +204,58 @@ def load_extra_negatives(path: Path) -> ExtraNegatives:
     )
 
 
-def drop_overlaps(extra: ExtraNegatives, benchmark: pd.DataFrame) -> ExtraNegatives:
-    """Drop extra rows whose text equals a benchmark text, and count each reason.
-
-    A benchmark text with label 1 and an extra row with label 0 is an annotation conflict.
-    The benchmark wins, as it does in ``build_training_frame``. Duplicates inside the extra
-    rows are dropped by the splitter, and ``split_extra_negatives`` counts them.
-    """
-    frame = extra.frame
-    key = normalise_text(frame["text"])
-    bench_key = normalise_text(benchmark["text"])
-    positive = set(bench_key[benchmark["label"].astype(int).to_numpy() == 1])
-    negative = set(bench_key[benchmark["label"].astype(int).to_numpy() == 0])
-    conflict = key.isin(positive).to_numpy()
-    same = key.isin(negative).to_numpy() & ~conflict
-    dropped = dict(extra.dropped)
-    dropped[ExtraNegativesReason.CONFLICT_WITH_BENCHMARK] = int(conflict.sum())
-    dropped[ExtraNegativesReason.DUPLICATE_OF_BENCHMARK] = int(same.sum())
-    kept = frame.loc[~(conflict | same)].reset_index(drop=True)
+def _log_drops(dropped: dict[str, int]) -> None:
     for reason, count in dropped.items():
         if count:
             log.warning("extra negatives: dropped %d row(s), reason=%s", count, reason)
+
+
+def drop_overlaps(extra: ExtraNegatives, benchmark: pd.DataFrame) -> ExtraNegatives:
+    """Drop extra rows that repeat a benchmark text or an earlier extra row, and count them.
+
+    Three checks run in this order, each under its own reason code:
+
+    1. A benchmark row with label 1 and the same text: an annotation conflict. The benchmark
+       wins, as it does in ``build_training_frame``.
+    2. A benchmark row with label 0 and the same text, or an earlier extra row with the same
+       text: an exact duplicate.
+    3. A simhash within 3 bits of a benchmark row or an earlier extra row: a near duplicate.
+       The check runs over the union of both sets, with the benchmark rows first, so a
+       benchmark row is never the one that goes. Benchmark rows that repeat each other are not
+       touched here, because that would change the benchmark split.
+    """
+    from ingest.normalize import simhash
+
+    frame = extra.frame
+    key = normalise_text(frame["text"])
+    bench_key = normalise_text(benchmark["text"])
+    labels = benchmark["label"].astype(int).to_numpy()
+    positive = set(bench_key[labels == 1])
+    negative = set(bench_key[labels == 0])
+    conflict = key.isin(positive).to_numpy()
+    same = key.isin(negative).to_numpy() & ~conflict
+    repeat = key.duplicated(keep="first").to_numpy() & ~conflict & ~same
+    dropped = dict(extra.dropped)
+    dropped[ExtraNegativesReason.CONFLICT_WITH_BENCHMARK] = int(conflict.sum())
+    dropped[ExtraNegativesReason.DUPLICATE_OF_BENCHMARK] = int(same.sum())
+    dropped[ExtraNegativesReason.DUPLICATE] = int(repeat.sum())
+    kept = frame.loc[~(conflict | same | repeat)].reset_index(drop=True)
+
+    bench_unique = benchmark.loc[~bench_key.duplicated(keep="first").to_numpy(), "text"]
+    union = pd.DataFrame(
+        {
+            "text": [*bench_unique.astype(str), *kept["text"]],
+            "simhash": [simhash(t) for t in [*bench_unique.astype(str), *kept["text"]]],
+            "extra_pos": [-1] * len(bench_unique) + list(range(len(kept))),
+        }
+    )
+    survivors, _ = dedupe_near_duplicates(
+        union, text_col="text", simhash_col="simhash", hamming_threshold=3
+    )
+    keep_pos = set(survivors["extra_pos"].tolist()) - {-1}
+    dropped[ExtraNegativesReason.NEAR_DUPLICATE] = len(kept) - len(keep_pos)
+    kept = kept.iloc[sorted(keep_pos)].reset_index(drop=True)
+    _log_drops(dropped)
     return ExtraNegatives(
         frame=kept,
         path=extra.path,
@@ -200,8 +271,9 @@ def split_extra_negatives(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Split the extra rows by group with the splitter and seed of the benchmark split.
 
-    Returns the train, validation and test parts. The duplicate count is added to
-    ``extra.dropped``.
+    Returns the train, validation and held-out parts. ``extra.sides`` gets the row and group
+    count of each part. A file with fewer than ``MIN_GROUPS`` groups after the overlap check is
+    refused, and the run trains nothing.
     """
     if not len(extra.frame):
         raise ExtraNegativesRefused(
@@ -213,24 +285,27 @@ def split_extra_negatives(
         raise ExtraNegativesRefused(
             ExtraNegativesReason.TOO_FEW_GROUPS,
             f"{extra.path.name} has {n_groups} group(s) after the overlap check. "
-            f"A grouped split needs at least {MIN_GROUPS}.",
+            f"A grouped split needs at least {MIN_GROUPS}. The run is refused and nothing "
+            "trains.",
         )
     work, split = group_train_val_test(
         extra.frame, group_col="group_id", label_col="label", seed=seed
     )
-    extra.dropped[ExtraNegativesReason.DUPLICATE] = int(
-        split.dropped.get("exact_text_duplicate", 0)
-    )
-    if extra.dropped[ExtraNegativesReason.DUPLICATE]:
-        log.warning(
-            "extra negatives: dropped %d row(s), reason=%s",
-            extra.dropped[ExtraNegativesReason.DUPLICATE],
-            ExtraNegativesReason.DUPLICATE,
-        )
+    extra.dropped[ExtraNegativesReason.DUPLICATE] = extra.dropped.get(
+        ExtraNegativesReason.DUPLICATE, 0
+    ) + int(split.dropped.get("exact_text_duplicate", 0))
     extra.frame = work
-    return work.iloc[split.train], work.iloc[split.val], work.iloc[split.test]
+    parts = (work.iloc[split.train], work.iloc[split.val], work.iloc[split.test])
+    extra.sides = {
+        name: {"rows": int(len(part)), "groups": int(part["group_id"].nunique())}
+        for name, part in zip(("train", "val", "heldout"), parts, strict=True)
+    }
+    return parts
 
 
+# ---------------------------------------------------------------------------
+# held-out reporting
+# ---------------------------------------------------------------------------
 def wilson_interval(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """Wilson score interval for a rate. ``(nan, nan)`` for ``n == 0``."""
     if n <= 0:
@@ -242,64 +317,330 @@ def wilson_interval(successes: int, n: int, z: float = 1.96) -> tuple[float, flo
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
-def held_out_section(scores: np.ndarray, threshold: float, summary: dict[str, Any]) -> str:
-    """Report text for the extra rows in the held-out part: the flag rate at the threshold."""
-    n = int(len(scores))
-    flagged = int((np.asarray(scores) >= threshold).sum())
+def group_bootstrap_rate(
+    scores: np.ndarray, groups: np.ndarray, threshold: float, *, n_boot: int = 2000, seed: int = 0
+) -> tuple[float, float]:
+    """95 percent interval of the flag rate, resampling whole groups (publishers).
+
+    Rows of one publisher are not independent, so the row-level Wilson interval is too narrow.
+    ``(nan, nan)`` when there are fewer than two groups.
+    """
+    scores = np.asarray(scores, dtype=float)
+    groups = np.asarray(groups).astype(str)
+    names = np.unique(groups)
+    if len(names) < 2:
+        return (math.nan, math.nan)
+    flagged = {g: int((scores[groups == g] >= threshold).sum()) for g in names}
+    sizes = {g: int((groups == g).sum()) for g in names}
+    rng = np.random.default_rng(seed)
+    rates = []
+    for _ in range(n_boot):
+        pick = rng.choice(names, size=len(names), replace=True)
+        total = sum(sizes[g] for g in pick)
+        rates.append(sum(flagged[g] for g in pick) / total)
+    low, high = np.percentile(rates, [2.5, 97.5])
+    return (float(low), float(high))
+
+
+def precision_threshold(
+    scores: np.ndarray, labels: np.ndarray, target: float = 0.85
+) -> float | None:
+    """The lowest score threshold whose precision on ``labels`` reaches ``target``.
+
+    Read on the benchmark validation rows. ``None`` when no threshold reaches it.
+    """
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels).astype(int)
+    for threshold in sorted(set(scores.tolist())):
+        flagged = scores >= threshold
+        if flagged.sum() and labels[flagged].mean() >= target:
+            return float(threshold)
+    return None
+
+
+def _rate_line(name: str, scores: np.ndarray, groups: np.ndarray, threshold: float) -> str:
+    n = len(scores)
+    flagged = int((scores >= threshold).sum())
+    wilson = wilson_interval(flagged, n)
+    boot = group_bootstrap_rate(scores, groups, threshold)
+    return (
+        f"- {name} (threshold {threshold:.4g}): {flagged}/{n} flagged, rate {flagged / n:.3f}; "
+        f"row-level Wilson interval {wilson[0]:.3f} to {wilson[1]:.3f} "
+        "(too narrow, because rows of one publisher are not independent); "
+        f"publisher bootstrap interval {boot[0]:.3f} to {boot[1]:.3f}"
+    )
+
+
+def heldout_report(
+    *,
+    heldout_scores: np.ndarray,
+    heldout_groups: np.ndarray,
+    val_scores: np.ndarray,
+    bench_val_scores: np.ndarray,
+    bench_val_labels: np.ndarray,
+    threshold: float,
+    summary: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Text and a data record for the held-out reporting rows.
+
+    The rates use the decision threshold, and the threshold at precision 0.85 on the benchmark
+    validation rows. Calibration keeps the ranking, so the score quantiles and the ROC-AUC
+    (held-out rows against the false-labelled benchmark validation rows) are the ranking
+    view. The held-out rows are fact-checker articles. Live scoring already skips those, so
+    this table does not measure other outlets that report on a false claim.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    p85 = precision_threshold(bench_val_scores, bench_val_labels, 0.85)
+    held = np.asarray(heldout_scores, dtype=float)
+    record: dict[str, Any] = {
+        "n_heldout": int(len(held)),
+        "n_heldout_groups": int(len(set(np.asarray(heldout_groups).astype(str)))),
+        "threshold": threshold,
+        "threshold_precision_085": p85,
+        "benchmark_val_positive_rate": float(np.mean(bench_val_labels)),
+    }
     lines = [
-        "Reporting articles in the held-out groups of the extra-negatives file. "
-        "Every row is a true negative, so the flag rate is a false-positive rate. "
-        "These rows are not in the benchmark test set above.",
+        "Scope. The extra negatives are articles of fact-checkers. Live scoring already skips "
+        "those articles with the reason `fact_check_publisher`. This section does not measure "
+        "other outlets that report on a false claim. That effect is measured only on the "
+        "hand-labelled corpus sample, which has few such rows.",
+        "",
+        "Every held-out row is a true negative, so a flag rate is a false-positive rate. The "
+        "held-out rows are not in the benchmark test set above.",
         "",
         f"- extra-negatives file: `{summary['file']}`, sha256 `{summary['sha256']}`",
-        f"- rows in file: {summary['rows']}, groups in file: {summary['groups']}",
-        f"- rows used: {summary['rows_used']}, groups used: {summary['groups_used']}",
+        f"- rows in file: {summary['rows']}, publishers in file: {summary['groups']}",
+        f"- rows used: {summary['rows_used']}, publishers used: {summary['groups_used']}",
     ]
+    for name, side in (summary.get("sides") or {}).items():
+        lines.append(f"- {name}: {side['rows']} rows, {side['groups']} publishers")
     if summary.get("dropped"):
-        drops = ", ".join(f"{k}={v}" for k, v in summary["dropped"].items())
-        lines.append(f"- dropped rows by reason: {drops}")
-    if n:
-        low, high = wilson_interval(flagged, n)
         lines.append(
-            f"- held-out rows: {n}, flagged at {threshold:g}: {flagged} "
-            f"({flagged / n:.3f}, 95% Wilson interval {low:.3f} to {high:.3f})"
+            "- dropped rows by reason: "
+            + ", ".join(f"{k}={v}" for k, v in summary["dropped"].items())
         )
+    lines.append(
+        f"- benchmark validation positive rate: {record['benchmark_val_positive_rate']:.3f}. "
+        "The calibrator was fitted on these rows only."
+    )
+    if len(held):
+        lines.append(_rate_line("held-out", held, heldout_groups, threshold))
+        record["flag_rate_threshold"] = float((held >= threshold).mean())
+        if p85 is not None:
+            lines.append(_rate_line("held-out", held, heldout_groups, p85))
+            record["flag_rate_precision_085"] = float((held >= p85).mean())
+        else:
+            lines.append("- no threshold on the benchmark validation rows reaches precision 0.85")
+        quantiles = np.percentile(held, [50, 90, 99])
+        record["score_quantiles_p50_p90_p99"] = [float(q) for q in quantiles]
+        lines.append(
+            "- held-out score quantiles p50, p90, p99: " + ", ".join(f"{q:.3f}" for q in quantiles)
+        )
+        positives = np.asarray(bench_val_scores, dtype=float)[np.asarray(bench_val_labels) == 1]
+        if len(positives):
+            auc = roc_auc_score(
+                np.r_[np.zeros(len(held)), np.ones(len(positives))], np.r_[held, positives]
+            )
+            record["auc_heldout_vs_false_benchmark_val"] = float(auc)
+            lines.append(
+                f"- ROC-AUC, held-out rows against false-labelled benchmark validation rows: "
+                f"{auc:.3f}. A value near 1 means the ranking separates them."
+            )
     else:
-        lines.append("- held-out rows: 0, so no flag rate is reported")
-    return "\n".join(lines)
+        lines.append("- held-out rows: 0, so no rate is reported")
+    vals = np.asarray(val_scores, dtype=float)
+    if len(vals):
+        record["val_extra_flag_rate_threshold"] = float((vals >= threshold).mean())
+        lines.append(
+            f"- extra validation rows (reporting only, not in the calibration set): "
+            f"{len(vals)} rows, {int((vals >= threshold).sum())} flagged at {threshold:.4g}"
+        )
+    return "\n".join(lines), record
 
 
+def write_heldout(directory: Path, heldout: pd.DataFrame, summary: dict[str, Any]) -> list[Path]:
+    """Save the held-out row ids, so any checkpoint can be scored on the same rows.
+
+    The files hold ids and text hashes, never text.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    ids = heldout[["record_id", "group_id", "domain", "text_sha256"]].reset_index(drop=True)
+    ids_path = directory / "reporting_heldout_ids.parquet"
+    ids.to_parquet(ids_path, index=False)
+    digest = hashlib.sha256("\n".join(sorted(ids["text_sha256"])).encode()).hexdigest()
+    meta_path = directory / "reporting_heldout.json"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "rows": int(len(ids)),
+                "groups": int(ids["group_id"].nunique()),
+                "ids_sha256": digest,
+                "extra_negatives_file": summary["file"],
+                "extra_negatives_sha256": summary["sha256"],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return [ids_path, meta_path]
+
+
+def select_heldout(extra_path: Path, ids_path: Path) -> pd.DataFrame:
+    """The rows of the extra-negatives file that a saved held-out list names.
+
+    Refuses when a listed row is absent from the file or the file has another sha256 than the
+    one that the list recorded.
+    """
+    ids_path = Path(ids_path)
+    ids = pd.read_parquet(ids_path)
+    meta_file = ids_path.with_name("reporting_heldout.json")
+    if meta_file.exists():
+        recorded = json.loads(meta_file.read_text(encoding="utf-8"))["extra_negatives_sha256"]
+        if recorded != file_sha256(extra_path):
+            raise ExtraNegativesRefused(
+                ExtraNegativesReason.HELDOUT_MISMATCH,
+                f"{extra_path.name} has another sha256 than the file that made {ids_path.name}",
+            )
+    extra = load_extra_negatives(extra_path).frame
+    wanted = set(ids["text_sha256"])
+    rows = extra.loc[extra["text_sha256"].isin(wanted)].drop_duplicates("text_sha256")
+    if len(rows) != len(wanted):
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.HELDOUT_MISMATCH,
+            f"{len(wanted) - len(rows)} held-out row(s) are not in {extra_path.name}",
+        )
+    return rows.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# the builder
+# ---------------------------------------------------------------------------
 def select_reporting_rows(
-    records: pd.DataFrame, domains: frozenset[str], *, lang: str = "en"
+    records: pd.DataFrame,
+    domains: frozenset[str],
+    *,
+    lang: str = "en",
+    claim_record_ids: frozenset[str] | set[str] = frozenset(),
+    frozen_claim_texts: list[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Pick the fact-check articles of the corpus and shape them as extra negatives.
 
     A record matches when ``normalise_domain(source_detail)`` is in ``domains``. That is the
-    test the ``misinfo`` stage uses for ``fact_check_publisher``. The group is the domain.
-    Returns the frame with ``text``, ``group_id`` and ``domain``, and the counts of rows
-    dropped by reason.
+    test the ``misinfo`` stage uses for ``fact_check_publisher``, so it is the filter and not
+    a drop. The group is the domain. Returns the frame with ``record_id``, ``text``,
+    ``group_id`` and ``domain``, and the counts of rows dropped by reason.
+
+    The fact-check evaluation scores the claim of an article as a positive, keyed by the
+    record id. Training on the same article as a negative would leak the answer. So the
+    builder drops every record with a claim row (``claim_record_ids``, every label) and every
+    record whose normalised text contains a normalised frozen claim text.
     """
     from modeling.config import normalise_domain
 
-    dropped = {"not_fact_check_domain": 0, "language_mismatch": 0, "empty_text": 0}
+    reasons = ExtraNegativesReason
+    dropped = {
+        reasons.LANGUAGE_MISMATCH: 0,
+        reasons.ROW_EMPTY_TEXT: 0,
+        reasons.CLAIM_RECORD: 0,
+        reasons.FROZEN_CLAIM_TEXT: 0,
+    }
     if "source_detail" not in records.columns:
         raise ExtraNegativesRefused(
-            "records_have_no_source_detail",
+            reasons.NO_SOURCE_DETAIL,
             "the corpus has no `source_detail` column, so no record matches a fact-checker",
         )
     domain = records["source_detail"].map(normalise_domain)
     is_fact_check = domain.isin(domains)
-    dropped["not_fact_check_domain"] = int((~is_fact_check).sum())
     lang_ok = records["lang"].astype(str).str.strip().str.lower().eq(lang.lower())
-    dropped["language_mismatch"] = int((is_fact_check & ~lang_ok).sum())
     has_text = records["text"].notna() & records["text"].astype(str).str.strip().ne("")
-    dropped["empty_text"] = int((is_fact_check & lang_ok & ~has_text).sum())
+    dropped[reasons.LANGUAGE_MISMATCH] = int((is_fact_check & ~lang_ok).sum())
+    dropped[reasons.ROW_EMPTY_TEXT] = int((is_fact_check & lang_ok & ~has_text).sum())
     keep = is_fact_check & lang_ok & has_text
+
+    ids = records["id"].astype(str)
+    has_claim = ids.isin(set(claim_record_ids))
+    dropped[reasons.CLAIM_RECORD] = int((keep & has_claim).sum())
+    keep &= ~has_claim
+
+    claims = [c for c in (_squash(t) for t in (frozen_claim_texts or [])) if c]
+    if claims:
+        squashed = records["text"].astype(str).map(_squash)
+        contains = squashed.map(lambda text: any(c in text for c in claims))
+        dropped[reasons.FROZEN_CLAIM_TEXT] = int((keep & contains).sum())
+        keep &= ~contains
+
     frame = pd.DataFrame(
         {
+            "record_id": ids[keep].to_numpy(),
             "text": records.loc[keep, "text"].astype(str).to_numpy(),
             "group_id": domain[keep].to_numpy(),
             "domain": domain[keep].to_numpy(),
         }
     )
     return frame, dropped
+
+
+def leak_guards(
+    manifest_path: Path | None = None, *, ingest_settings: Any = None
+) -> tuple[set[str], list[str]]:
+    """The claim record ids and the frozen claim texts that the builder must exclude.
+
+    Reads every row of ``factchecks.parquet`` (all labels, kept and collapsed), and
+    ``configs/factcheck_eval_manifest.csv``. A frozen claim is a manifest entry. Its text is
+    the claim of the fact-check row with the same sha256. Refuses when the manifest is absent,
+    because the frozen claims cannot be excluded then.
+    """
+    import ingest.factcheck as factcheck
+    from modeling.eval.factcheck_eval import claim_hash, default_manifest_path, read_manifest
+
+    path = Path(manifest_path) if manifest_path else default_manifest_path()
+    manifest = read_manifest(path)
+    if manifest is None:
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.MANIFEST_MISSING,
+            f"{path} does not exist, so the frozen claim texts cannot be excluded",
+        )
+    rows = factcheck.read_factcheck_rows(ingest_settings)
+    ids = {str(r["record_id"]) for r in rows}
+    wanted = {r["claim_sha256"] for r in manifest}
+    texts = {
+        str(r["claim"]): None
+        for r in rows
+        if r.get("claim") and claim_hash(str(r["claim"])) in wanted
+    }
+    found = {claim_hash(t) for t in texts}
+    missing = len(wanted - found)
+    if missing:
+        log.warning(
+            "reporting-negatives: %d frozen claim(s) have no claim text in factchecks.parquet, "
+            "reason=%s. Their articles are still excluded by record id when a row exists.",
+            missing,
+            ExtraNegativesReason.FROZEN_CLAIM_UNAVAILABLE,
+        )
+    return ids, list(texts)
+
+
+def heldout_rates(
+    scores: np.ndarray, groups: np.ndarray, thresholds: list[float]
+) -> list[dict[str, Any]]:
+    """Flag rate at each threshold, with the row-level and the publisher interval."""
+    out = []
+    for threshold in thresholds:
+        n = len(scores)
+        flagged = int((np.asarray(scores) >= threshold).sum())
+        wilson = wilson_interval(flagged, n)
+        boot = group_bootstrap_rate(scores, groups, threshold)
+        out.append(
+            {
+                "threshold": threshold,
+                "n": n,
+                "flagged": flagged,
+                "rate": flagged / n if n else math.nan,
+                "wilson_row_level": list(wilson),
+                "bootstrap_by_publisher": list(boot),
+            }
+        )
+    return out
