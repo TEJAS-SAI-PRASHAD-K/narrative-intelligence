@@ -164,6 +164,10 @@ class PrecisionReason(str, Enum):
     LABELLER_NAMES_MISSING = "labeller_names_missing"
     #: No pair has both ``label_1`` and ``label_2``, so there is no agreement figure.
     NO_DOUBLE_LABELLED_PAIR = "no_double_labelled_pair"
+    #: No labelled pair is at or above the threshold, so there is no precision.
+    NO_PAIRS_AT_THRESHOLD = "no_pairs_at_threshold"
+    #: A labelled pair has no similarity, so it cannot be placed against the threshold.
+    SAMPLE_SIMILARITY_MISSING = "sample_similarity_missing"
     #: The sample cannot be read at all.
     SAMPLE_REFUSED = "sample_refused"
 
@@ -889,8 +893,10 @@ class EmbeddingPrecision:
     """
 
     status: str
-    #: ``None`` means not measured, never a made-up zero.
+    #: ``None`` means not measured, never a made-up zero. It counts only labelled pairs at
+    #: or above ``threshold``.
     precision: float | None
+    #: Labelled pairs that ``precision`` counts, and the same-claim pairs among them.
     n_labelled: int
     n_same: int
     sample: str
@@ -911,6 +917,21 @@ class EmbeddingPrecision:
     n_stale: int | None = None
     reasons: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    #: The similarity threshold of the run that made the links, and where it was read.
+    threshold: float | None = None
+    threshold_source: str | None = None
+    #: Labelled pairs below the threshold. They are in the links through a chain of
+    #: pairs, so a person can label them, but they are not counted in ``precision``.
+    n_below: int = 0
+    n_same_below: int = 0
+    #: Same-claim pairs below the threshold over all same-claim labelled pairs. It covers
+    #: only the sampled links, so it is not the share of all duplicates that the threshold
+    #: leaves out.
+    same_below_share: float | None = None
+    #: Labelled pairs with no usable similarity when a threshold applies.
+    n_no_similarity: int = 0
+    #: Precision per similarity band, each with a Wilson interval.
+    bands: tuple[dict[str, Any], ...] = ()
     #: The message of a refused sample.
     error: str | None = None
     #: A note about which sample file was read.
@@ -930,6 +951,13 @@ class EmbeddingPrecision:
             "labeller_kind": self.labeller_kind,
             "kind_counts": dict(self.kind_counts),
             "n_stale": self.n_stale,
+            "threshold": self.threshold,
+            "threshold_source": self.threshold_source,
+            "n_below": int(self.n_below),
+            "n_same_below": int(self.n_same_below),
+            "same_below_share": self.same_below_share,
+            "n_no_similarity": int(self.n_no_similarity),
+            "bands": [dict(band) for band in self.bands],
             "sample": self.sample,
             "reason": self.reason,
             "reasons": list(self.reasons),
@@ -960,8 +988,13 @@ def describe_precision(precision: dict[str, Any]) -> str:
     """
     status = precision.get("status")
     n_stale = precision.get("n_stale") or 0
+    n_all = (
+        (precision.get("n_labelled") or 0)
+        + (precision.get("n_below") or 0)
+        + (precision.get("n_no_similarity") or 0)
+    )
     stale = (
-        f" {n_stale} of {precision.get('n_labelled')} labelled pairs are not in the current "
+        f" {n_stale} of {n_all} labelled pairs are not in the current "
         f"embedding links (reason code {PrecisionReason.SAMPLE_PAIRS_STALE.value})."
         if n_stale
         else ""
@@ -973,12 +1006,30 @@ def describe_precision(precision: dict[str, Any]) -> str:
             f"{precision.get('error')}"
         )
     reasons = list(precision.get("reasons") or [])
+    threshold = precision.get("threshold")
+    where = f"at or above similarity {threshold:g}" if threshold is not None else "labelled"
+    below = ""
+    if threshold is not None:
+        below = (
+            f" {precision.get('n_below') or 0} labelled pairs below {threshold:g} are not "
+            f"counted ({precision.get('n_same_below') or 0} of them are the same claim)."
+        )
+        if precision.get("same_below_share") is not None:
+            below += (
+                f" {precision['same_below_share']:.3f} of the same-claim pairs in the sample "
+                "are below the threshold."
+            )
+        if precision.get("n_no_similarity"):
+            below += f" {precision['n_no_similarity']} labelled pairs have no similarity."
+        if precision.get("threshold_source") == "config":
+            below += " The threshold is from the config, not from the links file."
     if precision.get("precision") is None:
         reason = precision.get("reason") or "not_measured"
-        return f"embedding precision: not measured (reason code {reason}).{stale}"
+        return f"embedding precision: not measured (reason code {reason}).{below}{stale}"
     text = (
         f"embedding precision: {float(precision['precision']):.3f} "
-        f"({precision['n_same']} of {precision['n_labelled']} labelled pairs are the same claim)"
+        f"({precision['n_same']} of {precision['n_labelled']} labelled pairs {where} "
+        "are the same claim)"
     )
     if precision.get("ci_low") is not None:
         text += f", Wilson 95% interval [{precision['ci_low']:.3f}, {precision['ci_high']:.3f}]"
@@ -991,12 +1042,12 @@ def describe_precision(precision: dict[str, Any]) -> str:
         text += f", agreement {precision['agreement']:.3f}, kappa undefined"
     note = f"labeller: {_labeller_text(precision)}"
     if status == PrecisionStatus.MEASURED.value:
-        text = f"{text}. {note}.{stale}"
+        text = f"{text}. {note}.{below}{stale}"
     else:
         codes = ", ".join(reasons or [str(precision.get("reason"))])
         text = (
             f"{text}. PROVISIONAL, not a measured precision. {note}. "
-            f"Reason code {codes}.{stale}"
+            f"Reason code {codes}.{below}{stale}"
         )
     for warning in precision.get("warnings") or []:
         text += f" Warning: {warning}"
@@ -1134,8 +1185,59 @@ def _empty(path: Path, reason: PrecisionReason) -> EmbeddingPrecision:
     )
 
 
+#: Band edges above the threshold. The last band is closed at 1.0.
+_BAND_EDGES = (0.90, 0.95)
+
+
+def band_edges(threshold: float | None) -> list[float]:
+    """The similarity band edges from ``threshold`` (or 0) up to 1.0."""
+    start = 0.0 if threshold is None else round(threshold, 6)
+    return [start, *[edge for edge in _BAND_EDGES if edge > start], 1.0]
+
+
+def _band_index(edges: list[float], similarity: float) -> int | None:
+    """The band that holds ``similarity``. A value above 1.0 from rounding joins the last."""
+    if similarity < edges[0]:
+        return None
+    for index in range(len(edges) - 1):
+        if similarity < edges[index + 1]:
+            return index
+    return len(edges) - 2
+
+
+def _band(low: float, high: float, n: int, n_same: int) -> dict[str, Any]:
+    closing = "]" if high >= 1.0 else ")"
+    out: dict[str, Any] = {
+        "label": f"[{low:.2f}, {high:.2f}{closing}",
+        "low": low,
+        "high": high,
+        "n": n,
+        "n_same": n_same,
+        "precision": None,
+        "ci_low": None,
+        "ci_high": None,
+    }
+    if n:
+        out["precision"] = n_same / n
+        out["ci_low"], out["ci_high"] = wilson(n_same / n, n)
+    return out
+
+
+def _similarity(raw: Any) -> float | None:
+    """The sample's similarity as a float, or ``None`` when it is blank or not a number."""
+    try:
+        value = float(str(raw or "").strip())
+    except ValueError:
+        return None
+    return value if value == value else None
+
+
 def embedding_precision(
-    sample_path: Path, *, pairs: set[tuple[str, str]] | None = None
+    sample_path: Path,
+    *,
+    pairs: set[tuple[str, str]] | None = None,
+    threshold: float | None = None,
+    threshold_source: str | None = None,
 ) -> EmbeddingPrecision:
     """Precision on the labelled hand-check pairs, with the labeller kind.
 
@@ -1151,6 +1253,14 @@ def embedding_precision(
     different labeller names, at least one pair has both labels, and every labelled
     pair is in ``pairs``. ``pairs`` is the set of current embedding links, or ``None``
     when the check does not apply. Any other case is ``provisional`` with reason codes.
+
+    The sample holds every embedding link, and a link joins a row to the representative of
+    its cluster. A row can join through a chain, so its similarity to the representative is
+    below ``threshold``. Such a pair is in the links and is not stale. Precision counts only
+    labelled pairs with similarity at or above ``threshold``, because the threshold is the
+    claim that the pass makes. Pairs below it are counted apart, as ``n_below``. The
+    similarity in the sample has six decimals, so the threshold is rounded the same way.
+    With ``threshold`` set to ``None``, every labelled pair counts.
     """
     path = Path(sample_path)
     if not path.exists():
@@ -1163,9 +1273,17 @@ def embedding_precision(
                 f"{path}: no is_same_claim column; the hand-check sample cannot be labelled"
             )
         has_kind_column = "labeller_kind" in header
+        n_total = 0
         n_labelled = 0
         n_same = 0
+        n_below = 0
+        n_same_below = 0
+        n_no_similarity = 0
         n_stale = 0
+        edges = band_edges(threshold)
+        band_n = [0] * (len(edges) - 1)
+        band_same = [0] * (len(edges) - 1)
+        cut = None if threshold is None else round(threshold, 6)
         kinds: dict[str, int] = {}
         names_missing = False
         pair_1: list[str] = []
@@ -1198,8 +1316,27 @@ def embedding_precision(
                     f"{path} line {line}: is_same_claim disagrees with label_1 and label_2, "
                     "which agree with each other. Correct the row"
                 )
-            n_labelled += 1
-            n_same += int(verdict)
+            n_total += 1
+            similarity = _similarity(row.get("similarity"))
+            if cut is None:
+                counted = True
+            elif similarity is None:
+                n_no_similarity += 1
+                counted = False
+            elif similarity >= cut:
+                counted = True
+            else:
+                counted = False
+                n_below += 1
+                n_same_below += int(verdict)
+            if counted:
+                n_labelled += 1
+                n_same += int(verdict)
+                if similarity is not None:
+                    index = _band_index(edges, similarity)
+                    if index is not None:
+                        band_n[index] += 1
+                        band_same[index] += int(verdict)
             kind = KIND_UNKNOWN
             if has_kind_column:
                 kind = str(row.get("labeller_kind") or "").strip()
@@ -1228,20 +1365,31 @@ def embedding_precision(
                 )
                 if key not in pairs:
                     n_stale += 1
-    if n_labelled == 0:
+    if n_total == 0:
         return _empty(path, PrecisionReason.SAMPLE_NOT_LABELLED)
     if len(kinds) == 1:
         kind = next(iter(kinds))
     else:
         kind = KIND_MIXED
-    precision = n_same / n_labelled
-    ci_low, ci_high = wilson(precision, n_labelled)
+    precision = n_same / n_labelled if n_labelled else None
+    ci_low, ci_high = wilson(precision, n_labelled) if n_labelled else (None, None)
+    n_same_all = n_same + n_same_below
+    same_below_share = (
+        n_same_below / n_same_all if threshold is not None and n_same_all else None
+    )
+    bands = tuple(
+        _band(edges[i], edges[i + 1], band_n[i], band_same[i]) for i in range(len(band_n))
+    )
     agreement = None
     kappa = cohen_kappa(pair_1, pair_2) if pair_1 else None
     if pair_1:
         agreement = sum(a == b for a, b in zip(pair_1, pair_2, strict=True)) / len(pair_1)
 
     reasons: list[str] = []
+    if not n_labelled:
+        reasons.append(PrecisionReason.NO_PAIRS_AT_THRESHOLD.value)
+    if n_no_similarity:
+        reasons.append(PrecisionReason.SAMPLE_SIMILARITY_MISSING.value)
     if n_stale:
         reasons.append(PrecisionReason.SAMPLE_PAIRS_STALE.value)
     if kind == KIND_UNKNOWN:
@@ -1258,8 +1406,12 @@ def embedding_precision(
             f"kappa {kappa:.3f} is below {KAPPA_WARN_BELOW}. The two labellers disagree "
             "often, so the labels are not reliable."
         )
+    if not n_labelled:
+        status = PrecisionStatus.NOT_MEASURED
+    else:
+        status = PrecisionStatus.PROVISIONAL if reasons else PrecisionStatus.MEASURED
     return EmbeddingPrecision(
-        status=(PrecisionStatus.PROVISIONAL if reasons else PrecisionStatus.MEASURED).value,
+        status=status.value,
         precision=precision,
         n_labelled=n_labelled,
         n_same=n_same,
@@ -1273,9 +1425,33 @@ def embedding_precision(
         labeller_kind=kind,
         kind_counts=kinds,
         n_stale=n_stale if pairs is not None else None,
+        threshold=threshold,
+        threshold_source=threshold_source,
+        n_below=n_below,
+        n_same_below=n_same_below,
+        same_below_share=same_below_share,
+        n_no_similarity=n_no_similarity,
+        bands=bands,
         reasons=tuple(reasons),
         warnings=tuple(warnings),
     )
+
+
+def run_threshold(embedding_outcome: dict[str, Any]) -> tuple[float | None, str | None]:
+    """The threshold of the run that made the links, and where it was read.
+
+    The links file records it. When it does not, the config value is the fallback. The
+    source says which one it was, so a report can show that the config may differ from the
+    run.
+    """
+    recorded = embedding_outcome.get("threshold")
+    if recorded is not None:
+        return float(recorded), "links"
+    try:
+        configured = claim_dedup_config().min_similarity
+    except (ClaimDedupConfigError, OSError, ValueError):
+        return None, None
+    return (None, None) if configured is None else (float(configured), "config")
 
 
 def refused_precision(path: Path, exc: Exception) -> EmbeddingPrecision:
@@ -1349,10 +1525,13 @@ def embedding_report(
         # Stale pairs can be counted only when the embedding pass ran and wrote its links.
         pairs = None
         embedding = passes.get(DedupPass.EMBEDDING.value) or {}
+        threshold, source = run_threshold(embedding)
         if links is not None and embedding.get("collapsed") is not None:
             pairs = embedding_pairs(links.get("links") or [])
         try:
-            precision = embedding_precision(sample_path, pairs=pairs)
+            precision = embedding_precision(
+                sample_path, pairs=pairs, threshold=threshold, threshold_source=source
+            )
         except ClaimSampleError as exc:
             log.warning("hand-check sample refused: %s", exc)
             precision = refused_precision(sample_path, exc)

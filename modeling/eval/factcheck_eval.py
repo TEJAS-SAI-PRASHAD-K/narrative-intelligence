@@ -1880,6 +1880,22 @@ def _claim_dedup_lines(block: dict[str, Any]) -> list[str]:
         from modeling.eval.claim_dedup import describe_precision
 
         lines += ["", f"{describe_precision(precision)} Sample `{precision['sample']}`."]
+        bands = precision.get("bands") or []
+        if bands:
+            lines += [
+                "",
+                "| similarity band | pairs | same claim | precision | Wilson 95% interval |",
+                "|---|---|---|---|---|",
+            ]
+            for band in bands:
+                if not band["n"]:
+                    lines.append(f"| {band['label']} | 0 | 0 | no pairs in this band | |")
+                    continue
+                lines.append(
+                    f"| {band['label']} | {band['n']} | {band['n_same']} | "
+                    f"{band['precision']:.3f} | [{band['ci_low']:.3f}, {band['ci_high']:.3f}] |"
+                )
+            lines.append("")
         if precision.get("sample_note"):
             lines.append(f"Note: {precision['sample_note']}.")
         if precision.get("status") == "refused":

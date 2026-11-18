@@ -1000,3 +1000,154 @@ def test_the_kept_sample_warning_has_no_count_and_escapes_the_path(tmp_path, mon
     flat = "".join(output.split())
     assert "1samplekept" not in flat
     assert "claim_dedup_sample.csvhaslabelsandiskept" in flat
+
+
+def _sim_row(record_id, sim, same, kind="human"):
+    answer = "yes" if same else "no"
+    return f"{record_id},k,{sim},f,x,f,y,{kind},ana,raj,{answer},{answer},{answer}\n"
+
+
+def _threshold_sample(tmp_path):
+    """Pairs on both sides of 0.85. Above: 4 same of 6. Below: 1 same of 3."""
+    return _write_sample(
+        tmp_path,
+        _sim_row("a1", "0.860000", True),
+        _sim_row("a2", "0.880000", False),
+        _sim_row("a3", "0.910000", True),
+        _sim_row("a4", "0.930000", True),
+        _sim_row("a5", "0.960000", True),
+        _sim_row("a6", "0.990000", False),
+        _sim_row("b1", "0.700000", True),
+        _sim_row("b2", "0.600000", False),
+        _sim_row("b3", "0.530000", False),
+    )
+
+
+def test_precision_counts_only_pairs_at_or_above_the_threshold(tmp_path):
+    result = cd.embedding_precision(
+        _threshold_sample(tmp_path), threshold=0.85, threshold_source="links"
+    )
+    assert (result.n_same, result.n_labelled) == (4, 6)
+    assert result.precision == pytest.approx(4 / 6)
+    assert (result.n_below, result.n_same_below) == (3, 1)
+    assert result.same_below_share == pytest.approx(1 / 5)
+    assert result.threshold == 0.85
+    assert result.status == "measured"
+
+
+def test_a_pair_exactly_at_the_threshold_is_counted(tmp_path):
+    path = _write_sample(tmp_path, _sim_row("a", "0.850000", True))
+    result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
+    assert result.n_labelled == 1
+    assert result.n_below == 0
+
+
+def test_without_a_threshold_every_labelled_pair_counts(tmp_path):
+    result = cd.embedding_precision(_threshold_sample(tmp_path))
+    assert result.n_labelled == 9
+    assert result.n_below == 0
+    assert result.same_below_share is None
+
+
+def test_the_rendered_line_shows_used_and_below_counts(tmp_path):
+    result = cd.embedding_precision(
+        _threshold_sample(tmp_path), threshold=0.85, threshold_source="links"
+    )
+    text = cd.describe_precision(result.as_dict())
+    assert "4 of 6 labelled pairs at or above similarity 0.85" in text
+    assert "3 labelled pairs below 0.85 are not counted (1 of them are the same claim)" in text
+    assert "0.200 of the same-claim pairs in the sample are below the threshold" in text
+    assert "from the config" not in text
+    config_text = cd.describe_precision(
+        cd.embedding_precision(
+            _threshold_sample(tmp_path), threshold=0.85, threshold_source="config"
+        ).as_dict()
+    )
+    assert "The threshold is from the config, not from the links file" in config_text
+
+
+def test_bands_have_intervals_and_an_empty_band_says_so(tmp_path):
+    path = _write_sample(
+        tmp_path,
+        _sim_row("a1", "0.860000", True),
+        _sim_row("a2", "0.880000", False),
+        _sim_row("a3", "0.990000", True),
+    )
+    result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
+    labels = [band["label"] for band in result.bands]
+    assert labels == ["[0.85, 0.90)", "[0.90, 0.95)", "[0.95, 1.00]"]
+    first, middle, last = result.bands
+    assert (first["n"], first["n_same"]) == (2, 1)
+    assert first["ci_low"] < 0.5 < first["ci_high"]
+    assert middle["n"] == 0
+    assert middle["precision"] is None
+    assert (last["n"], last["n_same"]) == (1, 1)
+
+
+def test_a_value_just_above_one_joins_the_last_band(tmp_path):
+    path = _write_sample(tmp_path, _sim_row("a", "1.000001", True))
+    result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
+    assert result.bands[-1]["n"] == 1
+
+
+def test_a_sample_with_no_pair_at_the_threshold_has_no_precision(tmp_path):
+    path = _write_sample(tmp_path, _sim_row("b", "0.700000", True))
+    result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
+    assert result.status == "not_measured"
+    assert result.precision is None
+    assert result.reason == "no_pairs_at_threshold"
+    assert result.n_below == 1
+    assert "1 labelled pairs below 0.85" in cd.describe_precision(result.as_dict())
+
+
+def test_a_labelled_pair_without_similarity_is_counted_and_provisional(tmp_path):
+    path = _write_sample(
+        tmp_path, _sim_row("a", "0.9", True), _sim_row("b", "", False)
+    )
+    result = cd.embedding_precision(path, threshold=0.85, threshold_source="links")
+    assert result.n_no_similarity == 1
+    assert result.status == "provisional"
+    assert "sample_similarity_missing" in result.reasons
+
+
+def test_a_pair_below_the_threshold_is_not_stale_but_an_unlinked_pair_is(tmp_path):
+    # The links hold every embedding pair, including the chained ones below the threshold.
+    frame = {(r, "k") for r in ("a1", "a2", "a3", "a4", "a5", "a6", "b1", "b2", "b3")}
+    path = _threshold_sample(tmp_path)
+    current = cd.embedding_precision(path, pairs=frame, threshold=0.85, threshold_source="links")
+    assert current.n_stale == 0
+    assert current.status == "measured"
+
+    gone = frame - {("a1", "k"), ("b1", "k")}
+    stale = cd.embedding_precision(path, pairs=gone, threshold=0.85, threshold_source="links")
+    assert stale.n_stale == 2
+    assert "sample_pairs_stale" in stale.reasons
+    assert "2 of 9 labelled pairs are not in the current embedding links" in (
+        cd.describe_precision(stale.as_dict())
+    )
+
+
+def test_the_threshold_comes_from_the_links_then_from_the_config(monkeypatch):
+    assert cd.run_threshold({"threshold": 0.9}) == (0.9, "links")
+    value, source = cd.run_threshold({})
+    assert source == "config"
+    assert value == cd.claim_dedup_config().min_similarity
+
+
+def test_the_report_block_uses_the_threshold_of_the_links(tmp_path):
+    sample = _threshold_sample(tmp_path)
+    links = {
+        "passes": {"embedding": {"collapsed": 9, "threshold": 0.9}},
+        "links": [
+            {"record_id": r, "kept_record_id": "k", "reason": "embedding"}
+            for r in ("a1", "a2", "a3", "a4", "a5", "a6", "b1", "b2", "b3")
+        ],
+    }
+    block = cd.embedding_report(
+        links, simhash_count=0, simhash_considered=0, reason=None, sample_path=sample
+    )
+    precision = block["precision"]
+    assert precision["threshold"] == 0.9
+    assert precision["threshold_source"] == "links"
+    assert precision["n_labelled"] == 4
+    assert precision["n_stale"] == 0
