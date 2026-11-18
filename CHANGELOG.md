@@ -68,12 +68,14 @@ decision.
 - **Reporting articles as extra negatives for `misinfo`.** `modeling.cli train misinfo
   --extra-negatives PATH --output-version VERSION` adds the rows of a Parquet file as label 0
   and writes a candidate checkpoint to `models/misinfo/VERSION`. `--output-version` is
-  required with it, and `fine_tune` refuses a folder that holds files. The benchmark split
+  required with it. `fine_tune` refuses a folder that holds files, so a plain `train misinfo`
+  into a folder with weights is refused too. The benchmark split
   and the calibration set do not change. The report records the file name, sha256, rows,
   publishers per side and a publisher bootstrap interval of the held-out flag rate. The run
   saves the held-out ids, and `modeling.cli score-reporting-heldout` scores any checkpoint on
   them. `modeling.cli reporting-negatives --out PATH` builds the file from the fact-check
-  articles of the corpus and drops every article that the fact-check evaluation scores.
+  articles of the corpus and drops every article that the fact-check evaluation scores, by id,
+  claim text and claim simhash.
   `modeling.cli score --misinfo-version VERSION` and `scripts/run_comparison.py score
   --misinfo-version VERSION` score with a candidate. A candidate with no `sha256` loads only
   with `--allow-unverified-candidate`. The comparison writes `misinfo@VERSION` to its own

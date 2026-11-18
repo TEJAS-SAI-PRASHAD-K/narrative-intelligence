@@ -276,31 +276,46 @@ python -m modeling.cli train misinfo \
 
 The run refuses `--extra-negatives` without `--output-version` (`output_version_required`),
 because it would overwrite the weights of the configured version. `fine_tune` also refuses
-an output folder that holds files (`output_dir_not_empty`).
+an output folder that holds files (`output_dir_not_empty`). This applies to a plain
+`train misinfo` too: a retrain into a folder that already holds weights is refused until a
+person removes the folder.
+
+The hand-labelled sample and the comparison corpus parts already exclude fact-checker
+domains, so these negatives cannot overlap them.
 
 The leak guard. The fact-check evaluation scores the claim of an article as a positive, and
 it keys the claim by the record id of the article. An article that is a negative in training
 and a positive in evaluation leaks the answer. The builder therefore drops every record that
-has a row in `factchecks.parquet`, for every label, and every record whose normalised text
-contains a normalised frozen claim text of `configs/factcheck_eval_manifest.csv`. It counts
-each group under its own reason code, `reporting_record_has_claim_row` and
-`reporting_text_contains_frozen_claim`. It refuses to run without the manifest
-(`frozen_manifest_missing`). The frozen claim texts come from the claim rows with the
-sha256 that the manifest lists.
+has a row in `factchecks.parquet`, for every label, and every record id that the manifest
+`configs/factcheck_eval_manifest.csv` lists. It also drops every record whose text contains a
+frozen claim text, and every record whose simhash is within `claim_match.simhash_hamming`
+bits (`configs/labelling.yaml`) of a frozen claim. The text test folds the text with NFKC,
+lower case, no punctuation (quote and dash variants included) and one space between words.
+It counts each group under its own reason code: `reporting_record_has_claim_row`,
+`reporting_text_contains_frozen_claim` and `reporting_text_near_frozen_claim_simhash`. It
+refuses to run without the manifest (`frozen_manifest_missing`). The frozen claim texts come
+from the claim rows with the sha256 that the manifest lists. A frozen claim with no such row
+cannot be matched by text. The command refuses then
+(`frozen_claim_missing_from_factchecks`) unless `--allow-missing-frozen-claims` is set.
 
 The file has the columns `text` and `group_id`, and the optional `domain` and `record_id`.
 The builder uses the domain as the group id, so the group is the publisher. Every row is
 label 0 with the source `reporting`, and the group id becomes `reporting:<group_id>`. The
 run refuses a file with missing columns, empty text or no rows. It drops rows that repeat a
-text, rows that repeat a benchmark text, and near duplicates by simhash over the union of
-both sets, and it counts each under its own reason code in the log and in the report.
+text (white space and case ignored), rows that repeat a benchmark text, and rows whose
+simhash is near any benchmark row or an earlier extra row. It counts each under its own
+reason code in the log and in the report.
 
 Split. The benchmark rows are split alone, with the same splitter and seed as a run without
 extra rows. Their train, validation and test assignment does not change. A split of the
 union would change it, because the shuffle sees more groups. The extra rows are split on
 their own, by publisher, into a training part, a report-only validation part and a held-out
 part. A file with fewer than 6 publishers after the checks is refused and nothing trains.
-The report gives the number of publishers on each side.
+The report gives the number of publishers on each side. With fewer than 5 publishers in the
+held-out part, the report says "publisher interval not meaningful (N publishers)" and gives
+no publisher bootstrap numbers. It still gives the row-level Wilson interval, labelled as
+row level only, and the flag rate with each publisher left out in turn. The run still
+trains.
 
 Calibration. The calibrator and the validation loss use the benchmark validation rows only.
 The extra rows would shift the base rate of the calibration set. The log and the report give
@@ -336,17 +351,18 @@ python -m modeling.cli score misinfo --misinfo-version <VERSION> --allow-unverif
 
 A candidate has no `sha256` in `configs/models.yaml`, so the registry cannot check it. The
 command exits 1 when the candidate is refused. With the flag, the log carries a warning.
+The options go to the stages as arguments, and no environment variable carries them.
 Scored rows carry `<VERSION>+<sha8>`, never `v0.2.0`. The run counts the rows that carry
-another misinfo stamp and warns with the count. It refuses to write unless
-`--replace-other-version` is set, so use a separate `DATA_DIR`. The environment variables
-are set for the call only.
+another misinfo stamp, or none, and warns with the count. It refuses to write unless
+`--replace-other-version` is set, so use a separate `DATA_DIR`.
 
 For the comparison on the fact-check set, `scripts/run_comparison.py score --misinfo-version
 <VERSION>` writes `scores/misinfo@<VERSION>.parquet` with its own provenance. The file of
 the configured `misinfo` stays, so the two load together and `evaluate --misinfo-version
 <VERSION>` compares them at precision 0.85. The script refuses to overwrite a score file
-whose provenance has another model version (`score_file_other_version`) unless `--force` is
-set.
+whose provenance has another model version (`score_file_other_version`), and a score file
+with no provenance file (`score_file_no_provenance`), unless `--force` is set. The version
+check runs before the weights load.
 
 The shipping bar does not change. A candidate must not lower recall at precision 0.85 on the
 fact-check set beyond its interval. The false-positive rate on reporting articles, before
