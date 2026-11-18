@@ -21,6 +21,7 @@ into the report. It is not a reason to keep tuning.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -39,7 +40,9 @@ from modeling.eval.metrics import (
     ClassificationReport,
     classification_report,
 )
+from modeling.eval.report import eval_dir as _eval_dir
 from modeling.eval.report import save_predictions, write_report
+from modeling.text.extra_negatives import ExtraNegativesReason, ExtraNegativesRefused
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +92,10 @@ def train_module(
     demo: bool = False,
     epochs: int | None = None,
     settings: ModelingSettings | None = None,
+    extra_negatives: Path | None = None,
+    output_version: str | None = None,
 ) -> TrainingResult:
+    """Train one module. ``extra_negatives`` and ``output_version`` belong to ``misinfo`` only."""
     settings = settings or get_settings()
     settings.ensure_dirs()
     set_all_seeds()
@@ -106,8 +112,29 @@ def train_module(
                 f"{', '.join(trainable_modules())}."
             ],
         )
+    options: dict[str, Any] = {}
+    if extra_negatives is not None or output_version is not None:
+        if module != "misinfo":
+            reason = ExtraNegativesReason.WRONG_MODULE
+            return TrainingResult(
+                module,
+                str(module_config(module).get("version", "v0.0.0-unset")),
+                None,
+                skipped=True,
+                notes=[f"{reason}: --extra-negatives and --output-version apply to misinfo only"],
+            )
+        options = {"extra_negatives": extra_negatives, "output_version": output_version}
     try:
-        return handler(settings, data_path=data_path, demo=demo, epochs=epochs)
+        return handler(settings, data_path=data_path, demo=demo, epochs=epochs, **options)
+    except ExtraNegativesRefused as exc:
+        log.error("misinfo: %s", exc)
+        return TrainingResult(
+            module,
+            str(output_version or module_config(module).get("version", "v0.0.0-unset")),
+            None,
+            skipped=True,
+            notes=[str(exc)],
+        )
     except DatasetUnavailable as exc:
         version = str(module_config(module).get("version", "v0.0.0-unset"))
         log.warning("%s: %s", module, exc)
@@ -155,11 +182,25 @@ def _train_misinfo(
     data_path: Path | None,
     demo: bool,
     epochs: int | None,
+    extra_negatives: Path | None = None,
+    output_version: str | None = None,
 ) -> TrainingResult:
     from modeling.registry import register
+    from modeling.text import extra_negatives as extra_module
     from modeling.text.misinfo_clf import LABEL_NAMES, MisinfoClassifier, build_training_frame
 
-    version = str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    configured_version = str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    version = configured_version
+    if extra_negatives is not None and output_version is None:
+        # Without a new folder the candidate would overwrite the shipped weights.
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.OUTPUT_VERSION_REQUIRED,
+            f"--extra-negatives needs --output-version. Without it the run would write "
+            f"into models/misinfo/{configured_version} and overwrite its weights.",
+        )
+    if output_version is not None:
+        version = _check_output_version(settings, output_version, configured_version)
+    extra = extra_module.load_extra_negatives(extra_negatives) if extra_negatives else None
     notes: list[str] = []
 
     loaded: dict[str, pd.DataFrame] = {}
@@ -187,15 +228,46 @@ def _train_misinfo(
             notes=notes + [f"only {len(frame)} usable rows; refusing to report a metric"],
         )
 
+    # The benchmark rows are split alone, with the call and seed of a run without extra
+    # negatives, so their assignment does not move when extra rows are added.
     work, split = group_train_val_test(
         frame, group_col="group_id", label_col="label", seed=settings.seed
     )
     split_description = split.describe()
     log.info("misinfo training set: %d rows, %s", len(work), split_description)
+    log.info(
+        "benchmark validation positive rate %.4f (%d rows)",
+        float(work.iloc[split.val]["label"].mean()) if len(split.val) else float("nan"),
+        len(split.val),
+    )
 
     train = work.iloc[split.train]
     val = work.iloc[split.val]
     test = work.iloc[split.test]
+
+    extra_held_out = None
+    extra_val = None
+    extra_summary: dict[str, Any] | None = None
+    if extra is not None:
+        extra = extra_module.drop_overlaps(extra, work)
+        extra_train, extra_val, extra_held_out = extra_module.split_extra_negatives(
+            extra, seed=settings.seed
+        )
+        extra_summary = extra.summary()
+        dataset_summaries["extra_negatives"] = extra_summary
+        # The extra validation rows stay out of `val`. The calibrator and the validation loss
+        # use the benchmark validation rows only, so the base rate of the calibration set does
+        # not move. The extra validation rows are for reporting.
+        train = pd.concat([train, extra_train], ignore_index=True)
+        split_description += (
+            f"; plus {len(extra_train)} reporting negatives in train, {len(extra_val)} in a "
+            f"report-only validation part and {len(extra_held_out)} held out, grouped by "
+            "publisher"
+        )
+        notes.append(
+            f"extra negatives {extra.path.name} sha256={extra.sha256[:12]}: "
+            f"{len(extra.frame)} rows, {extra.frame['group_id'].nunique()} groups"
+        )
 
     # --- baselines first, so the bar is fixed before anyone has a stake -----
     baseline_results = [
@@ -217,6 +289,9 @@ def _train_misinfo(
     # --- fine-tune ---------------------------------------------------------
     classifier = MisinfoClassifier(settings)
     output_dir = settings.models_dir / "misinfo" / version
+    if output_version is not None:
+        # Checked again here, after the slow loading steps, in case another run took the name.
+        _check_output_version(settings, output_version, configured_version)
     # The demo path deliberately uses the smaller base model. `--demo` exists so
     # the pipeline is executable on a clean clone, and making it wait on a
     # 500 MB roberta-base download defeats that. Nothing trained on fixtures is
@@ -255,6 +330,22 @@ def _train_misinfo(
     if domain_note:
         extra_sections["Cross-domain transfer (PolitiFact -> GossipCop)"] = domain_note
     extra_sections["Corpus transfer"] = _corpus_transfer_note(settings)
+    heldout_artifacts: list[Path] = []
+    if extra_summary is not None and extra_held_out is not None:
+        text, record = extra_module.heldout_report(
+            heldout_scores=_predict_or_empty(classifier, extra_held_out),
+            heldout_groups=extra_held_out["group_id"].to_numpy(),
+            val_scores=_predict_or_empty(classifier, extra_val),
+            bench_val_scores=classifier.predict(val["text"].tolist()),
+            bench_val_labels=val["label"].to_numpy(),
+            threshold=trained.threshold,
+            summary=extra_summary,
+        )
+        extra_summary["heldout"] = record
+        extra_sections["Held-out reporting negatives"] = text
+        heldout_artifacts = extra_module.write_heldout(
+            _eval_dir("misinfo", version, settings), extra_held_out, extra_summary
+        )
 
     # --- artifacts ---------------------------------------------------------
     predictions_frame = pd.DataFrame(
@@ -268,6 +359,7 @@ def _train_misinfo(
         }
     )
     artifacts = [save_predictions("misinfo", version, predictions_frame, settings=settings)]
+    artifacts += heldout_artifacts
     calibration = _calibration_from(trained)
     artifacts += write_report(
         module="misinfo", version=version, report=report, baselines=comparison,
@@ -286,10 +378,35 @@ def _train_misinfo(
             "split": split_description,
             "metrics": report.as_dict(),
             "is_demo": demo,
+            "extra_negatives": extra_summary,
         },
     )
     notes.append(f"checkpoint {checkpoint.uri}")
     return TrainingResult("misinfo", version, report, artifacts=artifacts, notes=notes)
+
+
+def _predict_or_empty(classifier, frame: pd.DataFrame | None) -> np.ndarray:
+    if frame is None or not len(frame):
+        return np.array([])
+    return np.asarray(classifier.predict(frame["text"].tolist()), dtype=float)
+
+
+def _check_output_version(
+    settings: ModelingSettings, output_version: str, configured_version: str
+) -> str:
+    """Validate ``--output-version``. It must name a new folder under ``models/misinfo/``."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", output_version) or ".." in output_version:
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.BAD_OUTPUT_VERSION,
+            f"{output_version!r} is not a folder name. Use letters, digits, '.', '_', '+', '-'.",
+        )
+    target = settings.models_dir / "misinfo" / output_version
+    if output_version == configured_version or target.exists():
+        raise ExtraNegativesRefused(
+            ExtraNegativesReason.OUTPUT_EXISTS,
+            f"{target} exists or is the configured version. Choose a new --output-version.",
+        )
+    return output_version
 
 
 def _calibration_from(trained) -> Any:

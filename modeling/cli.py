@@ -239,14 +239,48 @@ def score(
     end: str | None = typer.Option(None, help="YYYY-MM-DD upper bound."),
     limit: int | None = typer.Option(None, help="Cap the number of records."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Compute but do not write."),
+    misinfo_version: str | None = typer.Option(
+        None,
+        "--misinfo-version",
+        help="Score the misinfo stage with models/misinfo/VERSION for this run. "
+        "configs/models.yaml does not change. Rows carry VERSION+sha8. "
+        "The run overwrites misinfo_prob of rows that another version scored, so use "
+        "a separate DATA_DIR.",
+    ),
+    allow_unverified_candidate: bool = typer.Option(
+        False,
+        "--allow-unverified-candidate",
+        help="Load a --misinfo-version checkpoint that has no sha256 in configs/models.yaml. "
+        "A warning is logged.",
+    ),
+    replace_other_version: bool = typer.Option(
+        False,
+        "--replace-other-version",
+        help="Let a --misinfo-version run overwrite misinfo_prob of rows that another "
+        "misinfo version scored. Without it the run refuses and writes nothing.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Produce the scored Parquet tables. Resumable and idempotent."""
     _bootstrap(verbose)
     if not all_stages and stage is None:
         raise typer.BadParameter("give a stage name or --all")
+    if (allow_unverified_candidate or replace_other_version) and not misinfo_version:
+        raise typer.BadParameter(
+            "--allow-unverified-candidate and --replace-other-version need --misinfo-version"
+        )
 
+    from modeling import candidate as candidate_module
     from modeling.scoring import run_stages
+
+    if misinfo_version:
+        try:
+            candidate_module.resolve_candidate(
+                "misinfo", misinfo_version, unverified_ok=allow_unverified_candidate
+            )
+        except candidate_module.CandidateRefused as exc:
+            console.print(f"[red]candidate refused:[/] {exc}")
+            raise typer.Exit(code=1) from exc
 
     configured = list(scoring_config().get("stages") or ["aux"])
     stages = configured if all_stages else [stage]
@@ -256,6 +290,15 @@ def score(
             f"[yellow]stage(s) {unknown} are not in configs/scoring.yaml; running anyway[/]"
         )
 
+    options = (
+        candidate_module.CandidateOptions(
+            misinfo_version,
+            unverified=allow_unverified_candidate,
+            replace_other=replace_other_version,
+        )
+        if misinfo_version
+        else None
+    )
     summary = run_stages(
         stages,
         demo=demo,
@@ -264,6 +307,7 @@ def score(
         end=end,
         limit=limit,
         dry_run=dry_run,
+        candidate=options,
     )
 
     table = Table(title="scoring run" + (" [DEMO -- not a result]" if demo else ""))
@@ -281,6 +325,11 @@ def score(
     console.print(table)
     if dry_run:
         console.print("[yellow]--dry-run: nothing was written.[/]")
+    refused = [row for row in summary if row.get("refused")]
+    if refused:
+        for row in refused:
+            console.print(f"[red]{row['stage']} refused:[/] {row['refused']}")
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +341,18 @@ def train(
     data: Path | None = typer.Option(None, help="Local benchmark path."),
     demo: bool = typer.Option(False, "--demo", help="Train on the committed fixture."),
     epochs: int | None = typer.Option(None, help="Override the configured epochs."),
+    extra_negatives: Path | None = typer.Option(
+        None,
+        "--extra-negatives",
+        help="misinfo only. Parquet with text, group_id and optional domain. "
+        "Every row is added as label 0. Build it with `reporting-negatives`.",
+    ),
+    output_version: str | None = typer.Option(
+        None,
+        "--output-version",
+        help="misinfo only. Write the checkpoint to models/misinfo/VERSION. "
+        "Refuses an existing folder. configs/models.yaml does not change.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Train one module, then write its eval report and model card."""
@@ -306,7 +367,14 @@ def train(
     # indistinguishable from success to anyone reading a terminal, so every
     # failure is caught, named, and given a non-zero exit.
     try:
-        result = train_module(module, data_path=data, demo=demo, epochs=epochs)
+        result = train_module(
+            module,
+            data_path=data,
+            demo=demo,
+            epochs=epochs,
+            extra_negatives=extra_negatives,
+            output_version=output_version,
+        )
     except Exception as exc:
         log.exception("training %s failed", module)
         console.print(f"\n[red]training {module} failed:[/] {type(exc).__name__}: {exc}")
@@ -319,6 +387,182 @@ def train(
             console.print(f"  {path}")
     if result.skipped:
         raise typer.Exit(code=1)
+
+
+@app.command(name="reporting-negatives")
+def reporting_negatives(
+    out: Path = typer.Option(..., "--out", help="Parquet file to write."),
+    lang: str = typer.Option("en", "--lang", help="Language of the rows to keep."),
+    manifest: Path | None = typer.Option(
+        None, help="Frozen evaluation set CSV. Default configs/factcheck_eval_manifest.csv."
+    ),
+    allow_missing_frozen_claims: bool = typer.Option(
+        False,
+        "--allow-missing-frozen-claims",
+        help="Go on when a frozen claim has no row in factchecks.parquet. Its article is "
+        "then excluded by record id only. Without the flag the command refuses.",
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Write the fact-check articles of the corpus as extra negatives for `train misinfo`.
+
+    A row is a corpus record whose domain is in configs/factcheck.yaml, in the chosen
+    language, with text. The group id is the domain. The command drops every record with a
+    row in factchecks.parquet, and every record whose text holds a frozen claim text, because
+    the fact-check evaluation scores those as positives. It refuses without the manifest.
+    The output holds corpus text, so keep it out of git.
+    """
+    _bootstrap(verbose)
+    from modeling.config import FactCheckDomainsMissing, fact_check_domains
+    from modeling.io import CorpusReader
+    from modeling.text.extra_negatives import (
+        ExtraNegativesRefused,
+        leak_guards,
+        select_reporting_rows,
+    )
+
+    try:
+        domains = fact_check_domains()
+    except FactCheckDomainsMissing as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    records = CorpusReader(get_settings()).records(
+        columns=["id", "source", "source_detail", "text", "lang", "simhash"]
+    )
+    if not len(records):
+        console.print("[red]no_corpus_on_disk[/]: run `make data` first")
+        raise typer.Exit(code=1)
+    try:
+        from ingest.config import Settings as IngestSettings
+
+        ingest_settings = IngestSettings(data_dir=get_settings().data_dir, _env_file=None)
+        guards = leak_guards(
+            manifest, ingest_settings=ingest_settings, allow_missing=allow_missing_frozen_claims
+        )
+        frame, dropped = select_reporting_rows(records, domains, lang=lang, guards=guards)
+    except ExtraNegativesRefused as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    for reason, count in dropped.items():
+        log.info("reporting-negatives: skipped %d record(s), reason=%s", count, reason)
+    if not len(frame):
+        console.print(
+            f"[red]no_rows[/]: no {lang} record from a fact-check domain has text. Nothing written."
+        )
+        raise typer.Exit(code=1)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(out, index=False)
+    table = Table(title=f"reporting negatives, lang={lang}")
+    table.add_column("domain")
+    table.add_column("rows", justify="right")
+    for domain, count in frame["group_id"].value_counts().sort_index().items():
+        table.add_row(str(domain), str(count))
+    console.print(table)
+    console.print(f"{len(frame)} rows, {frame['group_id'].nunique()} groups -> {out}")
+    console.print(
+        "skipped records: " + ", ".join(f"{k}={v}" for k, v in dropped.items())
+    )
+
+
+@app.command(name="score-reporting-heldout")
+def score_reporting_heldout(
+    extra_negatives: Path = typer.Option(..., "--extra-negatives", help="The Parquet file."),
+    heldout: Path = typer.Option(
+        ..., help="reporting_heldout_ids.parquet that a candidate training run saved."
+    ),
+    version: str | None = typer.Option(
+        None,
+        help="Checkpoint folder under models/misinfo. Default: the configured version. "
+        "Any other value is a candidate.",
+    ),
+    allow_unverified_candidate: bool = typer.Option(False, "--allow-unverified-candidate"),
+    threshold: list[float] = typer.Option(
+        None, help="Flag threshold, repeatable. Default 0.5. Use the one at precision 0.85."
+    ),
+    out: Path | None = typer.Option(None, help="Write the rates as JSON."),
+    scores_out: Path | None = typer.Option(None, help="Write the score of each row as Parquet."),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Score a checkpoint on the held-out reporting rows of a candidate run.
+
+    Run it for the configured version and for the candidate with the same --heldout list.
+    Both then use the same rows, so the before and after are comparable. The rows are
+    fact-checker articles, so the rate does not describe other outlets.
+    """
+    _bootstrap(verbose)
+    import pandas as pd
+
+    from modeling import candidate as candidate_module
+    from modeling.config import module_config
+    from modeling.registry import resolve
+    from modeling.text import extra_negatives as X
+    from modeling.text.misinfo_clf import MisinfoClassifier
+
+    try:
+        rows = X.select_heldout(extra_negatives, heldout)
+        configured = str(module_config("misinfo").get("version"))
+        if version is None or version == configured:
+            checkpoint = resolve("misinfo", configured)
+        else:
+            checkpoint = candidate_module.resolve_candidate(
+                "misinfo", version, unverified_ok=allow_unverified_candidate
+            )
+    except (X.ExtraNegativesRefused, candidate_module.CandidateRefused) as exc:
+        console.print(f"[red]refused:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:  # registry errors: not found, hash mismatch
+        console.print(f"[red]checkpoint refused:[/] {type(exc).__name__}: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    classifier = MisinfoClassifier(get_settings())
+    if not classifier.load(checkpoint.path):
+        console.print(f"[red]checkpoint at {checkpoint.path} did not load[/]")
+        raise typer.Exit(code=1)
+    scores = classifier.predict(rows["text"].tolist())
+    thresholds = list(threshold) if threshold else [0.5]
+    rates = X.heldout_rates(scores, rows["group_id"].to_numpy(), thresholds)
+    stamp = f"{checkpoint.version}+{(checkpoint.sha256 or '')[:8]}"
+    for item in rates:
+        boot = item["bootstrap_by_publisher"]
+        interval = (
+            f"publisher bootstrap {boot[0]:.3f} to {boot[1]:.3f}"
+            if boot
+            else f"publisher interval not meaningful ({item['publishers']} publishers)"
+        )
+        console.print(
+            f"{stamp} threshold {item['threshold']:g}: {item['flagged']}/{item['n']} flagged "
+            f"({item['rate']:.3f}), {interval}"
+        )
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(
+                {
+                    "checkpoint": stamp,
+                    "heldout": str(heldout),
+                    "extra_negatives_sha256": X.file_sha256(extra_negatives),
+                    "rows": len(rows),
+                    "publishers": int(rows["group_id"].nunique()),
+                    "rates": rates,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        console.print(f"wrote {out}")
+    if scores_out:
+        scores_out.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "record_id": rows["record_id"],
+                "text_sha256": rows["text_sha256"],
+                "group_id": rows["group_id"],
+                "score": scores,
+            }
+        ).to_parquet(scores_out, index=False)
+        console.print(f"wrote {scores_out}")
 
 
 @app.command()

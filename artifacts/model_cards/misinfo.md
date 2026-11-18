@@ -248,6 +248,126 @@ notebook 05. English-only coverage means the fairness question is currently
 about *register* rather than language: the model was trained on edited,
 journalist-adjacent prose and is applied to conversational text.
 
+## Reporting articles as negatives (candidate option)
+
+Result: not measured yet. No candidate checkpoint is trained, and no candidate score exists.
+The numbers need the GPU host and the corpus on disk. This section describes the option only.
+
+The problem. The model reacts to the subject of an article. A news report or a rebuttal
+names a false claim, and the model scores it as if it pushed the claim.
+
+What the negatives are. The extra negatives are articles of fact-checkers. Live scoring
+already skips those articles with the reason `fact_check_publisher`. So the held-out rows of
+this option do not measure the effect on other outlets that report on a false claim. That
+effect is measured only on the hand-labelled corpus sample, which has 8 such English rows.
+The training report says the same.
+
+The option. A training run adds the articles as extra label 0 rows. The candidate is a
+separate checkpoint. `configs/models.yaml` does not change, and no version is promoted.
+
+```bash
+# 1. Build the extra negatives from the corpus on disk.
+python -m modeling.cli reporting-negatives --out data/reporting_negatives_en.parquet --lang en
+
+# 2. Train a candidate. --output-version is required. The folder must not exist.
+python -m modeling.cli train misinfo \
+    --extra-negatives data/reporting_negatives_en.parquet --output-version <VERSION>
+```
+
+The run refuses `--extra-negatives` without `--output-version` (`output_version_required`),
+because it would overwrite the weights of the configured version. `fine_tune` also refuses
+an output folder that holds files (`output_dir_not_empty`). This applies to a plain
+`train misinfo` too: a retrain into a folder that already holds weights is refused until a
+person removes the folder.
+
+The hand-labelled sample and the comparison corpus parts already exclude fact-checker
+domains, so these negatives cannot overlap them.
+
+The leak guard. The fact-check evaluation scores the claim of an article as a positive, and
+it keys the claim by the record id of the article. An article that is a negative in training
+and a positive in evaluation leaks the answer. The builder therefore drops every record that
+has a row in `factchecks.parquet`, for every label, and every record id that the manifest
+`configs/factcheck_eval_manifest.csv` lists. It also drops every record whose text contains a
+frozen claim text, and every record whose simhash is within `claim_match.simhash_hamming`
+bits (`configs/labelling.yaml`) of a frozen claim. The text test folds the text with NFKC,
+lower case, no punctuation (quote and dash variants included) and one space between words.
+It counts each group under its own reason code: `reporting_record_has_claim_row`,
+`reporting_text_contains_frozen_claim` and `reporting_text_near_frozen_claim_simhash`. It
+refuses to run without the manifest (`frozen_manifest_missing`). The frozen claim texts come
+from the claim rows with the sha256 that the manifest lists. A frozen claim with no such row
+cannot be matched by text. The command refuses then
+(`frozen_claim_missing_from_factchecks`) unless `--allow-missing-frozen-claims` is set.
+
+The file has the columns `text` and `group_id`, and the optional `domain` and `record_id`.
+The builder uses the domain as the group id, so the group is the publisher. Every row is
+label 0 with the source `reporting`, and the group id becomes `reporting:<group_id>`. The
+run refuses a file with missing columns, empty text or no rows. It drops rows that repeat a
+text (white space and case ignored), rows that repeat a benchmark text, and rows whose
+simhash is near any benchmark row or an earlier extra row. It counts each under its own
+reason code in the log and in the report.
+
+Split. The benchmark rows are split alone, with the same splitter and seed as a run without
+extra rows. Their train, validation and test assignment does not change. A split of the
+union would change it, because the shuffle sees more groups. The extra rows are split on
+their own, by publisher, into a training part, a report-only validation part and a held-out
+part. A file with fewer than 6 publishers after the checks is refused and nothing trains.
+The report gives the number of publishers on each side. With fewer than 5 publishers in the
+held-out part, the report says "publisher interval not meaningful (N publishers)" and gives
+no publisher bootstrap numbers. It still gives the row-level Wilson interval, labelled as
+row level only, and the flag rate with each publisher left out in turn. The run still
+trains.
+
+Calibration. The calibrator and the validation loss use the benchmark validation rows only.
+The extra rows would shift the base rate of the calibration set. The log and the report give
+the benchmark validation positive rate.
+
+Held-out report. The report gives the flag rate on the held-out rows at the decision
+threshold and at the threshold for precision 0.85 on the benchmark validation rows. It gives
+two intervals. The Wilson interval is row level and too narrow, because rows of one publisher
+are not independent. The publisher bootstrap interval resamples whole publishers. The report
+also gives score quantiles and the ROC-AUC of the held-out rows against the false-labelled
+benchmark validation rows. Calibration keeps the ranking, so these are the ranking view.
+
+Same rows before and after. The run saves `reporting_heldout_ids.parquet` and
+`reporting_heldout.json` in `artifacts/eval/misinfo/<VERSION>/`. They hold ids and text
+hashes, never text. This command scores any checkpoint on those rows:
+
+```bash
+python -m modeling.cli score-reporting-heldout \
+    --extra-negatives data/reporting_negatives_en.parquet \
+    --heldout artifacts/eval/misinfo/<VERSION>/reporting_heldout_ids.parquet \
+    [--version <VERSION> --allow-unverified-candidate] --threshold 0.5 --out rates.json
+```
+
+Without `--version` it scores the configured version.
+
+Score with the candidate, with no change to the configuration:
+
+```bash
+python -m modeling.cli checkpoint-hash misinfo --version <VERSION>
+python -m modeling.cli score misinfo --misinfo-version <VERSION> --allow-unverified-candidate \
+    [--replace-other-version]
+```
+
+A candidate has no `sha256` in `configs/models.yaml`, so the registry cannot check it. The
+command exits 1 when the candidate is refused. With the flag, the log carries a warning.
+The options go to the stages as arguments, and no environment variable carries them.
+Scored rows carry `<VERSION>+<sha8>`, never `v0.2.0`. The run counts the rows that carry
+another misinfo stamp, or none, and warns with the count. It refuses to write unless
+`--replace-other-version` is set, so use a separate `DATA_DIR`.
+
+For the comparison on the fact-check set, `scripts/run_comparison.py score --misinfo-version
+<VERSION>` writes `scores/misinfo@<VERSION>.parquet` with its own provenance. The file of
+the configured `misinfo` stays, so the two load together and `evaluate --misinfo-version
+<VERSION>` compares them at precision 0.85. The script refuses to overwrite a score file
+whose provenance has another model version (`score_file_other_version`), and a score file
+with no provenance file (`score_file_no_provenance`), unless `--force` is set. The version
+check runs before the weights load.
+
+The shipping bar does not change. A candidate must not lower recall at precision 0.85 on the
+fact-check set beyond its interval. The false-positive rate on reporting articles, before
+and after, is added here when the run exists.
+
 ## Get the weights on a fresh clone
 
 Weights are not in git. A fresh clone pulls them from a private Hugging Face model repo.

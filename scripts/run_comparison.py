@@ -221,6 +221,50 @@ def watch_laya_oom() -> Iterator[None]:
         logger.removeHandler(handler)
 
 
+_CANDIDATE_CHECKPOINTS: dict[tuple[str, bool], Any] = {}
+
+#: The reason code of a refused overwrite of a score file that another version wrote.
+SCORE_FILE_OTHER_VERSION = "score_file_other_version"
+#: The reason code of a refused overwrite of a score file that has no provenance sidecar.
+SCORE_FILE_NO_SIDECAR = "score_file_no_provenance"
+CANDIDATE_PREFIX = "misinfo@"
+
+
+def is_misinfo(model: str) -> bool:
+    """``misinfo`` or a candidate key ``misinfo@<VERSION>``."""
+    return model == "misinfo" or model.startswith(CANDIDATE_PREFIX)
+
+
+def candidate_key(version: str) -> str:
+    """The model key and the file stem of a candidate: ``misinfo@<VERSION>``."""
+    return f"{CANDIDATE_PREFIX}{version}"
+
+
+def candidate_checkpoint(version: str, *, unverified_ok: bool) -> Any:
+    """Verify a candidate ``misinfo`` checkpoint once and return the registry checkpoint.
+
+    The folder is ``MODELS_DIR/misinfo/<version>``, where ``modeling.cli train misinfo
+    --output-version`` writes it. The registry hash rules apply. A candidate with no
+    ``sha256`` in ``configs/models.yaml`` loads only with ``--allow-unverified-candidate``.
+    """
+    from modeling.candidate import CandidateRefused, resolve_candidate
+
+    key = (version, unverified_ok)
+    if key not in _CANDIDATE_CHECKPOINTS:
+        try:
+            checkpoint = resolve_candidate("misinfo", version, unverified_ok=unverified_ok)
+        except CandidateRefused as exc:
+            raise StageError(EXIT_FAILED, f"candidate misinfo checkpoint: {exc}") from exc
+        if not checkpoint.verified:
+            print(
+                f"WARNING: misinfo candidate {version} has no sha256 in configs/models.yaml. "
+                "It loads without a hash check. Do not ship a result from it.",
+                file=sys.stderr,
+            )
+        _CANDIDATE_CHECKPOINTS[key] = checkpoint
+    return _CANDIDATE_CHECKPOINTS[key]
+
+
 # ---------------------------------------------------------------------------
 # Context
 # ---------------------------------------------------------------------------
@@ -294,9 +338,24 @@ class Context:
     def demo_data_dir(self) -> Path:
         return self.out / "demo_data"
 
-    def misinfo_dir(self) -> Path:
+    @property
+    def misinfo_candidate(self) -> str | None:
+        """The ``--misinfo-version`` value: a candidate folder of ``models/misinfo/``."""
+        value = getattr(self.args, "misinfo_version", None)
+        return str(value) if value else None
+
+    def candidate_checkpoint(self, model: str) -> Any:
+        """The verified checkpoint of the candidate key ``model``."""
+        return candidate_checkpoint(
+            model.removeprefix(CANDIDATE_PREFIX),
+            unverified_ok=bool(getattr(self.args, "allow_unverified_candidate", False)),
+        )
+
+    def misinfo_dir(self, model: str = "misinfo") -> Path:
         from modeling.config import module_config
 
+        if model.startswith(CANDIDATE_PREFIX):
+            return Path(self.candidate_checkpoint(model).path)
         return self.models_dir / "misinfo" / str(module_config("misinfo").get("version", "v0.0.0"))
 
     def laya_checkpoint_dir(self, which: str) -> Path:
@@ -1146,14 +1205,14 @@ def split_fingerprint(split_info: dict[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def misinfo_backbone(ctx: Context) -> str:
+def misinfo_backbone(ctx: Context, model: str = "misinfo") -> str:
     """The ``model_type`` in the ``misinfo`` checkpoint's ``config.json``. Refuses unless roberta.
 
     ``MisinfoClassifier._load_base`` trains ``distilbert-base-uncased`` when it cannot load
     ``roberta-base``, and nothing else records it. The checkpoint holds the answer, so this
     reads the file and needs no new training.
     """
-    path = ctx.misinfo_dir() / "config.json"
+    path = ctx.misinfo_dir(model) / "config.json"
     if not path.is_file():
         raise StageError(
             EXIT_FAILED,
@@ -1197,10 +1256,10 @@ def checkpoint_identity(ctx: Context, model: str) -> dict[str, Any] | None:
             "subfolder": config.get("multilingual_subfolder"),
             "revision": str(config["revision"]),
         }
-    if model == "misinfo":
-        identity = directory_identity(ctx.misinfo_dir())
+    if is_misinfo(model):
+        identity = directory_identity(ctx.misinfo_dir(model))
         if identity is not None:
-            identity["backbone"] = misinfo_backbone(ctx)
+            identity["backbone"] = misinfo_backbone(ctx, model)
         return identity
     which = "en" if model == "laya_en" else "multilingual"
     return directory_identity(ctx.laya_checkpoint_dir(which))
@@ -1346,12 +1405,23 @@ def make_tfidf_scorer(ctx: Context) -> tuple[Scorer, str]:
 MISINFO_CHUNK = 1024
 
 
-def make_misinfo_scorer(ctx: Context) -> tuple[Scorer, str]:
+def make_misinfo_scorer(ctx: Context, model: str = "misinfo") -> tuple[Scorer, str]:
     from modeling.aux.base import ScoringOutcome
     from modeling.config import get_settings, module_config
     from modeling.text.misinfo_clf import MisinfoClassifier
 
-    directory = ctx.misinfo_dir()
+    directory = ctx.misinfo_dir(model)
+    if model.startswith(CANDIDATE_PREFIX):
+        from modeling.scoring import checkpoint_stamp
+
+        # The same `<version>+<sha8>` stamp that the batch scorer writes into model_versions.
+        version = checkpoint_stamp(
+            "misinfo", model.removeprefix(CANDIDATE_PREFIX), ctx.candidate_checkpoint(model)
+        )
+    else:
+        version = str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    # Before the weights load, so a refusal costs no GPU time.
+    refuse_other_version(ctx, model, version)
     classifier = MisinfoClassifier(get_settings())
     if getattr(ctx.args, "batch_size", None) is not None:
         classifier.batch_size = ctx.args.batch_size
@@ -1387,14 +1457,14 @@ def make_misinfo_scorer(ctx: Context) -> tuple[Scorer, str]:
                 outcome.values[record_id] = float(value)
         return outcome
 
-    return score, str(module_config("misinfo").get("version", "v0.0.0-unset"))
+    return score, version
 
 
 def make_scorer(name: str, ctx: Context) -> tuple[Scorer, str]:
     if name == "tfidf":
         return make_tfidf_scorer(ctx)
-    if name == "misinfo":
-        return make_misinfo_scorer(ctx)
+    if is_misinfo(name):
+        return make_misinfo_scorer(ctx, name)
     return make_laya_scorer(name, ctx)
 
 
@@ -1505,8 +1575,9 @@ def checkpoints_missing(ctx: Context, models: list[str]) -> list[str]:
     missing = []
     if "tfidf" in models and not ctx.tfidf_file.exists():
         missing.append(f"tfidf: {ctx.tfidf_file}")
-    if "misinfo" in models and not (ctx.misinfo_dir() / "calibrator.json").exists():
-        missing.append(f"misinfo: {ctx.misinfo_dir()} (no calibrator.json)")
+    for name in models:
+        if is_misinfo(name) and not (ctx.misinfo_dir(name) / "calibrator.json").exists():
+            missing.append(f"{name}: {ctx.misinfo_dir(name)} (no calibrator.json)")
     if "laya_en" in models and not (ctx.laya_checkpoint_dir("en") / "run_summary.json").exists():
         missing.append(f"laya_en: {ctx.laya_checkpoint_dir('en')}")
     if "laya_multi" in models and not (
@@ -1520,14 +1591,23 @@ def score_file(ctx: Context, model: str) -> Path:
     return ctx.scores_dir / f"{model}.parquet"
 
 
-def selected_models(ctx: Context) -> list[str]:
+def selected_models(ctx: Context, *, all_means_every_file: bool = False) -> list[str]:
+    """The models of a stage.
+
+    ``--misinfo-version V`` adds the model ``misinfo@V``. Without ``--models``, the score
+    stage scores only that candidate, and the evaluate stage compares every model with it.
+    """
     value = getattr(ctx.args, "models", None)
+    candidate = ctx.misinfo_candidate
+    allowed = [*MODELS, *([candidate_key(candidate)] if candidate else [])]
     if not value:
-        return list(MODELS)
+        if candidate and not all_means_every_file:
+            return [candidate_key(candidate)]
+        return allowed
     chosen = [m.strip() for m in value.split(",") if m.strip()]
-    unknown = [m for m in chosen if m not in MODELS]
+    unknown = [m for m in chosen if m not in allowed]
     if unknown:
-        raise StageError(EXIT_USAGE, f"unknown model(s) {unknown}; choose from {list(MODELS)}")
+        raise StageError(EXIT_USAGE, f"unknown model(s) {unknown}; choose from {allowed}")
     return chosen
 
 
@@ -1567,8 +1647,11 @@ def stage_score(ctx: Context) -> None:
             + "\n  ".join(missing),
         )
 
-    if "misinfo" in todo:
-        misinfo_backbone(ctx)  # refuses a fallback backbone before the GPU is read
+    for name in todo:
+        refuse_other_version(ctx, name)  # a file with no sidecar, before any model loads
+    for name in todo:
+        if is_misinfo(name):
+            misinfo_backbone(ctx, name)  # refuses a fallback backbone before the GPU is read
 
     def body() -> dict[str, Any]:
         parts = build_parts(ctx)
@@ -1589,6 +1672,36 @@ def stage_score(ctx: Context) -> None:
     write_json(summary_path, merged)
 
 
+def refuse_other_version(ctx: Context, model: str, version: str | None = None) -> None:
+    """Refuse to overwrite a score file that this run cannot tie to its version.
+
+    A score file with no provenance sidecar is refused. A sidecar with another model version
+    is refused when ``version`` is given. ``--force`` allows both. Each has a reason code.
+    """
+    if ctx.force or not score_file(ctx, model).exists():
+        return
+    sidecar = provenance_file(ctx, model)
+    if not sidecar.exists():
+        raise StageError(
+            EXIT_FAILED,
+            f"[score] {SCORE_FILE_NO_SIDECAR}: {score_file(ctx, model)} has no provenance "
+            f"file, so nothing says which version wrote it. Pass --force to replace it.",
+        )
+    if version is None:
+        return
+    try:
+        recorded = read_json(sidecar).get("model_version")
+    except ValueError:
+        return
+    if recorded is not None and recorded != version:
+        raise StageError(
+            EXIT_FAILED,
+            f"[score] {SCORE_FILE_OTHER_VERSION}: {score_file(ctx, model)} was scored with "
+            f"{recorded}, and this run has {version}. Pass --force to replace it, or score "
+            "into another --out.",
+        )
+
+
 def score_model(
     ctx: Context,
     model: str,
@@ -1600,10 +1713,11 @@ def score_model(
     checkpoint = checkpoint_identity(ctx, model)
     if checkpoint is None:
         raise StageError(EXIT_FAILED, f"[score] the checkpoint of {model} is not present")
-    # The old sidecar goes first, so that a stop part way never leaves it beside a new file.
-    provenance_file(ctx, model).unlink(missing_ok=True)
     with watch_laya_oom():
         scorer, version = make_scorer(model, ctx)
+        refuse_other_version(ctx, model, version)
+        # The old sidecar goes first, so that a stop part way never leaves it beside a new file.
+        provenance_file(ctx, model).unlink(missing_ok=True)
         rows: list[dict[str, Any]] = []
         for part in SCORE_PARTS:
             rows.extend(score_part(scorer, part, parts[part]))
@@ -1657,7 +1771,7 @@ def check_scores_match_split(scores: dict[str, Any], split_info: dict[str, Any])
 
 def stage_evaluate(ctx: Context) -> None:
     split_info = require_prepared(ctx)
-    models = selected_models(ctx)
+    models = selected_models(ctx, all_means_every_file=True)
     missing = [m for m in models if not score_file(ctx, m).exists()]
     if missing:
         raise StageError(
@@ -1953,6 +2067,22 @@ def _misinfo_opts(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _candidate_opts(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--misinfo-version",
+        default=None,
+        help="Add the candidate models/misinfo/VERSION of the model directory as the model "
+        "`misinfo@VERSION`. It has its own score file, so the configured misinfo and the "
+        "candidate load together. configs/models.yaml does not change. Without --models, "
+        "score scores only the candidate, and evaluate compares every model with it.",
+    )
+    parser.add_argument(
+        "--allow-unverified-candidate",
+        action="store_true",
+        help="Load a --misinfo-version checkpoint that has no sha256 in configs/models.yaml.",
+    )
+
+
 def _laya_opts(parser: argparse.ArgumentParser, *, epochs: bool = True) -> None:
     if epochs:
         parser.add_argument("--epochs", type=int, default=None, help="Demo default is 1.")
@@ -1992,6 +2122,7 @@ def build_parser() -> argparse.ArgumentParser:
     _gpu(p)
     p.add_argument("--batch-size", type=int, default=None, help="Lower it on a shared GPU.")
     p.add_argument("--models", default=None, help=f"Comma list. Default all: {','.join(MODELS)}.")
+    _candidate_opts(p)
     p.add_argument(
         "--refreeze",
         action="store_true",
@@ -2002,6 +2133,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("evaluate", help="Run the harness on the score files.")
     _common(p)
     p.add_argument("--models", default=None)
+    _candidate_opts(p)
 
     p = sub.add_parser(
         "calibrate-laya",
@@ -2035,6 +2167,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "allow_unverified_candidate", False) and not getattr(
+        args, "misinfo_version", None
+    ):
+        print("error: --allow-unverified-candidate needs --misinfo-version", file=sys.stderr)
+        return EXIT_USAGE
     ctx = Context(args=args, deps=deps or Deps())
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
