@@ -91,8 +91,8 @@ class ModelingSettings(BaseSettings):
     hf_repo: str | None = None
     hf_token: str | None = None
     gdrive_dir: Path | None = None
-    #: Hub revision (branch, tag or commit) of the checkpoint repo. A module's own
-    #: `hf_revision` in models.yaml wins.
+    #: Hub revision (branch, tag or commit) of the checkpoint repo. It applies to every
+    #: module. The `hf_revision` pin of one module in models.yaml wins for that module.
     hf_revision: str | None = None
     #: Keep a freshly pulled checkpoint that has no `sha256` configured. Off by default.
     allow_unverified_pull: bool = False

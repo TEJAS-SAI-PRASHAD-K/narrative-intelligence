@@ -478,11 +478,17 @@ python -m modeling.cli checkpoint-hash laya --version en-v0.2.1
 ```
 
 The hash covers every file in the folder, with the calibrator files and `registry.json`.
-It does not cover `checkpoint_latest/` at any depth or `*.tmp` files. It reads
+It does not cover `checkpoint_latest/` at any depth, or files and folders that end in
+`.tmp`. It reads
 `tokenizer/tokenizer_config.json` after the same rewrite that the Laya loader applies, so
 loading a checkpoint does not change the hash. It reads `registry.json` without its
-`sha256` key. A symbolic link counts by the content of its target. A folder that is missing
-gives the stage reason `laya:checkpoint_missing`, and no score is written.
+`sha256` key. A symbolic link to a file counts by the content of its target. A symbolic
+link to a directory is refused with `checkpoint_dir_symlink`. A folder with no file that the
+hash covers is refused with `checkpoint_empty`. A folder that is missing gives the stage
+reason `laya:checkpoint_missing`, and no score is written. The stage note then names the
+registry reason, for example `(reason: hub_pull_failed)`. Run `checkpoint-pull laya` with
+`--version multi-v0.2.1` or `--version en-v0.2.1`. The command lists the valid folder names
+when the version is missing or unknown.
 
 ---
 
