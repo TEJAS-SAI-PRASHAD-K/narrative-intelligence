@@ -77,6 +77,20 @@ def _interval(
     return Interval(point, float(low), float(high), len(samples))
 
 
+def wilson_interval(successes: int, n: int, z: float = 1.959964) -> tuple[float, float]:
+    """Wilson score interval of a proportion. ``(nan, nan)`` for no rows."""
+    if n <= 0:
+        return float("nan"), float("nan")
+    p = successes / n
+    denominator = 1 + z**2 / n
+    centre = (p + z**2 / (2 * n)) / denominator
+    half = z * np.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denominator
+    # The bound at an observed 0 or n is exact, so float noise must not move it.
+    low = 0.0 if successes == 0 else max(0.0, float(centre - half))
+    high = 1.0 if successes == n else min(1.0, float(centre + half))
+    return low, high
+
+
 def kish_n_eff(w: np.ndarray) -> float | None:
     """Kish effective sample size, (sum w)^2 / sum w^2. ``None`` for no rows."""
     denominator = float((w**2).sum())
@@ -204,6 +218,8 @@ def fpr_by_reporting(
     """False-positive rate on rows that report on a false claim, and on the other rows.
 
     ``reports`` is 0 or 1 for every row. A false positive is a flagged row with label 0.
+    ``difference`` is the rate on reporting rows minus the rate on the other rows. Its
+    interval comes from the same draws as the two rates.
     """
 
     def group(value: int):
@@ -213,10 +229,14 @@ def fpr_by_reporting(
 
         return fn
 
+    def difference(idx):
+        high, low = group(1)(idx), group(0)(idx)
+        return None if high is None or low is None else high - low
+
     return bootstrap_statistics(
         y_true,
         w,
-        {"reporting": group(1), "other": group(0)},
+        {"reporting": group(1), "other": group(0), "difference": difference},
         n_bootstrap=n_bootstrap,
         seed=seed,
         strata=strata,
@@ -354,6 +374,11 @@ def reporting_fpr(
             y, f, r, np.ones(len(r)), n_bootstrap=n_bootstrap, seed=seed
         ),
         "weighted": None,
+        "wilson": {
+            name: _wilson_block(int(((f == 1) & negatives & (r == value)).sum()),
+                                int((negatives & (r == value)).sum()))
+            for name, value in (("reporting", 1), ("other", 0))
+        },
     }
     if has_design:
         sw = stratum_weights(all_rows, used[known])
@@ -366,6 +391,20 @@ def reporting_fpr(
     return out
 
 
+def _wilson_block(flagged: int, n: int) -> dict:
+    low, high = wilson_interval(flagged, n)
+    return {"flagged": flagged, "n": n, "ci_low": low, "ci_high": high}
+
+
+def _wilson_text(block: dict) -> str:
+    if not block["n"]:
+        return "not measured, no row"
+    return (
+        f"{block['flagged']} of {block['n']}, Wilson 95% "
+        f"[{block['ci_low']:.3f}, {block['ci_high']:.3f}]"
+    )
+
+
 def render_reporting_fpr(section: dict) -> list[str]:
     lines = [
         "  false-positive rate (flag rate among rows labelled 0), rows that report on a false "
@@ -373,6 +412,9 @@ def render_reporting_fpr(section: dict) -> list[str]:
         f"({section['n_negatives_other']} rows labelled 0):",
         f"    unweighted, sample rows: reporting {fmt(section['unweighted']['reporting'])}, "
         f"other {fmt(section['unweighted']['other'])}",
+        f"    difference, reporting minus other: {fmt(section['unweighted'].get('difference'))}",
+        f"    reporting rows, {_wilson_text(section['wilson']['reporting'])}",
+        f"    other rows, {_wilson_text(section['wilson']['other'])}",
     ]
     if section["dropped"]:
         lines.append(
@@ -383,6 +425,10 @@ def render_reporting_fpr(section: dict) -> list[str]:
         lines.append(
             f"    reweighted to the corpus (n_eff {section['weighted_n_eff']:.1f}): reporting "
             f"{fmt(section['weighted']['reporting'])}, other {fmt(section['weighted']['other'])}"
+        )
+        lines.append(
+            "    difference, reporting minus other, reweighted: "
+            f"{fmt(section['weighted'].get('difference'))}"
         )
         lines += [f"    {line}" for line in stratum_warning(section["weighted_strata"])]
     return lines

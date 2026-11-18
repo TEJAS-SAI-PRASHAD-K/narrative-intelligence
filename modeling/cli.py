@@ -478,7 +478,9 @@ def relabel_eval(
 
     For each sheet that exists: the agreement report, the disagreement list and the
     transfer metrics (``misinfo`` for English, Laya for Hindi). A sheet that is refused
-    writes its refusal. Exits 1 when any sheet is refused or not measured.
+    writes its refusal. Exits 1 when any sheet is refused or not measured. A sheet whose
+    usable rows hold one class is refused for ROC-AUC, precision and recall, and still reports
+    the positive rate, the flag rate and the calibration. The seed is 20260813.
     """
     _bootstrap(verbose)
     from modeling.eval.relabel import run_relabel_eval

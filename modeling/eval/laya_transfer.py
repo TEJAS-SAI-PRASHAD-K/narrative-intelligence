@@ -31,6 +31,8 @@ from modeling.eval.corpus_transfer import (
     parse_label,
 )
 from modeling.eval.metrics import bootstrap_metric
+from modeling.eval.one_class import REFUSAL as ONE_CLASS_REFUSAL
+from modeling.eval.one_class import one_class_report, render_one_class
 from modeling.eval.weighted import (
     DEFAULT_BINS,
     DEFAULT_SEED,
@@ -74,6 +76,8 @@ class LayaTransferResult:
     corpus: dict[str, Any] | None = None
     strata_info: StratumWeights | None = None
     weighted_reason: str | None = None
+    #: Figures that a sample with one class still gives. Set with the refusal of the AUC.
+    one_class: dict[str, Any] | None = None
 
     def _block(self, block: dict[str, Any]) -> list[str]:
         lines = []
@@ -117,6 +121,12 @@ class LayaTransferResult:
         ]
         if not self.computed:
             lines.append(f"  REFUSED: {self.refusal}")
+            if self.one_class is not None:
+                lines.append(
+                    f"  model {self.model_version}, threshold {self.threshold} "
+                    f"({self.threshold_source}), seed {self.seed}"
+                )
+                lines += render_one_class(self.one_class)
         else:
             lines.append(
                 f"  model {self.model_version}, threshold {self.threshold} "
@@ -239,10 +249,22 @@ def evaluate_laya_transfer(
         out.refusal = f"{out.used} labelled rows have a Laya value, need at least {min_labelled}"
         return out
     y = used["y"].to_numpy(dtype=int)
-    if len(set(y.tolist())) < 2:
-        out.refusal = "the usable labelled rows hold one class only; AUC is undefined"
-        return out
     prob = np.array([value[str(i)] for i in used["id"]], dtype=float)
+    if len(set(y.tolist())) < 2:
+        out.refusal = ONE_CLASS_REFUSAL
+        out.one_class = one_class_report(
+            frame,
+            used,
+            y,
+            prob,
+            threshold=threshold,
+            threshold_source=threshold_source,
+            has_design=sheet.has_design,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+            bins=bins,
+        )
+        return out
 
     def block(w: np.ndarray, strata: np.ndarray | None) -> dict[str, Any]:
         result: dict[str, Any] = {}
