@@ -182,6 +182,28 @@ COORDINATION_EDGES = ScoredTable(
     ),
 )
 
+#: Per-account coordination measurements, which are what the accounts stage
+#: needs from the coordination stage. The edges alone cannot stand in for it:
+#: an account the detector saw but linked to nobody has a measured score of 0.0
+#: and appears in no edge, so reconstructing from ``coordination_edges`` would
+#: turn every such account into "never measured" and quietly bias the ratio.
+#: Row presence is the seen/not-seen distinction; absence means not measured.
+COORDINATION_ACCOUNTS = ScoredTable(
+    name="coordination_accounts",
+    keys=("account_id",),
+    schema=pa.schema(
+        [
+            pa.field("account_id", pa.string(), nullable=False),
+            # Non-null for every row by construction: a row exists only for an
+            # account the detector measured, and 0.0 is a measurement.
+            pa.field("coordination_score", pa.float32()),
+            pa.field("community_id", pa.string()),
+            pa.field("community_size", pa.int64()),
+            pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+        ]
+    ),
+)
+
 #: Author cohort schema, deliberately unpopulated. The 135-cohort ideological
 #: taxonomy is a labeling project of its own and is out of scope for Phase 2
 #: (see the anti-goals). The schema is written down so Phase 4 can plan against
@@ -210,6 +232,7 @@ TABLES: dict[str, ScoredTable] = {
         NARRATIVE_MEMBERSHIP,
         AUTHOR_SCORES,
         COORDINATION_EDGES,
+        COORDINATION_ACCOUNTS,
         AUTHOR_COHORTS,
     )
 }
