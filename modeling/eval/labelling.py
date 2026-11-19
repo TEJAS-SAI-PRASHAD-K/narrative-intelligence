@@ -62,6 +62,7 @@ MODEL_LABEL_NOTE = "labeller: model, unreviewed by a person"
 
 # Reason codes. Each is counted.
 FACT_CHECK_PUBLISHER = "fact_check_publisher"
+EXCLUDED_SOURCE = "excluded_source"
 NO_TITLE = "no_title"
 NO_SIMHASH = "no_simhash"
 EMBEDDING_UNAVAILABLE = "embedding_unavailable"
@@ -167,6 +168,10 @@ class Stratum:
 class SamplingConfig:
     seed: int = DEFAULT_SEED
     likely_sources: tuple[str, ...] = ("reddit", "mastodon", "youtube", "telegram")
+    #: Sources kept out of the draw entirely, counted as ``excluded_source``. A source whose
+    #: corpus cannot carry the case under study contributes only noise to a transfer measure,
+    #: and its stratum share is better spent on sources that can.
+    exclude_sources: frozenset[str] = frozenset()
     strata: tuple[Stratum, ...] = ()
     #: Record-to-claim matching. Separate from the claim-to-claim dedup in
     #: ``configs/factcheck.yaml``, because a post is matched to a claim, not a claim to a claim.
@@ -195,6 +200,7 @@ def parse_sampling_config(block: dict[str, Any]) -> SamplingConfig:
     return SamplingConfig(
         seed=int(block.get("seed", DEFAULT_SEED)),
         likely_sources=tuple(str(s) for s in block.get("likely_positive_sources") or ()),
+        exclude_sources=frozenset(str(s).lower() for s in block.get("exclude_sources") or ()),
         strata=strata,
         simhash_hamming=int(match.get("simhash_hamming", 3)),
         min_similarity=None if similarity is None else float(similarity),
@@ -310,11 +316,20 @@ def build_weighted_sample(
     degraded: Counter[str] = Counter()
     keep = []
     domains = pool["source_detail"].map(normalise_domain) if "source_detail" in pool else None
+    sources = (
+        pool["source"].map(lambda v: "" if _is_null(v) else str(v).lower())
+        if "source" in pool
+        else None
+    )
     for i, (row_lang, text, title) in enumerate(
         zip(pool["lang"], pool["text"], pool["title"], strict=True)
     ):
         reason = None
-        if domains is not None and domains.iloc[i] in fact_checker_domains:
+        # A blanket rule, so it is read before the per-row checks: an excluded source never
+        # enters the draw, whatever the row says.
+        if sources is not None and sources.iloc[i] in config.exclude_sources:
+            reason = EXCLUDED_SOURCE
+        if reason is None and domains is not None and domains.iloc[i] in fact_checker_domains:
             reason = FACT_CHECK_PUBLISHER
         if reason is None:
             if lang == "hi":
