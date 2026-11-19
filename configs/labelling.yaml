@@ -17,6 +17,19 @@ seed: 20260813
 # Sources whose posts are more likely to carry a false claim than a news article is.
 likely_positive_sources: [reddit, mastodon, youtube, telegram]
 
+# Sources kept out of the draw entirely. Rows are counted as `excluded_source` and the
+# stratum share is spread over the sources that remain.
+#
+# `reddit` is excluded because the only configured Reddit corpus is ConvoKit's
+# `reddit-corpus-small` (configs/sources.yaml), a fixed 2018 snapshot of 18 general-interest
+# subreddits -- IAmA, canada, tifu, hockey, Bitcoin -- with no Indian subreddit in it. It
+# answers nothing in configs/topics.yaml, and at ~43k rows it is 89 percent of the corpus, so
+# a uniform `reddit` stratum spends 15 percent of a labelling sheet on a different country and
+# a different decade. This excludes it from the SAMPLE only; the rows stay in the corpus,
+# where they are still the main source of threaded conversations for the coordination graph.
+# Delete this entry once a Reddit corpus that matches the case is configured.
+exclude_sources: [reddit]
+
 # Order sets the stratum codes. `claim_match` holds rows that match a fact-check claim.
 # A row goes to the first stratum that fits: claim_match, then its own platform, then
 # `other`. Shares need not sum to 1. A stratum with no rows gives its share to the others.

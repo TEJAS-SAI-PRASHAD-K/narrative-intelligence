@@ -1289,6 +1289,7 @@ def _draw_misinfo_sample(
         "strata": built.strata,
         "notes": built.notes,
         "weight": "stratum pool size over stratum rows drawn; evaluation uses pool over rows used",
+        "exclude_sources": sorted(config.exclude_sources),
         "claim_match": {
             "simhash_hamming": config.simhash_hamming,
             "min_similarity": config.min_similarity,

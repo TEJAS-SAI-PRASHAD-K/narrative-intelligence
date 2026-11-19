@@ -160,7 +160,7 @@ class TestBuildWeightedSample:
             n=kw.pop("n", 20),
             language_allowed=allow,
             fact_checker_domains=FC,
-            config=config(),
+            config=kw.pop("config", config()),
             lang=kw.pop("lang", "en"),
             **kw,
         )
@@ -170,6 +170,26 @@ class TestBuildWeightedSample:
         assert not any(i.startswith("f") for i in built.frame["id"])
         assert built.excluded[lb.FACT_CHECK_PUBLISHER] == 5
         assert built.excluded["text_too_short"] == 1
+
+    def test_an_excluded_source_never_enters_the_draw_and_is_counted(self):
+        built = self.draw(n=20, config=config(exclude_sources=["reddit"]))
+        assert not any(i.startswith("r") for i in built.frame["id"])
+        assert built.excluded[lb.EXCLUDED_SOURCE] == 30
+
+    def test_excluding_a_source_empties_its_stratum_and_spreads_the_share(self):
+        built = self.draw(n=20, config=config(exclude_sources=["reddit"]))
+        by_name = {v["name"]: v for v in built.strata.values()}
+        assert by_name["reddit"]["pool"] == 0 and by_name["reddit"]["drawn"] == 0
+        assert len(built.frame) == 20
+
+    def test_the_source_name_is_matched_regardless_of_case(self):
+        built = self.draw(n=20, config=config(exclude_sources=["ReDDiT"]))
+        assert built.excluded[lb.EXCLUDED_SOURCE] == 30
+
+    def test_no_exclusion_by_default_leaves_the_draw_as_it_was(self):
+        built = self.draw(n=20)
+        assert lb.EXCLUDED_SOURCE not in built.excluded
+        assert any(i.startswith("r") for i in built.frame["id"])
 
     def test_claim_matches_land_in_the_first_stratum(self):
         built = self.draw(n=60)
@@ -780,6 +800,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(modeling_cli, "_bootstrap", lambda verbose=False: None)
     monkeypatch.setattr("modeling.io.CorpusReader.__init__", lambda self, settings=None: None)
     monkeypatch.setattr("modeling.io.CorpusReader.records", lambda self, **kw: corpus())
+    # These tests cover the command, not whichever sources configs/labelling.yaml excludes
+    # today. TestShippedSamplingConfig covers that, so a policy change touches one test.
+    monkeypatch.setattr(lb, "load_sampling_config", config)
     monkeypatch.setattr(
         "ingest.factcheck.read_deduplicated_factchecks",
         lambda s: type(
@@ -788,6 +811,16 @@ def env(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("ingest.config.Settings", lambda **kw: None)
     return settings
+
+
+class TestShippedSamplingConfig:
+    def test_it_parses_and_excludes_the_off_case_reddit_corpus(self):
+        shipped = lb.load_sampling_config()
+        assert "reddit" in shipped.exclude_sources
+        assert "reddit" in shipped.likely_sources, (
+            "reddit stays a likely-positive source: the exclusion is about the corpus "
+            "configured today, not about the platform"
+        )
 
 
 class TestSampleCommand:
