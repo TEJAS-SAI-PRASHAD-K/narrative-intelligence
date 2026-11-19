@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,9 @@ class StageContext:
     known_author_ids: set[str] = field(default_factory=set)
     #: Set by the coordination stage and consumed by the accounts stage, which
     #: needs community_id and coordination_score. The dependency is why
-    #: configs/scoring.yaml orders coordination before accounts.
+    #: configs/scoring.yaml orders coordination before accounts. Only a fast
+    #: path: when the two stages run in separate invocations this is None and
+    #: accounts reads the same measurements back from ``coordination_accounts``.
     coordination: Any = None
     #: Overrides ``embed.model_name`` for the cluster stage. Only the embedder
     #: comparison sets it, together with a store of its own.
@@ -1280,6 +1283,49 @@ def _summarize_stage(ctx: StageContext) -> list[dict[str, Any]]:
     return [{"stage": "summarize", "table": "narratives", **result, "note": ctx.note(note)}]
 
 
+def _coordination_accounts_frame(result: Any, now: datetime) -> pd.DataFrame:
+    """The per-account measurements the accounts stage reads back off disk.
+
+    Every account the detector saw gets a row, including one it linked to
+    nobody: that is a measured 0.0. An account with no row was never measured.
+    """
+    measured = sorted(set(result.seen_accounts) | set(result.scores))
+    return pd.DataFrame(
+        [
+            {
+                "account_id": account,
+                "coordination_score": result.score_for(account),
+                "community_id": result.communities.get(account),
+                "community_size": result.community_sizes.get(
+                    result.communities.get(account)
+                ),
+                "generated_at": now,
+            }
+            for account in measured
+        ],
+        columns=[
+            "account_id",
+            "coordination_score",
+            "community_id",
+            "community_size",
+            "generated_at",
+        ],
+    )
+
+
+def _write_coordination_accounts(ctx: StageContext, result: Any, version: str) -> dict[str, Any]:
+    """Persist the stage handoff so ``accounts`` does not depend on run order."""
+    accounts = _coordination_accounts_frame(result, utcnow_local())
+    written = ctx.store.write("coordination_accounts", accounts, merge=False)
+    ctx.store.update_manifest(
+        table="coordination_accounts",
+        rows=len(accounts),
+        model_versions={"coordination": version},
+        extra={"is_demo": ctx.demo},
+    )
+    return {"stage": "coordination", "table": "coordination_accounts", **written}
+
+
 @stage("coordination")
 def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
     """Co-behaviour graph, communities and the null-model comparison."""
@@ -1291,7 +1337,7 @@ def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
     # account it saw, and the accounts stage must score those as 0.0, not skip them.
     ctx.coordination = result
     if not result.edges:
-        return [
+        rows: list[dict[str, Any]] = [
             {
                 "stage": "coordination",
                 "table": "coordination_edges",
@@ -1300,6 +1346,11 @@ def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 ),
             }
         ]
+        # An edgeless run still measured every account it saw. Persisting them
+        # is what lets a later accounts run score them 0.0 instead of skipping.
+        if not ctx.dry_run:
+            rows.append(_write_coordination_accounts(ctx, result, detector.version))
+        return rows
 
     now = utcnow_local()
     edges = pd.DataFrame([{**edge, "generated_at": now} for edge in result.edges])
@@ -1323,8 +1374,82 @@ def _coordination_stage(ctx: StageContext) -> list[dict[str, Any]]:
         extra={"is_demo": ctx.demo, **result.summary()},
     )
     return [
-        {"stage": "coordination", "table": "coordination_edges", **written, "note": ctx.note(note)}
+        {"stage": "coordination", "table": "coordination_edges", **written, "note": ctx.note(note)},
+        _write_coordination_accounts(ctx, result, detector.version),
     ]
+
+
+@dataclass(frozen=True)
+class _StoredCoordination:
+    """The coordination stage's measurements, read back from the scored store.
+
+    Stands in for ``CoordinationResult`` at the one boundary the accounts stage
+    uses: a score, a community and that community's size. It deliberately
+    exposes nothing else. The null-model verdict belongs to the run that
+    computed it and is not re-derivable from a table of per-account rows, so
+    anything reporting on coordination reads the manifest, not this.
+    """
+
+    scores: dict[str, float]
+    communities: dict[str, str]
+    community_sizes: dict[str, int]
+
+    def score_for(self, account: str) -> float | None:
+        """None when the account has no row, which means it was never measured."""
+        return self.scores.get(account)
+
+
+def _coordination_from_store(ctx: StageContext) -> _StoredCoordination | None:
+    """Rehydrate the coordination handoff written by an earlier run.
+
+    Returns None when the table is absent, which is a real "not run" and keeps
+    the reason code honest rather than inventing zeros for every account.
+    """
+    from modeling.config import manifest_hash
+
+    try:
+        frame = ctx.store.read("coordination_accounts")
+    except Exception as exc:  # pragma: no cover - unreadable store
+        log.warning("coordination_accounts unreadable (%s); treating as not run", exc)
+        return None
+    if not len(frame):
+        return None
+
+    stored = ctx.store.manifest().get("coordination_accounts", {})
+    current = manifest_hash()
+    if stored.get("input_manifest_hash") not in (None, current):
+        # Not fatal: a corpus that grew since the graph was built still has a
+        # measurement for every account the detector saw, and accounts it has
+        # never seen get None through score_for. Loud because a stale graph is
+        # the kind of thing that is obvious in hindsight and invisible at the time.
+        log.warning(
+            "coordination_accounts was built against corpus %s but this run is %s; "
+            "accounts added since are unmeasured, not uncoordinated. Rerun the "
+            "coordination stage to refresh it.",
+            stored.get("input_manifest_hash"),
+            current,
+        )
+
+    indexed = frame.set_index("account_id")
+    scores = {
+        str(account): float(value)
+        for account, value in indexed["coordination_score"].items()
+        if pd.notna(value)
+    }
+    communities = {
+        str(account): str(value)
+        for account, value in indexed["community_id"].items()
+        if pd.notna(value)
+    }
+    sizes = {
+        communities[str(account)]: int(value)
+        for account, value in indexed["community_size"].items()
+        if pd.notna(value) and str(account) in communities
+    }
+    log.info(
+        "coordination: read %d measured account(s) back from the scored store", len(scores)
+    )
+    return _StoredCoordination(scores=scores, communities=communities, community_sizes=sizes)
 
 
 @stage("accounts")
@@ -1460,7 +1585,14 @@ def _accounts_stage(ctx: StageContext) -> list[dict[str, Any]]:
                 versions["bot"] = checkpoint_stamp("bot", bot_version, checkpoint)
 
     # --- coordination ------------------------------------------------------
+    # The in-memory handoff only exists when the coordination stage ran in this
+    # same process. Scoring accounts on its own is an ordinary thing to do, and
+    # without the read-back below it silently produced an all-null
+    # coordination_score that read as "no coordination" rather than "not
+    # measured".
     coordination = getattr(ctx, "coordination", None)
+    if coordination is None:
+        coordination = _coordination_from_store(ctx)
     if coordination is None:
         for account in features.account_ids:
             reasons[account].append("coordination:not_run")
